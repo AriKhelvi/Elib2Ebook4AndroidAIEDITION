@@ -79,7 +79,7 @@ jobs:
           java-version: '21'
 
       - name: Кэш NuGet
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', 'android/**/*.csproj', 'src/**/*.csproj') }}
