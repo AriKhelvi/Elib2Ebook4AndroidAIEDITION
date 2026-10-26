@@ -196,4 +196,24 @@ jobs:
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.apk.outputs.path }}" --clobber
+          TAG: ${{ github.event.release.tag_name }}
+          APK: ${{ steps.apk.outputs.path }}
+        run: |
+          NAME=$(basename "$APK")
+          # Несколько попыток: если релиз только что переименовали или перепубликовали,
+          # API GitHub может какое-то время отвечать ошибкой
+          for i in 1 2 3; do
+            if gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"; then
+              echo "APK $NAME прикреплён к релизу $TAG"
+              exit 0
+            fi
+            echo "Попытка $i не удалась, повтор через 15 с"
+            sleep 15
+          done
+          # Файл с тем же именем уже в релизе (например, его прикрепила сборка до переименования тега) — не ошибка
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$NAME"; then
+            echo "::notice::$NAME уже прикреплён к релизу $TAG — оставляю как есть"
+            exit 0
+          fi
+          echo "::error::Не удалось прикрепить $NAME к релизу $TAG"
+          exit 1
