@@ -86,6 +86,44 @@ $env:DOTNET_ROOT = "$tc\dotnet"
 > APK, подписанный другим ключом, не встанет поверх установленного — придётся удалять приложение вместе с
 > настройками. `.gitignore` дополнительно не пускает `*.keystore` и `android/signing/` в репозиторий.
 
+### Автосборка в GitHub Actions
+
+Workflow [`.github/workflows/android.yml`](../.github/workflows/android.yml) собирает APK на серверах GitHub:
+
+| Событие | Результат |
+|:--|:--|
+| Пуш в `master`, затрагивающий `android/` или ядро | APK в артефактах запуска (Actions → запуск → Artifacts) |
+| Actions → **Android APK** → **Run workflow** | То же, вручную |
+| Публикация релиза (Releases → Draft a new release → Publish) | APK прикрепляется к релизу автоматически |
+| Pull request | Только проверка, что всё собирается |
+
+В сводке каждого запуска — размер, versionCode, число сайтов и отпечаток сертификата подписи.
+
+**Настройка (один раз):**
+
+1. **Включите Actions в форке.** GitHub не запускает workflow в форках, пока владелец не разрешит:
+   вкладка **Actions** → «I understand my workflows, go ahead and enable them».
+2. **Добавьте ключ подписи в секреты** — иначе APK из Actions будет подписан одноразовым ключом и не встанет
+   поверх установленного приложения (а релиз не соберётся вовсе). Settings → Secrets and variables → Actions →
+   New repository secret:
+   - `E2E_KEYSTORE_BASE64` — содержимое `e2e.keystore` в base64. Скопировать в буфер обмена (PowerShell):
+     ```powershell
+     [Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:LOCALAPPDATA\Elib2EbookAndroid\signing\e2e.keystore")) | Set-Clipboard
+     ```
+   - `E2E_KEYSTORE_PASSWORD` — содержимое `password.txt`:
+     ```powershell
+     Get-Content "$env:LOCALAPPDATA\Elib2EbookAndroid\signing\password.txt" -Raw | Set-Clipboard
+     ```
+   Секреты видят только workflow этого репозитория; в логах GitHub их маскирует. Никуда больше их не вставляйте.
+3. Проверка: Actions → **Android APK** → **Run workflow**. В сводке запуска должно быть «Подпись: ключ владельца»
+   и тот же SHA-256 сертификата, что у APK, собранного локально.
+
+Сборка на `ubuntu-latest` занимает порядка 10–20 минут (большую часть — AOT-компиляция).
+
+> [!NOTE]
+> В форке остался и CI самого ядра (`dotnet.yml`, `codeql.yml`) — он собирает консольную и веб-версию
+> и с Android-сборкой не связан.
+
 ### Обновление ядра из оригинального Elib2Ebook
 
 Новые сайты и исправления приходят из [OnlyFart/Elib2Ebook](https://github.com/OnlyFart/Elib2Ebook):

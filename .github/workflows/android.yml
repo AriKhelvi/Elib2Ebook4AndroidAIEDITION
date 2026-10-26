@@ -1,0 +1,199 @@
+# ============================================================================
+# E2E для Android — автосборка APK в GitHub Actions
+# ----------------------------------------------------------------------------
+# [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека.
+# Стабильность не гарантируется — см. android/README.md, раздел «Автосборка в GitHub Actions».
+# ============================================================================
+#
+# Когда запускается:
+#   - пуш в master, затрагивающий приложение или ядро  → APK в артефактах запуска (вкладка Actions);
+#   - ручной запуск (Actions → Android APK → Run workflow);
+#   - публикация релиза на GitHub                       → APK прикрепляется к этому релизу;
+#   - pull request                                       → только проверка, что всё собирается.
+#
+# Подпись APK. Чтобы новая версия ставилась поверх установленной, APK должен быть подписан тем же ключом,
+# что и раньше. Ключ хранится в секретах репозитория (Settings → Secrets and variables → Actions):
+#   E2E_KEYSTORE_BASE64   — файл e2e.keystore в base64;
+#   E2E_KEYSTORE_PASSWORD — пароль из password.txt.
+# Без секретов обычная сборка подписывается одноразовым ключом (с предупреждением) — такой APK можно
+# поставить только «с нуля». Сборка для релиза без секретов намеренно падает.
+
+name: Android APK
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'README.md'                 # из него берётся список сайтов для вкладки «Сайты»
+      - 'Directory.Build.props'     # версия ядра = versionName приложения
+      - 'Directory.Packages.props'
+      - 'nuget.config'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - '.github/workflows/android.yml'
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+# contents: write — чтобы прикрепить APK к релизу
+permissions:
+  contents: write
+
+# Новый пуш в ту же ветку отменяет недоделанную сборку предыдущего
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    name: Сборка APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      # .NET ставим в домашнюю папку раннера: в системную /usr/share/dotnet workload без sudo не поставить
+      DOTNET_INSTALL_DIR: ${{ github.workspace }}/../.dotnet
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      # Архитектуры APK (через свойство проекта E2EAbi, см. комментарии в E2E.Droid.csproj)
+      E2E_ABI: android-arm64
+
+    steps:
+      - name: Исходники
+        uses: actions/checkout@v5
+
+      - name: .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: microsoft
+          java-version: '21'
+
+      - name: Кэш NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', 'android/**/*.csproj', 'src/**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Workload MAUI для Android
+        run: dotnet workload install maui-android
+
+      # На раннере уже есть Android SDK ($ANDROID_SDK_ROOT); дотягиваем то, что нужно проекту (platform 36 и т.п.)
+      - name: Android SDK
+        run: >
+          dotnet build android/E2E.Droid/E2E.Droid.csproj -t:InstallAndroidDependencies -f net10.0-android
+          -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT" -p:JavaSdkDirectory="$JAVA_HOME" -p:AcceptAndroidSdkLicenses=True
+
+      - name: Версия
+        id: version
+        run: |
+          # versionName — версия ядра; versionCode — минуты с 01.01.2026 (та же схема, что в android/build.ps1,
+          # поэтому APK из Actions и собранные локально ставятся друг поверх друга в правильном порядке)
+          VERSION=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
+          CODE=$(( ($(date +%s) - 1767225600) / 60 ))
+          SHA=${GITHUB_SHA::7}
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "name=E2E-$VERSION-$SHA" >> "$GITHUB_OUTPUT"
+          echo "Elib2Ebook $VERSION, коммит $SHA, versionCode $CODE"
+
+      - name: Ключ подписи
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.E2E_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.E2E_KEYSTORE_PASSWORD }}
+        run: |
+          KS="$RUNNER_TEMP/e2e.keystore"
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+            # Пароль — только через переменную окружения (как в build.ps1); в логах GitHub его маскирует
+            echo "E2E_KS_PASS=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "kind=owner" >> "$GITHUB_OUTPUT"
+            echo "Подпись: ключ владельца из секретов репозитория"
+          else
+            if [ "${{ github.event_name }}" = "release" ]; then
+              echo "::error::Для релиза нужен ключ подписи: добавьте секреты E2E_KEYSTORE_BASE64 и E2E_KEYSTORE_PASSWORD (см. android/README.md)"
+              exit 1
+            fi
+            PASS=$(openssl rand -hex 16)
+            echo "::add-mask::$PASS"
+            keytool -genkeypair -keystore "$KS" -alias e2e -keyalg RSA -keysize 2048 -validity 30 \
+              -storepass "$PASS" -keypass "$PASS" -dname "CN=E2E temporary CI key" -noprompt
+            echo "E2E_KS_PASS=$PASS" >> "$GITHUB_ENV"
+            echo "kind=temporary" >> "$GITHUB_OUTPUT"
+            echo "::warning::Секреты подписи не заданы — APK подписан ВРЕМЕННЫМ ключом и не встанет поверх уже установленного приложения"
+          fi
+          echo "keystore=$KS" >> "$GITHUB_OUTPUT"
+
+      # Те же параметры, что в android/build.ps1. Важно: без -o и без -p:RuntimeIdentifiers —
+      # глобальные свойства уходят во все 60+ библиотек ядра и ломают их сборку.
+      - name: Сборка APK
+        run: >
+          dotnet publish android/E2E.Droid/E2E.Droid.csproj -c Release -f net10.0-android -nologo -v:minimal
+          -p:E2EAbi="$E2E_ABI"
+          -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT"
+          -p:JavaSdkDirectory="$JAVA_HOME"
+          -p:ApplicationDisplayVersion="${{ steps.version.outputs.version }}"
+          -p:ApplicationVersion="${{ steps.version.outputs.code }}"
+          -p:E2ECommit="${{ steps.version.outputs.sha }}"
+          -p:AndroidKeyStore=true
+          -p:AndroidSigningKeyStore="${{ steps.signing.outputs.keystore }}"
+          -p:AndroidSigningKeyAlias=e2e
+          -p:AndroidSigningKeyPass=env:E2E_KS_PASS
+          -p:AndroidSigningStorePass=env:E2E_KS_PASS
+
+      - name: Проверка APK
+        id: apk
+        run: |
+          SRC=$(ls android/E2E.Droid/bin/Release/net10.0-android/publish/*-Signed.apk | head -1)
+          SUFFIX=$([ "${{ steps.signing.outputs.kind }}" = "temporary" ] && echo "-temp-key" || echo "")
+          APK="$RUNNER_TEMP/${{ steps.version.outputs.name }}$SUFFIX.apk"
+          cp "$SRC" "$APK"
+
+          BT=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
+          # Подпись (схема v2/v3) и выравнивание нативных библиотек под 16 КБ-страницы (новые Pixel)
+          "$BT/apksigner" verify --print-certs "$APK" | tee "$RUNNER_TEMP/cert.txt"
+          "$BT/zipalign" -c -P 16 4 "$APK"
+          # Все сборки сайтов должны пережить тримминг (по одной libaot-*.so на сайт)
+          SITES=$(unzip -l "$APK" | grep -c 'libaot-Elib2Ebook.ExternalServices' || true)
+          echo "Сборок сайтов в APK: $SITES"
+          [ "$SITES" -gt 50 ] || { echo "::error::В APK подозрительно мало сборок сайтов: $SITES"; exit 1; }
+
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          {
+            echo "### 📱 ${{ steps.version.outputs.name }}$SUFFIX"
+            echo ""
+            echo "| | |"
+            echo "|:--|:--|"
+            echo "| Размер | $(du -h "$APK" | cut -f1) |"
+            echo "| versionCode | ${{ steps.version.outputs.code }} |"
+            echo "| Сайтов | $SITES |"
+            echo "| Подпись | ${{ steps.signing.outputs.kind == 'owner' && 'ключ владельца' || '⚠ временный ключ' }} |"
+            echo "| SHA-256 сертификата | \`$(grep -m1 'SHA-256' "$RUNNER_TEMP/cert.txt" | awk '{print $NF}')\` |"
+            echo ""
+            echo "> [AI-EDITION] Сборка сгенерированного ИИ приложения — стабильность не гарантируется."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Артефакт
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.name }}${{ steps.signing.outputs.kind == 'temporary' && '-temp-key' || '' }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+
+      - name: Прикрепить к релизу
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.apk.outputs.path }}" --clobber
