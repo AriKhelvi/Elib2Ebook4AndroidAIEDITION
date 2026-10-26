@@ -14,7 +14,10 @@ public class FicbookGetter(BookGetterConfig config) : GetterBase(config)
 {
     protected override Uri SystemUrl => new("https://ficbook.net/");
 
-    protected Uri _appUrl => new("https://fanficlets.xyz/");
+    // [AI-EDITION] Раньше все страницы запрашивались через зеркало мобильного приложения https://fanficlets.xyz/.
+    // В октябре 2026 оно перестало отвечать: TCP-соединение есть, а TLS-рукопожатие висит до таймаута,
+    // из-за чего загрузка падала с «Сервер не успевает ответить». ficbook.net отдаёт ту же разметку.
+    protected Uri _appUrl => SystemUrl;
 
     protected override string GetId(Uri url)
         => url.GetSegment(2);
@@ -32,6 +35,8 @@ public class FicbookGetter(BookGetterConfig config) : GetterBase(config)
     {
         var appUrl = _appUrl.MakeRelativeUri($"/readfic/{GetId(url)}");
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(appUrl);
+        // [AI-EDITION] Понятная ошибка вместо NullReferenceException в GetAuthor, если пришла не страница работы
+        EnsurePage(doc, "h1", appUrl);
 
         var title = doc.GetTextBySelector("h1");
         var book = new Book(SystemUrl.MakeRelativeUri($"/readfic/{GetId(url)}"))
@@ -44,6 +49,23 @@ public class FicbookGetter(BookGetterConfig config) : GetterBase(config)
         };
 
         return book;
+    }
+
+    /// <summary>
+    /// [AI-EDITION] Проверяет, что сайт вернул ожидаемую страницу. На длинных работах ficbook.net может
+    /// через какое-то время отвечать служебной страницей («Проверка безопасности») — тогда нужных блоков нет.
+    /// </summary>
+    private static void EnsurePage(HtmlDocument doc, string selector, Uri url)
+    {
+        if (doc.QuerySelector(selector) != null)
+        {
+            return;
+        }
+
+        var pageTitle = doc.QuerySelector("title")?.InnerText?.Trim();
+        throw new InvalidOperationException(
+            $"Ficbook вернул страницу без нужного содержимого ({url}): «{pageTitle}». " +
+            "Возможно, сайт временно ограничил доступ — попробуйте позже.");
     }
 
     private static Author GetAuthor(HtmlDocument doc, Uri url)
@@ -85,6 +107,8 @@ public class FicbookGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HtmlDocument> GetChapter(UrlChapter urlChapter)
     {
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(urlChapter.Url);
+        // [AI-EDITION] Без проверки здесь падал NullReferenceException без объяснения причины
+        EnsurePage(doc, "#content", urlChapter.Url);
 
         var content = doc.QuerySelector("#content").RemoveNodes("div");
         using var sr = new StringReader(content.InnerText.HtmlDecode());
