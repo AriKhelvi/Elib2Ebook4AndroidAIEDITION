@@ -1,0 +1,234 @@
+// ============================================================================
+// E2E для Android — foreground-сервис, который держит загрузку живой при свёрнутом приложении
+// ----------------------------------------------------------------------------
+// [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
+// ============================================================================
+
+using Android.App;
+using Android.Content;
+using Android.Content.PM;
+using Android.OS;
+using E2E.Droid.Services;
+
+namespace E2E.Droid;
+
+/// <summary>
+/// Foreground-сервис на время скачивания: держит процесс живым, когда приложение свёрнуто,
+/// и показывает прогресс в шторке. Сама загрузка идёт в DownloadManager.
+/// </summary>
+/// <remarks>
+/// Зачем он нужен: когда приложение уходит с экрана, Android вправе в любой момент «усыпить» или убить
+/// его процесс — и загрузка книги на сотню глав оборвалась бы. Процесс с foreground-сервисом
+/// (и обязательным уведомлением в шторке) система не трогает.
+/// <para>Тип dataSync — «передача данных по инициативе пользователя». С Android 14 тип обязателен
+/// (и отдельное разрешение FOREGROUND_SERVICE_DATA_SYNC в манифесте), с Android 15 у него лимит
+/// 6 часов в сутки — по истечении система вызывает OnTimeout.</para>
+/// <para>Сервис сам ничего не качает: он только живёт, пока DownloadManager работает, и рисует уведомление.</para>
+/// </remarks>
+[Service(Exported = false, ForegroundServiceType = ForegroundService.TypeDataSync)]
+public sealed class DownloadService : Service
+{
+    /// <summary>Канал «тихих» уведомлений о прогрессе (без звука).</summary>
+    public const string ProgressChannel = "downloads";
+
+    /// <summary>Канал уведомлений «Книга готова» (обычная важность).</summary>
+    public const string FinishedChannel = "finished";
+
+    private const int ProgressId = 1001;
+
+    /// <summary>Действие кнопки «Отмена» в уведомлении.</summary>
+    private const string ActionCancel = "e2e.droid.CANCEL";
+
+    private const string ExtraText = "text";
+
+    // Состояние сервиса общее для всего процесса: Start/Stop/Update вызываются из DownloadManager
+    // (из любых потоков), а сам экземпляр создаёт Android — поэтому статические поля под lock.
+    private static readonly object Sync = new();
+
+    /// <summary>Экземпляр, уже вызвавший StartForeground (null — сервис не запущен или ещё стартует).</summary>
+    private static DownloadService _running;
+
+    /// <summary>Stop пришёл раньше, чем сервис успел стартовать, — остановимся сразу после StartForeground.</summary>
+    private static bool _stopRequested;
+
+    private PowerManager.WakeLock _wakeLock;
+
+    public static void Start(Context context, string text)
+    {
+        lock (Sync)
+        {
+            _stopRequested = false;
+        }
+
+        var intent = new Intent(context, typeof(DownloadService));
+        intent.PutExtra(ExtraText, text);
+        context.StartForegroundService(intent);
+    }
+
+    /// <summary>
+    /// Если книга упала мгновенно, Stop приходит раньше, чем сервис успел вызвать startForeground, —
+    /// а остановка до startForeground роняет приложение. Поэтому до старта только помечаем запрос.
+    /// </summary>
+    public static void Stop(Context context)
+    {
+        DownloadService running;
+        lock (Sync)
+        {
+            running = _running;
+            if (running == null)
+            {
+                _stopRequested = true;
+                return;
+            }
+        }
+
+        MainThread.BeginInvokeOnMainThread(running.Shutdown);
+    }
+
+    public static void Update(Context context, string text)
+    {
+        lock (Sync)
+        {
+            // Запоздалое обновление после остановки оставило бы в шторке неснимаемое уведомление
+            if (_running == null || _stopRequested)
+            {
+                return;
+            }
+        }
+
+        if (context.GetSystemService(NotificationService) is NotificationManager manager)
+        {
+            manager.Notify(ProgressId, BuildProgress(context, text));
+        }
+    }
+
+    public override IBinder OnBind(Intent intent) => null;
+
+    public override StartCommandResult OnStartCommand(Intent intent, StartCommandFlags flags, int startId)
+    {
+        if (intent?.Action == ActionCancel)
+        {
+            MainThread.BeginInvokeOnMainThread(() => MauiProgram.Services?.GetService<Services.DownloadManager>()?.Cancel());
+            return StartCommandResult.NotSticky;
+        }
+
+        EnsureChannels(this);
+        var notification = BuildProgress(this, intent?.GetStringExtra(ExtraText) ?? "Скачивание…");
+        StartForeground(ProgressId, notification, ForegroundService.TypeDataSync);
+
+        bool stopNow;
+        lock (Sync)
+        {
+            _running = this;
+            stopNow = _stopRequested;
+            _stopRequested = false;
+        }
+
+        if (stopNow)
+        {
+            Shutdown();
+            return StartCommandResult.NotSticky;
+        }
+
+        if (_wakeLock == null && GetSystemService(PowerService) is PowerManager power)
+        {
+            // Без wake lock при выключенном экране процессор засыпает и загрузка встаёт
+            _wakeLock = power.NewWakeLock(WakeLockFlags.Partial, "e2e:download");
+            _wakeLock!.SetReferenceCounted(false);
+            _wakeLock.Acquire((long)TimeSpan.FromHours(6).TotalMilliseconds);
+        }
+
+        return StartCommandResult.NotSticky;
+    }
+
+    /// <summary>Android 15+: лимит dataSync-сервиса (6 ч в сутки) исчерпан.</summary>
+    public override void OnTimeout(int startId, ForegroundService fgsType)
+    {
+        MainThread.BeginInvokeOnMainThread(() => MauiProgram.Services?.GetService<Services.DownloadManager>()?.Cancel());
+        Shutdown();
+    }
+
+    private void Shutdown()
+    {
+        lock (Sync)
+        {
+            if (_running == this)
+            {
+                _running = null;
+            }
+        }
+
+        StopForeground(StopForegroundFlags.Remove);
+        StopSelf();
+    }
+
+    public override void OnDestroy()
+    {
+        lock (Sync)
+        {
+            if (_running == this)
+            {
+                _running = null;
+            }
+        }
+
+        if (_wakeLock is { IsHeld: true })
+        {
+            _wakeLock.Release();
+        }
+
+        _wakeLock = null;
+        StopForeground(StopForegroundFlags.Remove);
+        base.OnDestroy();
+    }
+
+    public static void EnsureChannels(Context context)
+    {
+        if (context.GetSystemService(NotificationService) is not NotificationManager manager)
+        {
+            return;
+        }
+
+        manager.CreateNotificationChannel(new NotificationChannel(ProgressChannel, "Скачивание книг", NotificationImportance.Low)
+        {
+            Description = "Прогресс скачивания"
+        });
+        manager.CreateNotificationChannel(new NotificationChannel(FinishedChannel, "Готовые книги", NotificationImportance.Default)
+        {
+            Description = "Уведомление, когда книга скачана"
+        });
+    }
+
+    public static PendingIntent OpenAppIntent(Context context)
+    {
+        var intent = new Intent(context, typeof(MainActivity));
+        intent.SetFlags(ActivityFlags.SingleTop | ActivityFlags.ClearTop);
+        return PendingIntent.GetActivity(context, 0, intent, PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent)!;
+    }
+
+    private static Notification BuildProgress(Context context, string text)
+    {
+        var cancel = new Intent(context, typeof(DownloadService));
+        cancel.SetAction(ActionCancel);
+        var cancelIntent = PendingIntent.GetService(context, 1, cancel, PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);
+
+        var builder = new Notification.Builder(context, ProgressChannel)
+            .SetSmallIcon(Resource.Drawable.ic_stat_e2e)
+            .SetContentTitle("Скачиваю книгу")
+            .SetContentText(text)
+            .SetStyle(new Notification.BigTextStyle().BigText(text))
+            .SetProgress(0, 0, true)
+            .SetOngoing(true)
+            .SetOnlyAlertOnce(true)
+            .SetContentIntent(OpenAppIntent(context))
+            .AddAction(new Notification.Action.Builder((Android.Graphics.Drawables.Icon)null, "Отмена", cancelIntent).Build());
+
+        if (OperatingSystem.IsAndroidVersionAtLeast(31))
+        {
+            // Показать уведомление сразу, а не через 10 секунд после старта сервиса
+            builder.SetForegroundServiceBehavior((int)NotificationForegroundService.Immediate);
+        }
+
+        return builder.Build()!;
+    }
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  E2E для Android — ресурсы приложения MAUI (почти пусто: весь интерфейс — в Blazor)
+  [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
+-->
+<Application xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="E2E.Droid.App">
+    <Application.Resources>
+        <ResourceDictionary />
+    </Application.Resources>
+</Application>

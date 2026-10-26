@@ -1,0 +1,128 @@
+@* E2E для Android — каркас: верхняя панель, контент, нижние вкладки
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject IJSRuntime Js
+@inject IPlatformServices Platform
+@inject DownloadManager Downloads
+@inject NavigationManager Nav
+
+<div class="app-shell">
+    <header class="topbar">
+        <NavLink class="topbar-brand" href="" Match="NavLinkMatch.All">
+            <Icon Name="library" Size="26" Class="topbar-logo" />
+            <span>Elib2Ebook</span>
+        </NavLink>
+        <div class="topbar-actions">
+            @if (Downloads.IsRunning && !IsHome)
+            {
+                <NavLink class="topbar-progress" href="" Match="NavLinkMatch.All">
+                    <span class="google-spinner small"></span>
+                    @(Downloads.Total > 1 ? $"{Downloads.Current}/{Downloads.Total}" : "Качаю")
+                </NavLink>
+            }
+            <button type="button" class="theme-toggle" @onclick="CycleTheme" aria-label="Тема">
+                @if (_themeMode == "system")
+                {
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2a10 10 0 0 1 0 20z" fill-opacity="1"/>
+                        <path d="M12 2a10 10 0 0 0 0 20z" fill-opacity="0.18"/>
+                    </svg>
+                }
+                else
+                {
+                    <Icon Name="@(_themeMode == "dark" ? "sun" : "moon")" Size="22" />
+                }
+            </button>
+        </div>
+    </header>
+
+    <main class="app-content">
+        @Body
+    </main>
+
+    <nav class="bottom-nav">
+        <NavLink class="bottom-nav-link" href="" Match="NavLinkMatch.All">
+            <span class="bottom-nav-icon">
+                <Icon Name="download" Size="22" />
+                @if (Downloads.IsRunning)
+                {
+                    <span class="bottom-nav-dot"></span>
+                }
+            </span>
+            <span>Скачать</span>
+        </NavLink>
+        <NavLink class="bottom-nav-link" href="books">
+            <span class="bottom-nav-icon"><Icon Name="library" Size="22" /></span>
+            <span>Книги</span>
+        </NavLink>
+        <NavLink class="bottom-nav-link" href="sites">
+            <span class="bottom-nav-icon"><Icon Name="globe" Size="22" /></span>
+            <span>Сайты</span>
+        </NavLink>
+        <NavLink class="bottom-nav-link" href="settings">
+            <span class="bottom-nav-icon"><Icon Name="settings" Size="22" /></span>
+            <span>Настройки</span>
+        </NavLink>
+    </nav>
+
+    <Toasts />
+</div>
+
+@code {
+    private string _themeMode = "system";
+
+    private bool IsHome => Nav.ToBaseRelativePath(Nav.Uri).Split('?', '#')[0].Length == 0;
+
+    protected override void OnInitialized()
+    {
+        Downloads.Changed += OnChanged;
+        Nav.LocationChanged += OnLocationChanged;
+        SharedLinkInbox.Arrived += OnSharedLink;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _themeMode = await Js.InvokeAsync<string>("e2e.getThemeMode");
+            var effective = await Js.InvokeAsync<string>("e2e.effectiveTheme");
+            Platform.ApplyTheme(effective == "dark");
+            StateHasChanged();
+        }
+    }
+
+    private async Task CycleTheme()
+    {
+        // светлая → тёмная → как в системе → светлая
+        _themeMode = _themeMode switch
+        {
+            "light" => "dark",
+            "dark" => "system",
+            _ => "light"
+        };
+
+        var effective = await Js.InvokeAsync<string>("e2e.setThemeMode", _themeMode);
+        Platform.ApplyTheme(effective == "dark");
+    }
+
+    // Ссылка пришла через «Поделиться», а открыта другая вкладка — переходим на главную, она заберёт ссылку
+    private void OnSharedLink() => InvokeAsync(() =>
+    {
+        if (!IsHome)
+        {
+            Nav.NavigateTo("");
+        }
+    });
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnLocationChanged(object sender, LocationChangedEventArgs e) => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Downloads.Changed -= OnChanged;
+        Nav.LocationChanged -= OnLocationChanged;
+        SharedLinkInbox.Arrived -= OnSharedLink;
+    }
+}

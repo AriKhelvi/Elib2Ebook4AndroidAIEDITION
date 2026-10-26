@@ -1,0 +1,10 @@
+<!--
+  [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic). Стабильность не гарантируется.
+
+  Этот файл нужен только для того, чтобы проекты из android/ НЕ подхватывали ../Directory.Build.props ядра:
+  MSBuild берёт ближайший Directory.Build.props вверх по дереву папок и дальше не ищет.
+  Ядро задаёт там TargetFramework=net10.0 для всех проектов, а Android-приложению нужен net10.0-android,
+  поэтому каждый проект в android/ сам задаёт свои свойства в .csproj.
+-->
+<Project>
+</Project>

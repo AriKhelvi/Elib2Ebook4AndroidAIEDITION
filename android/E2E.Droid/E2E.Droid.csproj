@@ -1,0 +1,164 @@
+<!--
+  ============================================================================
+  E2E для Android — проект приложения (.NET MAUI Blazor Hybrid, .NET 10)
+  ============================================================================
+  [AI-EDITION] Этот проект целиком сгенерирован ИИ (Claude, Anthropic) по запросу и под присмотром человека.
+  Он собирается и проверялся выборочно, но СТАБИЛЬНОСТЬ НЕ ГАРАНТИРУЕТСЯ. Используйте на свой риск,
+  о проблемах пишите в Issues форка.
+
+  Как это устроено:
+  - интерфейс — Razor-компоненты в BlazorWebView (по мотивам веб-версии Elib2EbookWeb);
+  - вся работа с сайтами и форматами — это ядро Elib2Ebook из ../../src, подключённое как ProjectReference
+    без изменений в логике (то же самое, что делает консольная утилита);
+  - Android-специфика (сохранение файлов, фоновый сервис, «Поделиться») — в Platforms/Android.
+  ============================================================================
+-->
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+    <PropertyGroup>
+        <!-- Только Android: iOS/Windows/macOS в этом проекте не нужны и не собираются -->
+        <TargetFramework>net10.0-android</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <RootNamespace>E2E.Droid</RootNamespace>
+        <UseMaui>true</UseMaui>
+        <SingleProject>true</SingleProject>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <!-- Ядро написано без nullable-аннотаций — держим тот же режим, чтобы не утонуть в предупреждениях -->
+        <Nullable>disable</Nullable>
+        <!-- CSS обрабатывает Blazor (wwwroot), а не MAUI -->
+        <EnableDefaultCssItems>false</EnableDefaultCssItems>
+        <!-- XAML компилируется генератором исходников — быстрее запуск -->
+        <MauiXamlInflator>SourceGen</MauiXamlInflator>
+
+        <ApplicationTitle>E2E</ApplicationTitle>
+        <!-- Идентификатор пакета. Если поменять — Android будет считать это другим приложением -->
+        <ApplicationId>e2e.droid</ApplicationId>
+        <!-- build.ps1 подставляет версию Elib2Ebook (versionName) и растущий versionCode;
+             без растущего versionCode Android откажется ставить обновление поверх -->
+        <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+        <ApplicationVersion>1</ApplicationVersion>
+
+        <!-- Android 10+: можно писать в «Загрузки» через MediaStore без разрешений на хранилище -->
+        <SupportedOSPlatformVersion>29.0</SupportedOSPlatformVersion>
+
+        <!-- Архитектуры. Pixel 9a и почти все современные телефоны — arm64.
+             Для эмулятора: -p:E2EAbi="android-arm64;android-x64".
+             ВАЖНО: не передавайте -p:RuntimeIdentifiers в командной строке — глобальное свойство уходит во все
+             60+ библиотек ядра, и их сборка ломается. Поэтому архитектуры передаются через своё свойство E2EAbi. -->
+        <E2EAbi Condition="'$(E2EAbi)' == ''">android-arm64</E2EAbi>
+        <RuntimeIdentifiers>$(E2EAbi)</RuntimeIdentifiers>
+
+        <!-- Ядро использует HTTP/2 и свои настройки HttpClientHandler (cookies, прокси, распаковка).
+             Нативный AndroidMessageHandler HTTP/2 не умеет, поэтому включаем управляемый SocketsHttpHandler —
+             тот же, что работает в консольной версии на ПК. -->
+        <UseNativeHttpHandler>false</UseNativeHttpHandler>
+        <!-- Загрузчики сайтов разбирают JSON через рефлексию (без source generators) -->
+        <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+        <!-- Тримминг (уменьшение размера) — только для сборок, помеченных как trimmable (фреймворк, MAUI).
+             Код ядра не триммится: он рассчитан на рефлексию. -->
+        <TrimMode>partial</TrimMode>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+        <!-- APK для установки вручную (по умолчанию Release собирает AAB для Google Play) -->
+        <AndroidPackageFormats>apk</AndroidPackageFormats>
+        <AndroidCreatePackagePerAbi>false</AndroidCreatePackagePerAbi>
+        <DebugType>none</DebugType>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <!-- Корень репозитория (форк Elib2Ebook): там лежат src/, README.md и Directory.Build.props ядра -->
+        <E2ECoreDir>$(MSBuildThisFileDirectory)..\..\</E2ECoreDir>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- Иконка и заставка генерируются из SVG при сборке (MAUI Resizetizer) -->
+        <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#0071E3" />
+        <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#0071E3" BaseSize="128,128" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <!-- Версии берутся из установленного workload'а MAUI (см. ../Directory.Packages.props, почему не централизованно) -->
+        <PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
+        <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="$(MauiVersion)" />
+    </ItemGroup>
+
+    <!-- Ядро Elib2Ebook и ВСЕ проекты сайтов. Маска ** означает: новый сайт, добавленный в ядро,
+         автоматически попадёт в приложение при следующей сборке. -->
+    <ItemGroup>
+        <ProjectReference Include="$(E2ECoreDir)src\Elib2Ebook.DomainServices\Elib2Ebook.DomainServices.csproj" />
+        <ProjectReference Include="$(E2ECoreDir)src\ExternalServices\**\*.csproj" />
+    </ItemGroup>
+
+    <!-- README ядра вшивается в приложение: из раздела «Поддерживаемые сайты» строится вкладка «Сайты» -->
+    <ItemGroup>
+        <EmbeddedResource Include="$(E2ECoreDir)README.md" LogicalName="Elib2Ebook.README.md" Visible="false" />
+    </ItemGroup>
+
+    <!-- Загрузчики сайтов находятся рефлексией, прямых ссылок на них в коде нет — без этих строк тримминг
+         выкинул бы их из APK. Корним сборки ядра и его сторонние библиотеки целиком.
+         Имена — это имена DLL, а не NuGet-пакетов (например, пакет OAuth.DotNetCore даёт OAuth.dll). -->
+    <ItemGroup>
+        <TrimmerRootAssembly Include="Elib2Ebook.Domain" />
+        <TrimmerRootAssembly Include="Elib2Ebook.DomainServices" />
+        <TrimmerRootAssembly Include="EpubSharp" />
+        <TrimmerRootAssembly Include="AngleSharp" />
+        <TrimmerRootAssembly Include="HtmlAgilityPack" />
+        <TrimmerRootAssembly Include="HtmlAgilityPack.CssSelectors.NetCore" />
+        <TrimmerRootAssembly Include="FlareSolverrSharp" />
+        <TrimmerRootAssembly Include="StringTokenFormatter" />
+        <TrimmerRootAssembly Include="OAuth" />
+    </ItemGroup>
+
+    <!--
+      Генерация списка сборок сайтов (obj/.../E2EExternalServices.g.cs).
+      Штатный GetterFactory ядра ищет их через deps.json или по файлам *.dll рядом с exe — на Android
+      ни того ни другого нет (сборки упакованы внутрь APK). Поэтому список имён берётся из ProjectReference
+      прямо во время сборки, а GetterResolver грузит сборки по этим именам. Каждая из них заодно
+      добавляется в TrimmerRootAssembly.
+    -->
+    <Target Name="E2EGenerateExternalServicesList" BeforeTargets="CoreCompile;PrepareForBuild">
+        <PropertyGroup>
+            <_E2EServicesFile>$(IntermediateOutputPath)E2EExternalServices.g.cs</_E2EServicesFile>
+        </PropertyGroup>
+        <ItemGroup>
+            <_E2EServiceProject Include="@(ProjectReference)" Condition="$([System.String]::Copy('%(Filename)').StartsWith('Elib2Ebook.ExternalServices.'))" />
+            <!-- %3B — это «;», в MSBuild его нужно экранировать -->
+            <_E2ELine Include="// &lt;auto-generated/&gt; из ProjectReference в E2E.Droid.csproj" />
+            <_E2ELine Include="namespace E2E.Droid.Services%3B" />
+            <_E2ELine Include="internal static class ExternalServicesList" />
+            <_E2ELine Include="{" />
+            <_E2ELine Include="    public static readonly string[] AssemblyNames =" />
+            <_E2ELine Include="    [" />
+            <_E2ELine Include="@(_E2EServiceProject->'        &quot;%(Filename)&quot;,')" />
+            <_E2ELine Include="    ]%3B" />
+            <_E2ELine Include="}" />
+            <TrimmerRootAssembly Include="@(_E2EServiceProject->'%(Filename)')" />
+        </ItemGroup>
+        <MakeDir Directories="$(IntermediateOutputPath)" />
+        <WriteLinesToFile File="$(_E2EServicesFile)" Lines="@(_E2ELine)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+        <ItemGroup>
+            <Compile Remove="$(_E2EServicesFile)" />
+            <Compile Include="$(_E2EServicesFile)" />
+            <FileWrites Include="$(_E2EServicesFile)" />
+        </ItemGroup>
+    </Target>
+
+    <!-- Версия ядра (из ../../Directory.Build.props) и коммит (передаёт build.ps1) — для экрана «О приложении» -->
+    <Target Name="E2ECoreVersion" BeforeTargets="GetAssemblyAttributes">
+        <XmlPeek XmlInputPath="$(E2ECoreDir)Directory.Build.props" Query="/Project/PropertyGroup/Version/text()">
+            <Output TaskParameter="Result" PropertyName="E2ECoreVersionValue" />
+        </XmlPeek>
+        <ItemGroup>
+            <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+                <_Parameter1>Elib2EbookVersion</_Parameter1>
+                <_Parameter2>$(E2ECoreVersionValue)</_Parameter2>
+            </AssemblyAttribute>
+            <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+                <_Parameter1>Elib2EbookCommit</_Parameter1>
+                <_Parameter2>$(E2ECommit)</_Parameter2>
+            </AssemblyAttribute>
+        </ItemGroup>
+    </Target>
+
+</Project>

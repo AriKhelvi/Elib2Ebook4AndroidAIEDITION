@@ -1,0 +1,13 @@
+<!--
+  [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic). Стабильность не гарантируется.
+
+  Ядро использует централизованное управление версиями NuGet (../Directory.Packages.props): там запрещено
+  указывать Version у PackageReference. MAUI-пакеты же берут версию из $(MauiVersion) workload'а.
+  Поэтому для проектов в android/ центральное управление выключено — этот файл «перекрывает» корневой
+  (NuGet тоже берёт ближайший Directory.Packages.props). На сами проекты ядра это не влияет.
+-->
+<Project>
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+    </PropertyGroup>
+</Project>

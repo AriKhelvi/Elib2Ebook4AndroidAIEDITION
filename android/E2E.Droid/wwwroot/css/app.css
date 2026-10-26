@@ -1,0 +1,801 @@
+/* E2E для Android — мобильные стили поверх дизайн-системы веб-версии
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. */
+/* ==========================================================================
+   E2E для Android — мобильная оболочка поверх дизайн-системы веб-версии (e2e-web.css)
+   ========================================================================== */
+
+:root {
+    --topbar-h: 56px;
+    --bottom-nav-h: 68px;
+}
+
+html, body {
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+}
+
+body {
+    font-size: 16px;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+input, textarea, pre, .book-card-annotation, .error-text {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+/* На тач-экране :hover «залипает» после нажатия — гасим подъёмы и подсветки */
+@media (hover: none) {
+    .format-card:hover, .google-input:hover, .auth-input-wrapper:hover, .site-card:hover, .book-card:hover {
+        transform: none;
+        box-shadow: inherit;
+    }
+}
+
+.boot-screen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+}
+
+/* ---------- Каркас ---------- */
+.app-shell {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    height: var(--topbar-h);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 8px 0 16px;
+    background: var(--header-bg);
+    -webkit-backdrop-filter: var(--header-blur);
+    backdrop-filter: var(--header-blur);
+    border-bottom: 1px solid var(--border);
+}
+
+.topbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.022em;
+    color: var(--text);
+    text-decoration: none !important;
+}
+
+.topbar-logo {
+    color: var(--accent);
+}
+
+.topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.topbar-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 100px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none !important;
+}
+
+.google-spinner.small {
+    width: 14px;
+    height: 14px;
+}
+
+.app-content {
+    flex: 1;
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 16px 12px calc(var(--bottom-nav-h) + 24px);
+}
+
+body.kb-open .app-content {
+    padding-bottom: 24px;
+}
+
+/* ---------- Нижняя панель вкладок ---------- */
+.bottom-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    display: flex;
+    height: var(--bottom-nav-h);
+    background: var(--header-bg);
+    -webkit-backdrop-filter: var(--header-blur);
+    backdrop-filter: var(--header-blur);
+    border-top: 1px solid var(--border);
+}
+
+body.kb-open .bottom-nav {
+    display: none;
+}
+
+.bottom-nav-link {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-2);
+    text-decoration: none !important;
+}
+
+.bottom-nav-icon {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 30px;
+    border-radius: 100px;
+    transition: background 0.2s ease;
+}
+
+.bottom-nav-link.active {
+    color: var(--text);
+}
+
+.bottom-nav-link.active .bottom-nav-icon {
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.bottom-nav-dot {
+    position: absolute;
+    top: 3px;
+    right: 14px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--surface);
+    animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    50% { opacity: 0.35; }
+}
+
+/* ---------- Страницы и карточки ---------- */
+.page {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.page-header {
+    padding: 4px 4px 0;
+}
+
+.page-title {
+    margin: 0 0 6px;
+    font-size: 28px;
+    line-height: 1.15;
+}
+
+.page-subtitle {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.45;
+}
+
+.section-title {
+    margin: 8px 4px -8px;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-2);
+}
+
+.card {
+    background: var(--surface);
+    border-radius: var(--radius-l);
+    box-shadow: var(--elevation-1);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.card-title {
+    flex: 1;
+    font-size: 17px;
+    font-weight: 600;
+}
+
+.card-subtitle {
+    margin: -6px 0 0;
+    font-size: 14px;
+}
+
+.book-form .form-section {
+    padding: 18px 16px;
+}
+
+.field-hint {
+    margin: 8px 2px 0;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text-3);
+}
+
+.field-hint.center {
+    text-align: center;
+}
+
+/* ---------- Поле ссылки ---------- */
+.url-field {
+    position: relative;
+}
+
+.url-input {
+    display: block;
+    resize: none;
+    min-height: 0;
+    padding-right: 112px;
+    font-size: 16px;
+    line-height: 1.4;
+    word-break: break-all;
+}
+
+.url-paste, .url-clear {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: none;
+    border-radius: 100px;
+    font-family: var(--font-system);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.url-paste {
+    padding: 7px 12px;
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.url-clear {
+    width: 32px;
+    height: 32px;
+    justify-content: center;
+    background: var(--fill);
+    color: var(--text-2);
+}
+
+/* В веб-версии на узком экране переключатель вертикальный — на телефоне оставляем строкой */
+.radio-group.radio-group-row {
+    flex-direction: row;
+}
+
+.range-fields.range-fields-row {
+    flex-direction: row;
+}
+
+.range-fields-row .google-input {
+    min-width: 0;
+}
+
+/* ---------- Переключатель (switch) ---------- */
+.switch-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 4px 0;
+    font-size: 15px;
+    color: var(--text);
+    cursor: pointer;
+}
+
+input.switch {
+    -webkit-appearance: none;
+    appearance: none;
+    flex-shrink: 0;
+    position: relative;
+    width: 51px;
+    height: 31px;
+    margin: 0;
+    border-radius: 100px;
+    background: var(--fill-active);
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+input.switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 27px;
+    height: 27px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    transition: transform 0.25s var(--motion-snappy);
+}
+
+input.switch:checked {
+    background: var(--success);
+}
+
+input.switch:checked::after {
+    transform: translateX(20px);
+}
+
+/* ---------- Кнопки ---------- */
+.google-button {
+    gap: 8px;
+}
+
+.google-button-secondary {
+    background: var(--fill);
+    color: var(--accent);
+}
+
+.google-button-secondary:active {
+    background: var(--fill-active);
+    transform: scale(0.98);
+}
+
+.button-icon {
+    margin-right: 0;
+}
+
+.icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.icon-btn:active {
+    background: var(--fill-active);
+    transform: scale(0.92);
+}
+
+.link-button {
+    align-self: center;
+    border: none;
+    background: none;
+    color: var(--text-3);
+    font-family: var(--font-system);
+    font-size: 14px;
+    padding: 8px;
+}
+
+/* ---------- Прогресс ---------- */
+.progress-box {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.progress-status {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    min-height: 44px;
+    padding: 12px 14px;
+    border-radius: var(--radius-s);
+    background: var(--accent-soft);
+}
+
+.progress-status .google-spinner {
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.progress-text {
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--text);
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* ---------- Карточка книги на телефоне: обложка слева ---------- */
+.book-card {
+    flex-direction: row;
+    gap: 14px;
+    padding: 16px;
+}
+
+.book-card-cover {
+    width: 88px;
+    min-width: 88px;
+    height: 132px;
+}
+
+.book-card-cover-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: var(--text-3);
+}
+
+.book-card-title {
+    font-size: 1.1rem;
+}
+
+.book-card-meta {
+    font-size: 14px;
+}
+
+.book-card-annotation {
+    font-size: 14px;
+    max-height: 132px;
+}
+
+/* ---------- Результат, ошибки, журнал ---------- */
+.result-icon {
+    color: var(--success);
+}
+
+.error-icon {
+    color: var(--danger);
+}
+
+.error-text {
+    margin: 0;
+    font-size: 14px;
+    color: var(--text);
+    word-break: break-word;
+}
+
+.log-card {
+    gap: 12px;
+}
+
+.log-view {
+    margin: 0;
+    max-height: 50vh;
+    overflow: auto;
+    padding: 12px;
+    border-radius: var(--radius-s);
+    background: var(--fill);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ---------- Файлы ---------- */
+.file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.card.file-list {
+    padding: 4px 8px;
+}
+
+.file-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 4px;
+}
+
+.file-row + .file-row {
+    border-top: 1px solid var(--border);
+}
+
+.file-icon {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    width: 44px;
+    height: 48px;
+    flex-shrink: 0;
+    border-radius: var(--radius-s);
+    background: var(--accent-soft);
+    color: var(--accent);
+}
+
+.file-icon span {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.file-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.file-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+}
+
+.file-meta {
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-actions {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.file-row-missing .file-icon {
+    background: var(--fill);
+    color: var(--text-3);
+}
+
+.file-row-missing .file-title {
+    color: var(--text-3);
+}
+
+.file-missing {
+    color: var(--danger);
+}
+
+.confirm-inline {
+    display: flex;
+    gap: 6px;
+}
+
+/* ---------- Чипы ---------- */
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.chip {
+    padding: 7px 12px;
+    border: 1px solid transparent;
+    border-radius: 100px;
+    background: var(--fill);
+    color: var(--text);
+    font-family: var(--font-system);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.chip-selected {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.chip-danger {
+    background: var(--danger);
+    color: #fff;
+}
+
+/* ---------- Пустые состояния ---------- */
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    padding: 48px 16px;
+    text-align: center;
+    color: var(--text-3);
+}
+
+.empty-state p {
+    margin: 0;
+    font-size: 16px;
+}
+
+/* ---------- Сайты ---------- */
+.site-card {
+    text-decoration: none !important;
+    color: inherit;
+}
+
+.supported-input {
+    font-size: 16px;
+}
+
+.site-card-missing {
+    opacity: 0.55;
+}
+
+/* ---------- Настройки ---------- */
+.settings-card {
+    gap: 14px;
+}
+
+.setting {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.setting-column {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.setting-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.setting-label {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.setting-hint {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.4;
+    color: var(--text-2);
+    word-break: break-word;
+}
+
+.setting-hint code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+}
+
+.setting-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.setting-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.setting-grid .setting-label {
+    font-size: 13px;
+    min-height: 2.6em;
+    display: flex;
+    align-items: flex-end;
+}
+
+.about p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text);
+}
+
+.about a {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* ---------- Тосты ---------- */
+.toasts {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(var(--bottom-nav-h) + 12px);
+    z-index: 300;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+body.kb-open .toasts {
+    bottom: 12px;
+}
+
+.toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: var(--radius-m);
+    background: var(--text);
+    color: var(--bg);
+    font-size: 14px;
+    line-height: 1.4;
+    box-shadow: var(--elevation-3);
+    pointer-events: auto;
+    animation: menu-in 0.28s var(--motion-snappy) both;
+}
+
+.toast .icon {
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.toast-success .icon {
+    color: var(--success);
+}
+
+.toast-error {
+    background: var(--danger);
+    color: #fff;
+}
+
+#blazor-error-ui {
+    bottom: var(--bottom-nav-h);
+}
+
+/* Пометка «AI Edition» в «О приложении» */
+.about .ai-note {
+    padding: 10px 12px;
+    border-radius: var(--radius-s);
+    background: rgba(255, 159, 10, 0.14);
+    color: var(--text);
+    font-size: 13px;
+}

@@ -1,0 +1,227 @@
+@* E2E для Android — вкладка «Настройки»
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
+@page "/settings"
+@using System.Reflection
+@inject AppSettings Settings
+@inject IBookStorage Storage
+@inject CredentialStore Credentials
+@inject IPlatformServices Platform
+@inject ToastService Toasts
+
+<div class="page">
+    <div class="page-header">
+        <h1 class="page-title">Настройки</h1>
+    </div>
+
+    <h2 class="section-title">Сохранение</h2>
+    <div class="card settings-card">
+        <div class="setting">
+            <div class="setting-text">
+                <div class="setting-label">Папка</div>
+                <div class="setting-hint">@Storage.DestinationLabel</div>
+            </div>
+        </div>
+        <div class="setting-buttons">
+            <button type="button" class="google-button google-button-secondary" @onclick="PickFolder"><Icon Name="folder" Size="18" />Выбрать папку</button>
+            @if (!string.IsNullOrEmpty(Settings.SaveFolderUri))
+            {
+                <button type="button" class="google-button google-button-secondary" @onclick="ResetFolder">В «Загрузки»</button>
+            }
+        </div>
+        <p class="setting-hint">Удобно выбрать папку, которую синхронизирует с читалкой Syncthing, Dropbox или облако читалки — книги будут прилетать на неё сами.</p>
+
+        <div class="setting setting-column">
+            <label class="setting-label" for="pattern">Шаблон имени файла</label>
+            <input id="pattern" class="google-input" @bind="_pattern" @bind:after="SavePattern" autocapitalize="off" spellcheck="false" />
+            <div class="chips">
+                @foreach (var token in PatternTokens)
+                {
+                    <button type="button" class="chip" @onclick="() => AddToken(token)">@token</button>
+                }
+            </div>
+            <p class="setting-hint">По умолчанию: <code>@AppSettings.DefaultBookNamePattern</code></p>
+        </div>
+
+        <label class="switch-row">
+            <span class="setting-text">
+                <span class="setting-label">Обложка отдельным файлом</span>
+            </span>
+            <input type="checkbox" class="switch" checked="@Settings.Cover" @onchange="e => Settings.Cover = (bool)e.Value!" />
+        </label>
+
+        <label class="switch-row">
+            <span class="setting-text">
+                <span class="setting-label">Дополнительные файлы</span>
+                <span class="setting-hint">Вложения со страницы книги: аудио, файлы, картинки глав</span>
+            </span>
+            <input type="checkbox" class="switch" checked="@Settings.Additional" @onchange="e => Settings.Additional = (bool)e.Value!" />
+        </label>
+        @if (Settings.Additional)
+        {
+            <div class="chips">
+                @foreach (var (id, title) in AdditionalTypes)
+                {
+                    <button type="button" class="chip @(IsAdditionalSelected(id) ? "chip-selected" : "")" @onclick="() => ToggleAdditional(id)">@title</button>
+                }
+            </div>
+            <p class="setting-hint">Ничего не выбрано — все типы.</p>
+        }
+    </div>
+
+    <h2 class="section-title">Поведение</h2>
+    <div class="card settings-card">
+        <label class="switch-row">
+            <span class="setting-text">
+                <span class="setting-label">Скачивать сразу после «Поделиться»</span>
+                <span class="setting-hint">Ссылка из браузера сразу уходит в загрузку в выбранных форматах</span>
+            </span>
+            <input type="checkbox" class="switch" checked="@Settings.AutoStartOnShare" @onchange="e => Settings.AutoStartOnShare = (bool)e.Value!" />
+        </label>
+    </div>
+
+    <h2 class="section-title">Сеть</h2>
+    <div class="card settings-card">
+        <div class="setting-grid">
+            <div class="setting setting-column">
+                <label class="setting-label" for="timeout">Таймаут, сек</label>
+                <input id="timeout" class="google-input" type="number" inputmode="numeric" min="5" @bind="_timeout" @bind:after="SaveNumbers" />
+            </div>
+            <div class="setting setting-column">
+                <label class="setting-label" for="delay">Пауза между запросами, сек</label>
+                <input id="delay" class="google-input" type="number" inputmode="numeric" min="0" @bind="_delay" @bind:after="SaveNumbers" />
+            </div>
+        </div>
+        <div class="setting setting-column">
+            <label class="setting-label" for="proxy">Прокси</label>
+            <input id="proxy" class="google-input" placeholder="socks5://127.0.0.1:1080" autocapitalize="off" spellcheck="false" inputmode="url"
+                   @bind="_proxy" @bind:after="() => Settings.Proxy = _proxy" />
+            <p class="setting-hint">http, socks4 или socks5. Пусто — без прокси.</p>
+        </div>
+    </div>
+
+    <h2 class="section-title">Сохранённые логины</h2>
+    <div class="card settings-card">
+        @if (_hosts.Count == 0)
+        {
+            <p class="setting-hint">Нет. Логин сохраняется при скачивании, если включено «Запомнить» в разделе «Авторизация».</p>
+        }
+        else
+        {
+            @foreach (var host in _hosts)
+            {
+                <div class="setting">
+                    <div class="setting-text"><div class="setting-label">@host</div></div>
+                    <button type="button" class="icon-btn" @onclick="() => RemoveHost(host)" aria-label="Забыть"><Icon Name="delete" /></button>
+                </div>
+            }
+        }
+    </div>
+
+    <h2 class="section-title">О приложении</h2>
+    <div class="card settings-card about">
+        <p><b>E2E для Android</b> @Platform.AppVersion</p>
+        <p>Ядро <b>Elib2Ebook @_coreVersion</b>@(string.IsNullOrEmpty(_coreCommit) ? "" : $" (коммит {_coreCommit})") — сайты и форматы ровно как в консольной и веб-версии.</p>
+        <p class="ai-note">
+            ⚠ Неофициальная сборка <b>AI Edition</b>: Android-приложение сгенерировано ИИ (Claude, Anthropic)
+            под присмотром человека. Стабильность не гарантируется.
+        </p>
+        <p>
+            <a href="https://github.com/AriKhelvi/Elib2Ebook4AndroidAIEDITION" target="_blank" rel="noopener"><Icon Name="github" Size="16" /> Этот форк</a> (ошибки — в Issues) ·
+            <a href="https://github.com/OnlyFart/Elib2Ebook" target="_blank" rel="noopener">оригинальный Elib2Ebook</a>,
+            лицензия GPL-3.0.
+        </p>
+    </div>
+</div>
+
+@code {
+    private static readonly string[] PatternTokens = ["{Author.Name}", "{Book.Title}", "{Seria.Name}", "{Seria.Number}"];
+
+    private static readonly (string Id, string Title)[] AdditionalTypes =
+    [
+        ("books", "Книги"),
+        ("audio", "Аудио"),
+        ("images", "Картинки")
+    ];
+
+    private string _pattern;
+    private int _timeout;
+    private int _delay;
+    private string _proxy;
+    private IReadOnlyList<string> _hosts = [];
+    private string _coreVersion;
+    private string _coreCommit;
+
+    protected override void OnInitialized()
+    {
+        _pattern = Settings.BookNamePattern;
+        _timeout = Settings.Timeout;
+        _delay = Settings.Delay;
+        _proxy = Settings.Proxy;
+        _hosts = Credentials.Hosts;
+
+        var metadata = typeof(MauiProgram).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>().ToList();
+        _coreVersion = metadata.FirstOrDefault(m => m.Key == "Elib2EbookVersion")?.Value;
+        _coreCommit = metadata.FirstOrDefault(m => m.Key == "Elib2EbookCommit")?.Value;
+    }
+
+    private async Task PickFolder()
+    {
+        try
+        {
+            if (await Storage.PickFolderAsync())
+            {
+                Toasts.Show($"Книги будут сохраняться в «{Storage.DestinationLabel}»", ToastKind.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show($"Не удалось выбрать папку: {ex.Message}", ToastKind.Error);
+        }
+    }
+
+    private void ResetFolder()
+    {
+        Storage.ResetFolder();
+        Toasts.Show($"Книги будут сохраняться в «{Storage.DestinationLabel}»", ToastKind.Info);
+    }
+
+    private void SavePattern()
+    {
+        Settings.BookNamePattern = _pattern;
+        _pattern = Settings.BookNamePattern;
+    }
+
+    private void AddToken(string token)
+    {
+        _pattern = string.IsNullOrWhiteSpace(_pattern) ? token : $"{_pattern} {token}";
+        SavePattern();
+    }
+
+    private void SaveNumbers()
+    {
+        Settings.Timeout = _timeout;
+        Settings.Delay = _delay;
+        _timeout = Settings.Timeout;
+        _delay = Settings.Delay;
+    }
+
+    private bool IsAdditionalSelected(string id) => Settings.AdditionalTypes.Contains(id, StringComparer.OrdinalIgnoreCase);
+
+    private void ToggleAdditional(string id)
+    {
+        var types = Settings.AdditionalTypes.ToList();
+        if (types.RemoveAll(t => t.Equals(id, StringComparison.OrdinalIgnoreCase)) == 0)
+        {
+            types.Add(id);
+        }
+
+        Settings.AdditionalTypes = types;
+    }
+
+    private void RemoveHost(string host)
+    {
+        Credentials.Remove(host);
+        _hosts = Credentials.Hosts;
+        Toasts.Show($"Логин для {host} удалён", ToastKind.Info, 3);
+    }
+}

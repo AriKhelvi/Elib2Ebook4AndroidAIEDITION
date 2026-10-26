@@ -1,5 +1,15 @@
 # 📚 Elib2Ebook
 
+> [!WARNING]
+> **AI EDITION — неофициальный форк.** Это форк [OnlyFart/Elib2Ebook](https://github.com/OnlyFart/Elib2Ebook) с двумя добавками:
+>
+> - **📱 Android-приложение** в папке [`android/`](android/README.md) — скачивание книг прямо на телефоне, на том же ядре;
+> - **исправление Ficbook** — загрузчик переведён с умершего зеркала `fanficlets.xyz` на `ficbook.net`.
+>
+> Обе добавки **сгенерированы ИИ (Claude, Anthropic)** по запросу и под присмотром человека. Код собирается и выборочно проверен, но **стабильность не гарантируется** — используйте на свой риск. Вопросы и ошибки Android-версии — в Issues этого форка, а не в оригинальном репозитории.
+>
+> Ниже — оригинальный README ядра Elib2Ebook без изменений.
+
 [![License](https://img.shields.io/github/license/OnlyFart/Elib2Ebook.svg?style=flat-square)](LICENSE)
 [![.NET Build, Test & Publish](https://github.com/OnlyFart/Elib2Ebook/actions/workflows/dotnet.yml/badge.svg?style=flat-square)](https://github.com/OnlyFart/Elib2Ebook/actions/workflows/dotnet.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/OnlyFart/Elib2Ebook?style=flat-square)](https://github.com/OnlyFart/Elib2Ebook/releases/latest)

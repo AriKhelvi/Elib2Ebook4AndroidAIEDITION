@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  E2E для Android — цвета темы Android (фирменный синий)
+  [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
+-->
+<resources>
+    <color name="colorPrimary">#0071E3</color>
+    <color name="colorPrimaryDark">#005BB8</color>
+    <color name="colorAccent">#0071E3</color>
+</resources>

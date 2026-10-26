@@ -1,0 +1,58 @@
+@* E2E для Android — карточка книги: обложка, автор, серия, аннотация
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
+@* Карточка книги, как ShortBook.razor в веб-версии *@
+<div class="book-card">
+    <div class="book-card-cover">
+        @if (!string.IsNullOrEmpty(Book.CoverDataUrl))
+        {
+            <img src="@Book.CoverDataUrl" alt="Обложка" />
+        }
+        else
+        {
+            <div class="book-card-cover-empty"><Icon Name="epub" Size="40" /></div>
+        }
+    </div>
+    <div class="book-card-info">
+        <a class="book-card-title" href="@Book.Url" target="_blank" rel="noopener">@(Book.Title ?? "Без названия")</a>
+
+        @if (!string.IsNullOrWhiteSpace(Book.Author))
+        {
+            <div class="book-card-meta">
+                <span>Автор: </span>
+                @if (string.IsNullOrEmpty(Book.AuthorUrl))
+                {
+                    <span>@Book.Author</span>
+                }
+                else
+                {
+                    <a href="@Book.AuthorUrl" target="_blank" rel="noopener">@Book.Author</a>
+                }
+            </div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(Book.Seria))
+        {
+            <div class="book-card-meta">
+                <span>Серия: </span>
+                @if (string.IsNullOrEmpty(Book.SeriaUrl))
+                {
+                    <span>@Book.Seria</span>
+                }
+                else
+                {
+                    <a href="@Book.SeriaUrl" target="_blank" rel="noopener">@Book.Seria</a>
+                }
+            </div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(Book.Annotation))
+        {
+            <div class="book-card-annotation">@((MarkupString)Book.Annotation)</div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public BookPreview Book { get; set; }
+}

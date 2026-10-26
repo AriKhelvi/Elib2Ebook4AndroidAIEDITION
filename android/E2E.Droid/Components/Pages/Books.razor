@@ -1,0 +1,107 @@
+@* E2E для Android — вкладка «Книги»: история скачанных файлов
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
+@page "/books"
+@implements IDisposable
+@inject HistoryStore History
+@inject IBookStorage Storage
+@inject ToastService Toasts
+
+<div class="page">
+    <div class="page-header">
+        <h1 class="page-title">Книги</h1>
+        <p class="page-subtitle">Сохраняются в «@Storage.DestinationLabel». Отправить на читалку — кнопка <Icon Name="share" Size="14" /> (Telegram, почта, Send to Kindle, облако читалки).</p>
+    </div>
+
+    @if (_items == null)
+    {
+        <div class="empty-state"><div class="google-spinner"></div></div>
+    }
+    else if (_items.Count == 0)
+    {
+        <div class="empty-state">
+            <Icon Name="library" Size="48" />
+            <p>Здесь появятся скачанные книги</p>
+            <a class="google-button google-button-primary" href="">Скачать книгу</a>
+        </div>
+    }
+    else
+    {
+        <div class="card file-list">
+            @foreach (var file in _items)
+            {
+                var missing = _missing.Contains(file.Id);
+                <FileRow File="file" Missing="missing" ShowBookTitle="true" ShowDate="true" @key="file.Id">
+                    @if (_confirmId == file.Id)
+                    {
+                        <div class="confirm-inline">
+                            <button type="button" class="chip chip-danger" @onclick="() => Delete(file)">Удалить</button>
+                            <button type="button" class="chip" @onclick="() => _confirmId = null">Нет</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <button type="button" class="icon-btn" @onclick="() => AskDelete(file, missing)" aria-label="Удалить"><Icon Name="delete" /></button>
+                    }
+                </FileRow>
+            }
+        </div>
+        <button type="button" class="link-button" @onclick="ClearList">Очистить список (файлы останутся)</button>
+    }
+</div>
+
+@code {
+    private List<SavedFile> _items;
+    private HashSet<string> _missing = [];
+    private string _confirmId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        History.Changed += OnChanged;
+        await Reload();
+    }
+
+    private async Task Reload()
+    {
+        var items = History.Items.ToList();
+        // Проверка, что файл ещё на месте: пользователь мог удалить его в «Файлах»
+        var missing = await Task.Run(() => items.Where(f => !Storage.Exists(f)).Select(f => f.Id).ToHashSet());
+        _items = items;
+        _missing = missing;
+    }
+
+    private void AskDelete(SavedFile file, bool missing)
+    {
+        if (missing)
+        {
+            History.Remove(file.Id);
+            return;
+        }
+
+        _confirmId = file.Id;
+    }
+
+    private void Delete(SavedFile file)
+    {
+        _confirmId = null;
+        if (!Storage.Delete(file))
+        {
+            Toasts.Show("Файл не удалось удалить (возможно, он создан до переустановки приложения) — уберу из списка", ToastKind.Error);
+        }
+
+        History.Remove(file.Id);
+    }
+
+    private void ClearList()
+    {
+        History.Clear();
+        Toasts.Show("Список очищен, файлы остались в папке", ToastKind.Info, 3);
+    }
+
+    private void OnChanged() => InvokeAsync(async () =>
+    {
+        await Reload();
+        StateHasChanged();
+    });
+
+    public void Dispose() => History.Changed -= OnChanged;
+}

@@ -1,0 +1,64 @@
+@* E2E для Android — строка файла: открыть / поделиться / удалить
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
+@inject IBookStorage Storage
+@inject ToastService Toasts
+
+<div class="file-row @(Missing ? "file-row-missing" : "")">
+    <div class="file-icon"><Icon Name="@IconName" Size="22" /><span>@File.Extension.ToUpperInvariant()</span></div>
+    <div class="file-info">
+        <div class="file-title">@(ShowBookTitle && !string.IsNullOrEmpty(File.BookTitle) ? File.BookTitle : File.Name)</div>
+        <div class="file-meta">
+            @if (ShowBookTitle && !string.IsNullOrEmpty(File.Author))
+            {
+                <span>@File.Author · </span>
+            }
+            @if (Missing)
+            {
+                <span class="file-missing">файл удалён</span>
+            }
+            else
+            {
+                <span>@Formatting.Size(File.Size)</span>
+                @if (ShowDate)
+                {
+                    <span> · @File.SavedAt.LocalDateTime.ToString("dd.MM.yy HH:mm")</span>
+                }
+            }
+        </div>
+    </div>
+    <div class="file-actions">
+        @if (!Missing)
+        {
+            <button type="button" class="icon-btn" @onclick="Open" aria-label="Открыть"><Icon Name="open" /></button>
+            <button type="button" class="icon-btn" @onclick="() => Storage.Share([File])" aria-label="Поделиться"><Icon Name="share" /></button>
+        }
+        @ChildContent
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public SavedFile File { get; set; }
+
+    [Parameter] public bool Missing { get; set; }
+
+    [Parameter] public bool ShowBookTitle { get; set; }
+
+    [Parameter] public bool ShowDate { get; set; }
+
+    [Parameter] public RenderFragment ChildContent { get; set; }
+
+    private string IconName => File.Extension switch
+    {
+        "epub" or "fb2" or "cbz" or "txt" => File.Extension,
+        "jpg" or "jpeg" or "png" or "webp" or "gif" => "cbz",
+        _ => "fb2"
+    };
+
+    private void Open()
+    {
+        if (!Storage.Open(File))
+        {
+            Toasts.Show($"Нет приложения, которое открывает .{File.Extension}. Установите читалку или отправьте файл через «Поделиться»", ToastKind.Error, 8);
+        }
+    }
+}

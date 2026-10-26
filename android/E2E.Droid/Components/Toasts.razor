@@ -1,0 +1,25 @@
+@* E2E для Android — отрисовка всплывающих сообщений
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
+@implements IDisposable
+@inject ToastService ToastService
+
+@if (ToastService.Toasts.Count > 0)
+{
+    <div class="toasts">
+        @foreach (var toast in ToastService.Toasts)
+        {
+            <div class="toast toast-@toast.Kind.ToString().ToLowerInvariant()" @key="toast.Id" @onclick="() => ToastService.Dismiss(toast.Id)">
+                <Icon Name="@(toast.Kind == ToastKind.Error ? "error" : toast.Kind == ToastKind.Success ? "check" : "info")" Size="20" />
+                <span>@toast.Text</span>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    protected override void OnInitialized() => ToastService.Changed += OnChanged;
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => ToastService.Changed -= OnChanged;
+}

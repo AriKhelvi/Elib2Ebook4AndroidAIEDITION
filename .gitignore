@@ -35,3 +35,8 @@ packages/
 
 # dotnet tools
 .dotnet/
+# Android-приложение (android/): ключи подписи APK и готовые сборки в репозиторий не попадают
+android/signing/
+*.keystore
+*.jks
+android/dist/

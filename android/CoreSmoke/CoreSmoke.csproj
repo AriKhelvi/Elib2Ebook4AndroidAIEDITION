@@ -1,0 +1,34 @@
+<!--
+  [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic). Стабильность не гарантируется.
+
+  CoreSmoke — проверка на обычном ПК того же конвейера скачивания, что работает в Android-приложении
+  (BookPipeline + GetterResolver + список сайтов из README), без MAUI и без телефона.
+  Файлы из ../E2E.Droid/Services подключены ссылками (Link), а не скопированы — проверяется ровно тот же код.
+
+  Как запускать — см. раздел «Проверка ядра на ПК» в android/README.md.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>disable</Nullable>
+    </PropertyGroup>
+
+    <!-- Ядро и все сайты — как в приложении -->
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\Elib2Ebook.DomainServices\Elib2Ebook.DomainServices.csproj" />
+        <ProjectReference Include="..\..\src\ExternalServices\**\*.csproj" />
+    </ItemGroup>
+
+    <!-- Платформенно-независимая часть приложения -->
+    <ItemGroup>
+        <Compile Include="..\E2E.Droid\Services\GetterResolver.cs" Link="Shared\GetterResolver.cs" />
+        <Compile Include="..\E2E.Droid\Services\BookPipeline.cs" Link="Shared\BookPipeline.cs" />
+        <Compile Include="..\E2E.Droid\Services\CallbackLogger.cs" Link="Shared\CallbackLogger.cs" />
+        <Compile Include="..\E2E.Droid\Services\Formatting.cs" Link="Shared\Formatting.cs" />
+        <Compile Include="..\E2E.Droid\Services\SharedLinkInbox.cs" Link="Shared\SharedLinkInbox.cs" />
+        <Compile Include="..\E2E.Droid\Services\SupportedSites.cs" Link="Shared\SupportedSites.cs" />
+        <EmbeddedResource Include="..\..\README.md" LogicalName="Elib2Ebook.README.md" />
+    </ItemGroup>
+</Project>
