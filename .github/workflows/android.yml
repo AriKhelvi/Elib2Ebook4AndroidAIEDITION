@@ -175,11 +175,11 @@ jobs:
 
       # Те же параметры, что в android/build.ps1. Важно: без -o и без -p:RuntimeIdentifiers —
       # глобальные свойства уходят во все 60+ библиотек ядра и ломают их сборку.
-      # Список архитектур: в -p: и «;», и «,» MSBuild считает разделителями свойств, поэтому «,» → %3B («;» после разбора).
+      # Список архитектур: в -p: и «;», и «,» MSBuild считает разделителями свойств, поэтому «,» → «+» (см. E2E.Droid.csproj).
       - name: Сборка APK
         run: >
           dotnet publish android/E2E.Droid/E2E.Droid.csproj -c Release -f net10.0-android -nologo -v:minimal
-          -p:E2EAbi="${E2E_ABI//,/%3B}"
+          -p:E2EAbi="${E2E_ABI//,/+}"
           -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT"
           -p:JavaSdkDirectory="$JAVA_HOME"
           -p:ApplicationDisplayVersion="${{ steps.version.outputs.version }}"

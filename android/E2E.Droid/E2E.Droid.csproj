@@ -46,13 +46,23 @@
 
         <!-- Архитектуры. arm64 — Pixel 9a и почти все современные телефоны;
              arm (32 бита) — старые телефоны и большинство читалок на Android 7–10. Обе — в одном APK.
-             Для эмулятора: -p:E2EAbi=android-arm64%3Bandroid-x64 (или build.cmd -Abi android-arm64,android-x64).
-             В -p: и «;», и «,» MSBuild считает разделителями свойств, поэтому в командной строке «;» пишется как %3B;
-             запятая здесь тоже понимается — для значения по умолчанию и правок прямо в этом файле.
+             Для эмулятора: -p:E2EAbi=android-arm64+android-x64 (или build.cmd -Abi android-arm64,android-x64).
+             Разделитель в командной строке — «+»: «;» и «,» в -p: MSBuild считает разделителями свойств.
              ВАЖНО: не передавайте -p:RuntimeIdentifiers в командной строке — глобальное свойство уходит во все
              60+ библиотек ядра, и их сборка ломается. Поэтому архитектуры передаются через своё свойство E2EAbi. -->
-        <E2EAbi Condition="'$(E2EAbi)' == ''">android-arm64,android-arm</E2EAbi>
-        <RuntimeIdentifiers>$(E2EAbi.Replace(',', ';'))</RuntimeIdentifiers>
+        <E2EAbi Condition="'$(E2EAbi)' == ''">android-arm64+android-arm</E2EAbi>
+        <_E2EAbiList>+$(E2EAbi.Replace(';', '+').Replace(',', '+').Replace(' ', '+'))+</_E2EAbiList>
+        <!-- Список RuntimeIdentifiers собирается условиями из известных архитектур. Просто заменить «+» на «;»
+             строковой функцией нельзя: результат функции MSBuild экранирует, и «;» в нём не делит список —
+             получился бы один «RID» вида android-arm64;android-arm (ошибка NETSDK1083). -->
+        <_E2ERids Condition="$(_E2EAbiList.Contains('+android-arm64+'))">android-arm64</_E2ERids>
+        <_E2ERids Condition="$(_E2EAbiList.Contains('+android-arm+')) and '$(_E2ERids)' != ''">$(_E2ERids);android-arm</_E2ERids>
+        <_E2ERids Condition="$(_E2EAbiList.Contains('+android-arm+')) and '$(_E2ERids)' == ''">android-arm</_E2ERids>
+        <_E2ERids Condition="$(_E2EAbiList.Contains('+android-x64+')) and '$(_E2ERids)' != ''">$(_E2ERids);android-x64</_E2ERids>
+        <_E2ERids Condition="$(_E2EAbiList.Contains('+android-x64+')) and '$(_E2ERids)' == ''">android-x64</_E2ERids>
+        <_E2ERids Condition="$(_E2EAbiList.Contains('+android-x86+')) and '$(_E2ERids)' != ''">$(_E2ERids);android-x86</_E2ERids>
+        <_E2ERids Condition="$(_E2EAbiList.Contains('+android-x86+')) and '$(_E2ERids)' == ''">android-x86</_E2ERids>
+        <RuntimeIdentifiers>$(_E2ERids)</RuntimeIdentifiers>
 
         <!-- Ядро использует HTTP/2 и свои настройки HttpClientHandler (cookies, прокси, распаковка).
              Нативный AndroidMessageHandler HTTP/2 не умеет, поэтому включаем управляемый SocketsHttpHandler —

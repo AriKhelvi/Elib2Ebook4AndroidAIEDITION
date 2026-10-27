@@ -136,9 +136,9 @@ foreach ($dir in @('E2E.Droid\obj\Release', 'E2E.Droid\bin\Release')) {
 }
 
 # -Abi можно передать списком (a,b), строкой "a,b" или по-старому "a;b". В -p: и «;», и «,» MSBuild считает
-# разделителями свойств, поэтому в командную строку уходит «a%3Bb» (MSBuild сам превратит %3B в «;»)
+# разделителями свойств, поэтому в командную строку уходит «a+b» (разбирает E2E.Droid.csproj)
 $abiList = (($Abi -join ',') -split '[,;\s]+' | Where-Object { $_ }) -join ','
-$abiArg = $abiList -replace ',', '%3B'
+$abiArg = $abiList -replace ',', '+'
 
 Write-Host "==> Собираю APK $version (versionCode $versionCode, $abiList)" -ForegroundColor Cyan
 # ВАЖНО: без -o и без -p:RuntimeIdentifiers — глобальные свойства командной строки уходят во все
