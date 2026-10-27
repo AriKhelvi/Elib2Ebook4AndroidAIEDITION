@@ -7,6 +7,7 @@
 @inject CredentialStore Credentials
 @inject IPlatformServices Platform
 @inject ToastService Toasts
+@inject IJSRuntime Js
 
 <div class="page">
     <section class="section">
@@ -89,13 +90,56 @@
         <div class="card">
             <label class="list-item two-line">
                 <span class="list-item-text">
-                    <span class="list-item-headline">Скачивать сразу после «Поделиться»</span>
-                    <span class="list-item-supporting">Ссылка из браузера сразу уходит в загрузку в выбранных форматах</span>
+                    <span class="list-item-headline">Автоскачивание из «Поделиться»</span>
+                    <span class="list-item-supporting">Когда вы делитесь ссылкой на книгу из браузера в E2E, она сразу начинает скачиваться — без нажатия «Скачать»</span>
                 </span>
                 <input type="checkbox" role="switch" class="switch" checked="@Settings.AutoStartOnShare" @onchange="e => Settings.AutoStartOnShare = (bool)e.Value!" />
             </label>
+            @if (Settings.AutoStartOnShare)
+            {
+                <div class="expand-body">
+                    <div class="segmented" role="radiogroup" aria-label="Формат автоскачивания">
+                        @foreach (var id in ShareFormats)
+                        {
+                            var on = Settings.ShareFormat == id;
+                            <button type="button" class="segment @(on ? "selected" : "")" role="radio" aria-checked="@(on ? "true" : "false")"
+                                    @onclick="() => Settings.ShareFormat = id">
+                                @(id == "auto" ? "Авто" : id.ToUpperInvariant())
+                            </button>
+                        }
+                    </div>
+                    <p class="supporting-text flush">Формат автоскачивания. «Авто» — как выбрано на главном экране, а для манги и комиксов — CBZ.</p>
+                </div>
+            }
+
+            <hr class="divider" />
+
+            <label class="list-item two-line">
+                <span class="list-item-text">
+                    <span class="list-item-headline">Автовыбор формата (экспериментально)</span>
+                    <span class="list-item-supporting">Для сайтов с мангой и комиксами сразу выбирать CBZ, когда вставлена ссылка</span>
+                </span>
+                <input type="checkbox" role="switch" class="switch" checked="@Settings.AutoFormat" @onchange="e => Settings.AutoFormat = (bool)e.Value!" />
+            </label>
         </div>
     </section>
+
+    @if (Platform.SupportsDynamicColor)
+    {
+        <section class="section">
+            <h2 class="section-title">Оформление</h2>
+            <div class="card">
+                <label class="list-item two-line">
+                    <span class="list-item-leading"><Icon Name="theme" /></span>
+                    <span class="list-item-text">
+                        <span class="list-item-headline">Цвета из обоев</span>
+                        <span class="list-item-supporting">Палитра телефона (Material You). В теме e-ink не используется; тему выбирают кнопкой вверху</span>
+                    </span>
+                    <input type="checkbox" role="switch" class="switch" checked="@_dynamicColor" @onchange="ToggleDynamicColor" />
+                </label>
+            </div>
+        </section>
+    }
 
     <section class="section">
         <h2 class="section-title">Сеть</h2>
@@ -111,34 +155,64 @@
                 </div>
             </div>
             <p class="supporting-text flush">Пауза — между запросами к сайту: помогает, если сайт ограничивает частые обращения.</p>
+
+            <h3 class="section-label">Прокси</h3>
+            <div class="segmented" role="radiogroup" aria-label="Тип прокси">
+                @foreach (var (id, title) in ProxyTypes)
+                {
+                    var on = _proxyType == id;
+                    <button type="button" class="segment @(on ? "selected" : "")" role="radio" aria-checked="@(on ? "true" : "false")" @onclick="() => SetProxyType(id)">
+                        @title
+                    </button>
+                }
+            </div>
             <div class="field">
                 <div class="text-field">
-                    <label class="text-field-label" for="proxy">Прокси</label>
-                    <input id="proxy" class="text-field-input" placeholder="socks5://127.0.0.1:1080" autocapitalize="off" spellcheck="false" inputmode="url"
-                           @bind="_proxy" @bind:after="() => Settings.Proxy = _proxy" />
+                    <label class="text-field-label" for="proxy">Адрес и порт</label>
+                    <input id="proxy" class="text-field-input" placeholder="127.0.0.1:1080" autocapitalize="off" spellcheck="false" inputmode="url"
+                           @bind="_proxyAddress" @bind:after="SaveProxy" />
                 </div>
-                <p class="supporting-text">http, socks4 или socks5. Пусто — без прокси.</p>
+                <p class="supporting-text">@(string.IsNullOrWhiteSpace(Settings.Proxy) ? "Пусто — без прокси." : $"Сейчас: {Settings.Proxy}")</p>
             </div>
         </div>
     </section>
 
     <section class="section">
-        <h2 class="section-title">Сохранённые логины</h2>
+        <h2 class="section-title">Входы на сайты</h2>
         <div class="card list">
-            @if (_hosts.Count == 0)
+            @if (_hosts.Count == 0 && _editHost == null)
             {
-                <p class="card-note standalone">Нет. Логин сохраняется при скачивании, если в разделе «Вход на сайт» отмечено «Запомнить».</p>
+                <p class="card-note standalone">Пока нет. Вход сохраняется при скачивании, если в «Вход на сайт» отмечено «Запомнить», — или добавьте его здесь.</p>
             }
-            else
+
+            @foreach (var host in _hosts)
             {
-                @foreach (var host in _hosts)
+                @if (_editHost == host)
                 {
-                    <div class="list-item has-actions">
+                    @CredentialEditor
+                }
+                else
+                {
+                    <div class="list-item two-line has-actions">
                         <span class="list-item-leading"><Icon Name="person" /></span>
-                        <span class="list-item-text"><span class="list-item-headline">@host</span></span>
-                        <button type="button" class="icon-button" @onclick="() => RemoveHost(host)" aria-label="Забыть логин для @host"><Icon Name="delete" /></button>
+                        <span class="list-item-text">
+                            <span class="list-item-headline">@host</span>
+                            <span class="list-item-supporting">@(_logins.GetValueOrDefault(host) ?? "…")</span>
+                        </span>
+                        <button type="button" class="icon-button" @onclick="() => EditCredential(host)" aria-label="Изменить вход для @host"><Icon Name="edit" /></button>
                     </div>
                 }
+            }
+
+            @if (_editHost == string.Empty)
+            {
+                @CredentialEditor
+            }
+            else if (_editHost == null)
+            {
+                <div class="card-actions">
+                    <button type="button" class="btn btn-text" @onclick="AddCredential"><Icon Name="plus" Size="18" />Добавить вход</button>
+                </div>
             }
         </div>
     </section>
@@ -153,16 +227,16 @@
                     <span class="list-item-supporting">Сборка @Platform.BuildNumber@(string.IsNullOrEmpty(_commit) ? "" : $" · коммит {_commit}")</span>
                 </span>
             </div>
+            <div class="ai-note">
+                <Icon Name="info" Size="20" />
+                <span>Неофициальная сборка <b>AI Edition</b>: Android-приложение сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется.</span>
+            </div>
             <div class="list-item two-line">
                 <span class="list-item-leading"><Icon Name="library" /></span>
                 <span class="list-item-text">
                     <span class="list-item-headline">Ядро Elib2Ebook @_coreVersion</span>
-                    <span class="list-item-supporting">Сайты и форматы — ровно как в консольной и веб-версии</span>
+                    <span class="list-item-supporting">Сайты и форматы — как в консольной и веб-версии</span>
                 </span>
-            </div>
-            <div class="ai-note">
-                <Icon Name="info" Size="20" />
-                <span>Неофициальная сборка <b>AI Edition</b>: Android-приложение сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется.</span>
             </div>
             <a class="list-item two-line" href="https://github.com/AriKhelvi/Elib2Ebook4AndroidAIEDITION" target="_blank" rel="noopener">
                 <span class="list-item-leading"><Icon Name="github" /></span>
@@ -194,26 +268,66 @@
         ("images", "Картинки")
     ];
 
+    private static readonly string[] ShareFormats = ["auto", "epub", "fb2", "cbz", "txt"];
+
+    /// <summary>Схемы прокси, которые понимает HttpClient .NET 10 (https:// — TLS до самого прокси).</summary>
+    private static readonly (string Id, string Title)[] ProxyTypes =
+    [
+        ("http", "HTTP"),
+        ("https", "HTTPS"),
+        ("socks4", "SOCKS4"),
+        ("socks5", "SOCKS5")
+    ];
+
     private string _pattern;
     private int _timeout;
     private int _delay;
-    private string _proxy;
+    private string _proxyType = "http";
+    private string _proxyAddress;
+    private bool _dynamicColor = true;
     private IReadOnlyList<string> _hosts = [];
+    private readonly Dictionary<string, string> _logins = [];
     private string _coreVersion;
     private string _commit;
 
-    protected override void OnInitialized()
+    // Редактор входа: null — закрыт, "" — новый вход, иначе — сайт, который правим
+    private string _editHost;
+    private string _editSite;
+    private string _editLogin;
+    private string _editPassword;
+    private bool _showPassword;
+
+    protected override async Task OnInitializedAsync()
     {
         _pattern = Settings.BookNamePattern;
         _timeout = Settings.Timeout;
         _delay = Settings.Delay;
-        _proxy = Settings.Proxy;
-        _hosts = Credentials.Hosts;
+        ParseProxy(Settings.Proxy);
 
         // Версия ядра и коммит форка зашиваются при сборке (см. таргет E2ECoreVersion в E2E.Droid.csproj)
         var metadata = typeof(MauiProgram).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>().ToList();
         _coreVersion = metadata.FirstOrDefault(m => m.Key == "Elib2EbookVersion")?.Value;
         _commit = metadata.FirstOrDefault(m => m.Key == "BuildCommit")?.Value;
+
+        await LoadCredentials();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && Platform.SupportsDynamicColor)
+        {
+            _dynamicColor = await Js.InvokeAsync<bool>("e2e.getDynamicEnabled");
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadCredentials()
+    {
+        _hosts = Credentials.Hosts;
+        foreach (var host in _hosts)
+        {
+            _logins[host] = (await Credentials.GetAsync(host))?.Login ?? "логин не прочитан";
+        }
     }
 
     private async Task PickFolder()
@@ -261,6 +375,46 @@
         _delay = Settings.Delay;
     }
 
+    /// <summary>«socks5://127.0.0.1:1080» → тип socks5 и адрес «127.0.0.1:1080»; без схемы — HTTP.</summary>
+    private void ParseProxy(string proxy)
+    {
+        proxy = proxy?.Trim() ?? string.Empty;
+        var separator = proxy.IndexOf("://", StringComparison.Ordinal);
+        var scheme = separator > 0 ? proxy[..separator].ToLowerInvariant() : null;
+        if (scheme != null && ProxyTypes.Any(t => t.Id == scheme))
+        {
+            _proxyType = scheme;
+            _proxyAddress = proxy[(separator + 3)..].TrimEnd('/');
+        }
+        else
+        {
+            _proxyAddress = separator > 0 ? proxy[(separator + 3)..].TrimEnd('/') : proxy;
+        }
+    }
+
+    private void SetProxyType(string type)
+    {
+        _proxyType = type;
+        SaveProxy();
+    }
+
+    private void SaveProxy()
+    {
+        // Вставили адрес целиком со схемой — разбираем заново
+        if (_proxyAddress?.Contains("://", StringComparison.Ordinal) == true)
+        {
+            ParseProxy(_proxyAddress);
+        }
+
+        Settings.Proxy = string.IsNullOrWhiteSpace(_proxyAddress) ? string.Empty : $"{_proxyType}://{_proxyAddress.Trim()}";
+    }
+
+    private async Task ToggleDynamicColor(ChangeEventArgs e)
+    {
+        _dynamicColor = (bool)e.Value!;
+        await Js.InvokeVoidAsync("e2e.setDynamicEnabled", _dynamicColor);
+    }
+
     private bool IsAdditionalSelected(string id) => Settings.AdditionalTypes.Contains(id, StringComparer.OrdinalIgnoreCase);
 
     private void ToggleAdditional(string id)
@@ -274,10 +428,98 @@
         Settings.AdditionalTypes = types;
     }
 
-    private void RemoveHost(string host)
+    // --- Входы на сайты ---------------------------------------------------------------------------
+
+    private RenderFragment CredentialEditor => @<div class="expand-body credential-editor">
+        @if (_editHost == string.Empty)
+        {
+            <div class="text-field">
+                <label class="text-field-label" for="cred-site">Сайт</label>
+                <input id="cred-site" class="text-field-input" placeholder="author.today или ссылка на книгу" autocapitalize="off" spellcheck="false" inputmode="url" @bind="_editSite" />
+            </div>
+        }
+        else
+        {
+            <h3 class="section-label">@_editHost</h3>
+        }
+        <div class="text-field">
+            <label class="text-field-label" for="cred-login">Логин</label>
+            <input id="cred-login" class="text-field-input" autocomplete="off" autocapitalize="off" spellcheck="false" @bind="_editLogin" />
+        </div>
+        <div class="text-field has-trailing">
+            <label class="text-field-label" for="cred-password">Пароль</label>
+            <input id="cred-password" type="@(_showPassword ? "text" : "password")" class="text-field-input" autocomplete="off" @bind="_editPassword" />
+            <button type="button" class="icon-button text-field-trailing" aria-label="@(_showPassword ? "Скрыть пароль" : "Показать пароль")"
+                    @onclick="() => _showPassword = !_showPassword">
+                <Icon Name="@(_showPassword ? "eye-off" : "eye")" />
+            </button>
+        </div>
+        <div class="row">
+            <button type="button" class="btn btn-tonal" @onclick="SaveCredential">Сохранить</button>
+            <button type="button" class="btn btn-text" @onclick="CloseEditor">Отмена</button>
+            @if (!string.IsNullOrEmpty(_editHost))
+            {
+                <button type="button" class="btn btn-text btn-danger push-end" @onclick="RemoveCredential">Удалить</button>
+            }
+        </div>
+    </div>;
+
+    private void AddCredential()
     {
+        _editHost = string.Empty;
+        _editSite = _editLogin = _editPassword = string.Empty;
+        _showPassword = false;
+    }
+
+    private async Task EditCredential(string host)
+    {
+        var credential = await Credentials.GetAsync(host);
+        _editHost = host;
+        _editLogin = credential?.Login ?? string.Empty;
+        _editPassword = credential?.Password ?? string.Empty;
+        _showPassword = false;
+    }
+
+    private void CloseEditor()
+    {
+        _editHost = null;
+        _editPassword = null;
+    }
+
+    private async Task SaveCredential()
+    {
+        var host = _editHost;
+        if (string.IsNullOrEmpty(host))
+        {
+            // «author.today», «https://author.today/work/1» — приводим к сайту так же, как при скачивании
+            var site = _editSite?.Trim() ?? string.Empty;
+            host = CredentialStore.NormalizeHost(site.Contains("://", StringComparison.Ordinal) ? site : "https://" + site);
+            if (string.IsNullOrEmpty(host))
+            {
+                Toasts.Show("Укажите сайт — например, author.today", ToastKind.Error);
+                return;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(_editLogin) || string.IsNullOrEmpty(_editPassword))
+        {
+            Toasts.Show("Нужны и логин, и пароль", ToastKind.Error);
+            return;
+        }
+
+        await Credentials.SaveAsync(host, new SiteCredential(_editLogin.Trim(), _editPassword));
+        CloseEditor();
+        await LoadCredentials();
+        Toasts.Show($"Вход для {host} сохранён", ToastKind.Success, 3);
+    }
+
+    private async Task RemoveCredential()
+    {
+        var host = _editHost;
         Credentials.Remove(host);
-        _hosts = Credentials.Hosts;
-        Toasts.Show($"Логин для {host} удалён", ToastKind.Info, 3);
+        _logins.Remove(host);
+        CloseEditor();
+        await LoadCredentials();
+        Toasts.Show($"Вход для {host} удалён", ToastKind.Info, 3);
     }
 }

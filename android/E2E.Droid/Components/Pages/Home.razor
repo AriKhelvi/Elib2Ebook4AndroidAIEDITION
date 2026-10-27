@@ -94,7 +94,14 @@
                 }
             }
         </div>
-        <p class="supporting-text">Или из браузера: «Поделиться» → «Скачать книгу (E2E)». Несколько ссылок — каждая с новой строки.</p>
+        @if (_unsupportedHost != null)
+        {
+            <p class="supporting-text warning">Сайт @_unsupportedHost не поддерживается — список сайтов во вкладке «Сайты».</p>
+        }
+        else
+        {
+            <p class="supporting-text">Или из браузера: «Поделиться» → «Скачать книгу (E2E)». Несколько ссылок — каждая с новой строки.</p>
+        }
     </div>
 
     @if (Downloads.IsRunning)
@@ -141,12 +148,14 @@
         <!-- Формат -->
         <section class="section" aria-label="Формат">
             <h2 class="section-label">Формат</h2>
-            <div class="chip-set">
-                @foreach (var (id, description) in FormatsInfo)
+            @* Один формат — переключателем; неподходящий для сайта недоступен (см. FormatSupport) *@
+            <div class="segmented" role="radiogroup" aria-label="Формат">
+                @foreach (var id in FormatSupport.All)
                 {
-                    var on = _formats.Contains(id);
-                    <button type="button" class="filter-chip @(on ? "selected" : "")" aria-pressed="@(on ? "true" : "false")"
-                            title="@description" @onclick="() => ToggleFormat(id)">
+                    var on = _format == id;
+                    var problem = _hostKnown ? FormatSupport.Problem(id, _comic) : null;
+                    <button type="button" class="segment @(on ? "selected" : "")" role="radio" aria-checked="@(on ? "true" : "false")"
+                            disabled="@(problem != null)" title="@(problem ?? FormatDescription(id))" @onclick="() => PickFormat(id)">
                         @if (on)
                         {
                             <Icon Name="check" Size="18" />
@@ -155,7 +164,7 @@
                     </button>
                 }
             </div>
-            <p class="supporting-text flush">EPUB и FB2 — для читалок, CBZ — комиксы и сканы, TXT — простой текст.</p>
+            <p class="supporting-text flush">@FormatHint</p>
         </section>
 
         <!-- Картинки, вход, диапазон глав -->
@@ -164,9 +173,10 @@
                 <span class="list-item-leading"><Icon Name="image" /></span>
                 <span class="list-item-text">
                     <span class="list-item-headline">Картинки в книге</span>
-                    <span class="list-item-supporting">@(Settings.Images ? "Обложка и иллюстрации" : "Только текст — файл легче")</span>
+                    <span class="list-item-supporting">@(_format == "cbz" ? "Для CBZ картинки нужны всегда" : Settings.Images ? "Обложка и иллюстрации" : "Только текст — файл легче")</span>
                 </span>
-                <input type="checkbox" role="switch" class="switch" checked="@Settings.Images" @onchange="e => Settings.Images = (bool)e.Value!" />
+                <input type="checkbox" role="switch" class="switch" checked="@(Settings.Images || _format == "cbz")" disabled="@(_format == "cbz")"
+                       @onchange="e => Settings.Images = (bool)e.Value!" />
             </label>
 
             <hr class="divider" />
@@ -295,17 +305,50 @@
 </div>
 
 @code {
-    private static readonly (string Id, string Description)[] FormatsInfo =
-    [
-        ("epub", "Универсальный формат для читалок"),
-        ("fb2", "Популярный формат в России"),
-        ("cbz", "Комиксы и сканы постранично"),
-        ("txt", "Простой текст без оформления")
-    ];
+    /// <summary>Выбранный формат (один).</summary>
+    private string _format = "epub";
 
-    private List<string> _formats = [];
+    /// <summary>Формат выбран автоматически по сайту — когда ссылку уберут, вернётся привычный.</summary>
+    private bool _autoChosen;
+
+    /// <summary>В поле есть ссылка — значит, известно, комикс это или текст.</summary>
+    private bool _hostKnown;
+
+    /// <summary>Ссылка на сайт с мангой или комиксами.</summary>
+    private bool _comic;
+
+    /// <summary>Сайт из ссылки, для которого в этой сборке нет загрузчика; null — всё в порядке.</summary>
+    private string _unsupportedHost;
+
     private bool _showPassword;
     private bool _showLog;
+
+    private static string FormatDescription(string format) => format switch
+    {
+        "epub" => "EPUB — универсальный формат, его открывает большинство читалок.",
+        "fb2" => "FB2 — популярен у читалок в России (PocketBook, FBReader и др.).",
+        "cbz" => "CBZ — архив картинок: для манги и комиксов.",
+        "txt" => "TXT — простой текст без оформления и картинок.",
+        _ => string.Empty
+    };
+
+    private string FormatHint
+    {
+        get
+        {
+            if (_autoChosen && _comic)
+            {
+                return "CBZ выбран автоматически: на этом сайте книги — это картинки (экспериментально, отключается в настройках).";
+            }
+
+            if (_autoChosen)
+            {
+                return $"{_format.ToUpperInvariant()} вместо {Settings.Format.ToUpperInvariant()}. {FormatSupport.Problem(Settings.Format, _comic)}.";
+            }
+
+            return FormatDescription(_format);
+        }
+    }
 
     private int UrlRows => Math.Clamp((Form.Urls ?? string.Empty).Count(c => c == '\n') + 1, 1, 6);
 
@@ -348,8 +391,10 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _formats = Settings.Formats.ToList();
+        _format = Settings.Format;
         Downloads.Changed += OnChanged;
+        // Ссылка могла остаться в поле с прошлого раза (переход между вкладками) — сразу проверяем сайт и формат
+        await CheckSite();
         SharedLinkInbox.Arrived += OnSharedLink;
 
         var shared = SharedLinkInbox.Take();
@@ -384,12 +429,21 @@
 
         if (Settings.AutoStartOnShare)
         {
+            // Формат для автоскачивания: «авто» — как выбрано на экране (с автовыбором CBZ), иначе заданный в настройках
+            var shareFormat = Settings.ShareFormat;
+            if (shareFormat != "auto" && FormatSupport.All.Contains(shareFormat))
+            {
+                _format = FormatSupport.Fit(shareFormat, _comic);
+            }
+
             await Start();
         }
     }
 
     private async Task OnUrlsChanged()
     {
+        await CheckSite();
+
         // Подставляем сохранённый логин, когда в поле появилась ссылка на другой сайт
         var host = CurrentHost;
         if (host == null || host == Form.CredentialsHost)
@@ -428,19 +482,58 @@
         await OnUrlsChanged();
     }
 
-    private void ClearUrls()
+    private async Task ClearUrls()
     {
         Form.Urls = string.Empty;
+        await CheckSite();
     }
 
-    private void ToggleFormat(string format)
+    /// <summary>
+    /// Проверки по ссылке в поле: есть ли загрузчик для сайта и какой формат подходит
+    /// (для манги и комиксов — CBZ, если включён автовыбор; неподходящий формат заменяется).
+    /// </summary>
+    private async Task CheckSite()
     {
-        if (!_formats.Remove(format))
+        var url = Formatting.ParseUrls(Form.Urls).FirstOrDefault();
+        _hostKnown = url != null;
+        _comic = FormatSupport.IsComic(url);
+
+        if (_hostKnown && Settings.AutoFormat && FormatSupport.Auto(url) is { } auto)
         {
-            _formats.Add(format);
+            _autoChosen = _format != auto || _autoChosen;
+            _format = auto;
+        }
+        else if (_autoChosen)
+        {
+            // Ссылку на комикс убрали или заменили — возвращаем привычный формат
+            _format = Settings.Format;
+            _autoChosen = false;
         }
 
-        Settings.Formats = _formats;
+        if (_hostKnown && FormatSupport.Problem(_format, _comic) != null)
+        {
+            _format = FormatSupport.Fit(_format, _comic);
+            _autoChosen = true;
+        }
+
+        _unsupportedHost = null;
+        if (url != null && Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            // Первый раз загрузчики создаются ~доли секунды — не в UI-потоке
+            var supported = await Task.Run(() => GetterResolver.IsSupported(uri));
+            _unsupportedHost = supported ? null : uri.Host;
+        }
+    }
+
+    private void PickFormat(string format)
+    {
+        _format = format;
+        _autoChosen = false;
+        // Привычный формат запоминаем только для обычных (текстовых) книг — выбор для комиксов его не трогает
+        if (!_hostKnown || !_comic)
+        {
+            Settings.Format = format;
+        }
     }
 
     private void SwitchRange(bool byName)
@@ -460,9 +553,11 @@
             return;
         }
 
-        if (_formats.Count == 0)
+        // Сайты без загрузчика ядро всё равно не скачает — говорим сразу
+        var unsupported = await Task.Run(() => urls.Where(u => !GetterResolver.IsSupported(new Uri(u))).Select(u => new Uri(u).Host).Distinct().ToList());
+        if (unsupported.Count > 0)
         {
-            Toasts.Show("Выберите формат", ToastKind.Error);
+            Toasts.Show($"Не поддерживается: {string.Join(", ", unsupported)}. Список сайтов — во вкладке «Сайты»", ToastKind.Error, 8);
             return;
         }
 
@@ -505,10 +600,11 @@
         await Downloads.StartAsync(new DownloadRequest
         {
             Urls = urls,
-            Formats = _formats.ToList(),
+            Formats = [_format],
             Login = hasLogin ? Form.Login : null,
             Password = hasLogin ? Form.Password : null,
-            NoImage = !Settings.Images,
+            // В CBZ кладутся только картинки — без них архив вышел бы пустым
+            NoImage = !Settings.Images && _format != "cbz",
             Start = start,
             End = end,
             StartName = Form.RangeByName ? Form.StartName : null,

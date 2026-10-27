@@ -12,12 +12,17 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace E2E.Droid.Services;
 
 /// <param name="InReadme">Сайт есть в списке README на GitHub.</param>
-/// <param name="HasGetter">В ядре есть загрузчик для этого домена.</param>
-public sealed record SiteEntry(string Url, string Name, bool InReadme, bool HasGetter);
+/// <param name="HasGetter">В этой сборке есть загрузчик для этого домена.</param>
+/// <param name="DisabledReason">Сайт отключён как нерабочий (см. E2EDeadSite в E2E.Droid.csproj); null — не отключён.</param>
+public sealed record SiteEntry(string Url, string Name, bool InReadme, bool HasGetter, string DisabledReason = null)
+{
+    /// <summary>Сайт можно качать: загрузчик есть и сайт не отмечен нерабочим.</summary>
+    public bool Available => HasGetter && DisabledReason == null;
+}
 
 /// <summary>
-/// Список поддерживаемых сайтов из README.md Elib2Ebook (раздел «Поддерживаемые сайты»), сверенный с кодом:
-/// README вшивается в сборку из upstream, а домены берутся из SystemUrl загрузчиков той же версии ядра.
+/// Список сайтов: README.md Elib2Ebook (раздел «Поддерживаемые сайты»), сверенный с загрузчиками этой сборки,
+/// плюс сайты, которые ядро умеет, но в README их нет. README вшивается в сборку из upstream.
 /// </summary>
 public static class SupportedSites
 {
@@ -26,12 +31,26 @@ public static class SupportedSites
 
     private static IReadOnlyList<string> _urls;
     private static IReadOnlyList<SiteEntry> _sites;
+    private static IReadOnlyDictionary<string, string> _disabled = new Dictionary<string, string>();
+
+    /// <summary>
+    /// Нерабочие сайты: домен → причина. Приложение передаёт сюда список, сгенерированный из E2E.Droid.csproj
+    /// (загрузчики таких сайтов в APK не попадают, а мёртвые домены живых загрузчиков просто скрываются из списка).
+    /// </summary>
+    public static void Configure(IEnumerable<(string Host, string Reason)> disabled)
+    {
+        _disabled = disabled.ToDictionary(d => Key("https://" + d.Host), d => d.Reason);
+        _sites = null;
+    }
 
     /// <summary>Ссылки из README в исходном порядке.</summary>
     public static IReadOnlyList<string> Urls => _urls ??= Load();
 
-    /// <summary>Сайты из README плюс сайты, которые ядро умеет, но в README их нет.</summary>
+    /// <summary>Сайты из README плюс сайты, которые ядро умеет, но в README их нет (с пометками).</summary>
     public static IReadOnlyList<SiteEntry> Sites => _sites ??= Resolve(GetterResolver.GetterTypes);
+
+    /// <summary>Отключённые сайты с причинами — для пояснения во вкладке «Сайты».</summary>
+    public static IReadOnlyDictionary<string, string> Disabled => _disabled;
 
     private static List<string> Load()
     {
@@ -66,16 +85,31 @@ public static class SupportedSites
         var readme = Urls;
         var readmeHosts = readme.Select(Key).ToHashSet();
 
+        // Загрузчик сам решает, его ли это ссылка (IsSameUrl): так учитываются все домены загрузчика, а не только основной.
+        // Но некоторые узнают только ссылки на книги, а не главную страницу (books.yandex.ru) — поэтому годится и основной домен.
         var result = readme
-            .Select(url => new SiteEntry(url, DisplayName(url), true, getterHosts.ContainsKey(Key(url))))
+            .Select(url => new SiteEntry(url, DisplayName(url), true,
+                getterHosts.ContainsKey(Key(url)) || HasGetter(url), _disabled.GetValueOrDefault(Key(url))))
             .ToList();
 
         result.AddRange(getterHosts
             .Where(h => !readmeHosts.Contains(h.Key))
             .OrderBy(h => h.Key, StringComparer.Ordinal)
-            .Select(h => new SiteEntry(h.Value, DisplayName(h.Value), false, true)));
+            .Select(h => new SiteEntry(h.Value, DisplayName(h.Value), false, true, _disabled.GetValueOrDefault(h.Key))));
 
         return result;
+    }
+
+    private static bool HasGetter(string url)
+    {
+        try
+        {
+            return GetterResolver.IsSupported(new Uri(url));
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>author.today, ранобэ.рф — как показывать в списке.</summary>

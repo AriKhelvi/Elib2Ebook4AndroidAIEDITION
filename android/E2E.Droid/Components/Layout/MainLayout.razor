@@ -5,6 +5,7 @@
 @inject IJSRuntime Js
 @inject DownloadManager Downloads
 @inject NavigationManager Nav
+@inject IPlatformServices Platform
 
 <div class="app-shell">
     <header class="top-app-bar">
@@ -96,9 +97,9 @@
     private bool IsHome => Route.Length == 0;
 
     /// <summary>Заголовок верхней панели — название раздела (на главной — название программы).</summary>
-    private string Title => Route switch
+    private string Title => Route.Split('/')[0] switch
     {
-        "books" => "Книги",
+        "books" or "book" => "Книги",
         "sites" => "Сайты",
         "settings" => "Настройки",
         _ => "Elib2Ebook"
@@ -115,9 +116,15 @@
     {
         if (firstRender)
         {
-            // Тема уже применена скриптом до отрисовки — узнаём выбор для меню и красим системные панели
+            // Тема уже применена скриптом до отрисовки — узнаём выбор для меню
             _themeMode = await Js.InvokeAsync<string>("e2e.getThemeMode");
-            await Js.InvokeVoidAsync("e2e.syncNative");
+
+            // Свежая палитра из обоев (Android 12+): скрипт запомнит её, применит и покрасит системные панели.
+            // Со следующего запуска она применяется сразу, ещё до отрисовки.
+            var palette = Platform.SupportsDynamicColor
+                ? new { light = Platform.GetDynamicColorScheme(false), dark = Platform.GetDynamicColorScheme(true) }
+                : null;
+            await Js.InvokeVoidAsync("e2e.setDynamicPalette", palette);
             StateHasChanged();
         }
     }

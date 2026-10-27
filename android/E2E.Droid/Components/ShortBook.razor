@@ -60,9 +60,9 @@
     </div>
 </div>
 
-@if (!Compact && !string.IsNullOrWhiteSpace(Book.Annotation))
+@if (!Compact && SafeHtml.Clean(Book.Annotation) is { } annotation)
 {
-    <div class="book-annotation">@((MarkupString)Book.Annotation)</div>
+    <div class="book-annotation">@((MarkupString)annotation)</div>
 }
 
 @code {

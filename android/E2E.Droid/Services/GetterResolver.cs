@@ -76,6 +76,49 @@ public static class GetterResolver
             .ToList();
     }
 
+    private static IReadOnlyList<GetterBase> _probes;
+
+    /// <summary>
+    /// Есть ли в этой сборке загрузчик для ссылки — для подсказки «сайт не поддерживается» прямо при вставке.
+    /// Загрузчики создаются с пустым конфигом: их конструкторы только запоминают его, сеть не трогается.
+    /// </summary>
+    public static bool IsSupported(Uri url)
+    {
+        lock (Sync)
+        {
+            if (_probes == null)
+            {
+                var config = new BookGetterConfig(new Options(), null, null, null, Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+                var probes = new List<GetterBase>();
+                foreach (var type in GetterTypes)
+                {
+                    try
+                    {
+                        probes.Add((GetterBase)Activator.CreateInstance(type, config)!);
+                    }
+                    catch
+                    {
+                        // загрузчик с нестандартным конструктором — для подсказки не важен
+                    }
+                }
+
+                _probes = probes;
+            }
+        }
+
+        return _probes.Any(p =>
+        {
+            try
+            {
+                return p.IsSameUrl(url);
+            }
+            catch
+            {
+                return false;
+            }
+        });
+    }
+
     public static GetterBase Create(BookGetterConfig config, Uri url)
     {
         // Неподошедшие геттеры не диспозим: GetterBase.Dispose() освобождает общий BookGetterConfig

@@ -36,6 +36,57 @@ public sealed class AndroidPlatformServices : IPlatformServices
     /// <summary>versionCode — номер сборки (минуты с 01.01.2026), растёт с каждой сборкой.</summary>
     public string BuildNumber => AppInfo.Current.BuildString;
 
+    public bool SupportsDynamicColor => DynamicColors.IsSupported;
+
+    public IReadOnlyDictionary<string, string> GetDynamicColorScheme(bool dark) => DynamicColors.GetScheme(Context, dark);
+
+    /// <summary>
+    /// Обложка уменьшается средствами Android: сначала читаются только размеры, затем картинка декодируется
+    /// с прореживанием (inSampleSize) и масштабируется до 240 px по высоте — так не тратится память на огромные обложки.
+    /// </summary>
+    public string SaveThumbnail(byte[] image, string name)
+    {
+        const int targetHeight = 240;
+        try
+        {
+            var bounds = new Android.Graphics.BitmapFactory.Options { InJustDecodeBounds = true };
+            Android.Graphics.BitmapFactory.DecodeByteArray(image, 0, image.Length, bounds);
+            if (bounds.OutHeight <= 0 || bounds.OutWidth <= 0)
+            {
+                return null;
+            }
+
+            var sample = 1;
+            while (bounds.OutHeight / (sample * 2) >= targetHeight)
+            {
+                sample *= 2;
+            }
+
+            using var decoded = Android.Graphics.BitmapFactory.DecodeByteArray(image, 0, image.Length,
+                new Android.Graphics.BitmapFactory.Options { InSampleSize = sample });
+            if (decoded == null)
+            {
+                return null;
+            }
+
+            var scale = Math.Min(1.0, targetHeight / (double)decoded.Height);
+            using var scaled = scale < 1
+                ? Android.Graphics.Bitmap.CreateScaledBitmap(decoded, Math.Max(1, (int)(decoded.Width * scale)), targetHeight, true)
+                : null;
+
+            var dir = Path.Combine(FileSystem.AppDataDirectory, "covers");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, name + ".jpg");
+            using var stream = File.Create(path);
+            (scaled ?? decoded).Compress(Android.Graphics.Bitmap.CompressFormat.Jpeg!, 82, stream);
+            return path;
+        }
+        catch
+        {
+            return null; // обложка — не главное, запись о книге сохранится и без неё
+        }
+    }
+
     /// <summary>
     /// Android 13+ требует явного разрешения на уведомления. Отказ ничего не ломает:
     /// загрузка идёт, просто прогресса в шторке не видно.

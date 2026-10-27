@@ -24,6 +24,30 @@ public sealed class AppSettings
         set => Set(nameof(Formats), string.Join(',', value));
     }
 
+    /// <summary>
+    /// Формат на главном экране — один: сразу несколько форматов почти никому не нужны.
+    /// Хранится в том же ключе Formats (раньше выбирали несколько — берём первый).
+    /// </summary>
+    public string Format
+    {
+        get => Formats.FirstOrDefault(FormatSupport.All.Contains) ?? "epub";
+        set => Formats = [value];
+    }
+
+    /// <summary>Экспериментально: для сайтов с мангой и комиксами сам выбирать CBZ при вставке ссылки.</summary>
+    public bool AutoFormat
+    {
+        get => P.Get(nameof(AutoFormat), true);
+        set => Set(nameof(AutoFormat), value);
+    }
+
+    /// <summary>Формат автоскачивания из «Поделиться»: auto (как на главном экране) или epub/fb2/cbz/txt.</summary>
+    public string ShareFormat
+    {
+        get => P.Get(nameof(ShareFormat), "auto");
+        set => Set(nameof(ShareFormat), value);
+    }
+
     /// <summary>Таймаут одного запроса в секундах (--timeout, по умолчанию 120).</summary>
     public int Timeout
     {
@@ -38,7 +62,7 @@ public sealed class AppSettings
         set => Set(nameof(Delay), Math.Clamp(value, 0, 600));
     }
 
-    /// <summary>Прокси (--proxy): http://, socks4:// или socks5://host:port. Пусто — без прокси.</summary>
+    /// <summary>Прокси (--proxy): http://, https://, socks4:// или socks5://host:port. Пусто — без прокси.</summary>
     public string Proxy
     {
         get => P.Get(nameof(Proxy), string.Empty);

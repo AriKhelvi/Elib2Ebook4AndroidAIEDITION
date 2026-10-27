@@ -1,15 +1,16 @@
-@* E2E для Android — вкладка «Книги»: история скачанных файлов (Material 3)
+@* E2E для Android — вкладка «Книги»: история загрузок, в том числе неудачных (Material 3)
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @page "/books"
 @implements IDisposable
 @inject HistoryStore History
 @inject IBookStorage Storage
+@inject BookActions Actions
 @inject ToastService Toasts
+@inject NavigationManager Nav
 
 <div class="page">
     <p class="page-intro">
-        Сохраняются в «@Storage.DestinationLabel». Отправить на читалку — кнопка «Поделиться»:
-        Telegram, почта, Send to Kindle, облако читалки.
+        Сохраняются в «@Storage.DestinationLabel». Нажмите на книгу, чтобы посмотреть сведения о ней и файлы.
     </p>
 
     @if (_items == null)
@@ -26,22 +27,49 @@
     }
     else
     {
-        <section class="card list" aria-label="Скачанные книги">
-            @foreach (var file in _items)
+        <section class="book-tiles" aria-label="Скачанные книги">
+            @foreach (var item in _items)
             {
-                var missing = _missing.Contains(file.Id);
-                <FileRow File="file" Missing="missing" ShowBookTitle="true" ShowDate="true" @key="file.Id">
-                    @if (_confirmId == file.Id)
-                    {
-                        <button type="button" class="btn btn-text btn-danger" @onclick="() => Delete(file)">Удалить</button>
-                        <button type="button" class="btn btn-text" @onclick="() => _confirmId = null">Нет</button>
-                    }
-                    else
-                    {
-                        <button type="button" class="icon-button" @onclick="() => AskDelete(file, missing)"
-                                aria-label="@(missing ? "Убрать из списка" : "Удалить файл")"><Icon Name="@(missing ? "close" : "delete")" /></button>
-                    }
-                </FileRow>
+                var record = item.Record;
+                <div class="book-tile @(record.Failed ? "failed" : "")" @key="record.Id">
+                    <button type="button" class="book-tile-main" @onclick="() => Open(record)" aria-label="@(record.DisplayTitle + ": сведения о книге")">
+                        <span class="book-cover tile">
+                            @if (item.Cover != null)
+                            {
+                                <img src="@item.Cover" alt="" />
+                            }
+                            else
+                            {
+                                <Icon Name="@(record.Failed ? "error" : "book")" Size="24" />
+                            }
+                        </span>
+                        <span class="book-tile-text">
+                            <span class="book-tile-title">@record.DisplayTitle</span>
+                            @if (!string.IsNullOrWhiteSpace(record.Author))
+                            {
+                                <span class="book-tile-meta">@record.Author</span>
+                            }
+                            @if (record.Failed)
+                            {
+                                <span class="book-tile-error"><Icon Name="error" Size="16" />Не скачалось: @record.Error</span>
+                            }
+                            else
+                            {
+                                <span class="book-tile-meta">@Meta(item)</span>
+                            }
+                        </span>
+                    </button>
+                    <div class="book-tile-actions">
+                        @if (record.Failed || item.Missing)
+                        {
+                            <button type="button" class="icon-button" aria-label="Скачать заново" @onclick="() => Retry(record)"><Icon Name="retry" /></button>
+                        }
+                        else
+                        {
+                            <button type="button" class="icon-button" aria-label="Поделиться" @onclick="() => Actions.Share(record)"><Icon Name="share" /></button>
+                        }
+                    </div>
+                </div>
             }
         </section>
         <div class="row centered">
@@ -51,9 +79,9 @@
 </div>
 
 @code {
-    private List<SavedFile> _items;
-    private HashSet<string> _missing = [];
-    private string _confirmId;
+    private sealed record Item(BookRecord Record, string Cover, bool Missing);
+
+    private List<Item> _items;
 
     protected override async Task OnInitializedAsync()
     {
@@ -63,33 +91,42 @@
 
     private async Task Reload()
     {
-        var items = History.Items.ToList();
-        // Проверка, что файл ещё на месте: пользователь мог удалить его в «Файлах»
-        var missing = await Task.Run(() => items.Where(f => !Storage.Exists(f)).Select(f => f.Id).ToHashSet());
-        _items = items;
-        _missing = missing;
+        var records = History.Records;
+        // Обложки и проверка «файлы ещё на месте» — с диска и через ContentResolver, не в UI-потоке
+        _items = await Task.Run(() => records
+            .Select(r => new Item(r, BookActions.CoverDataUrl(r), !r.Failed && r.Files.Count > 0 && !r.Files.Any(Storage.Exists)))
+            .ToList());
     }
 
-    private void AskDelete(SavedFile file, bool missing)
+    /// <summary>«EPUB · 1,4 МБ · 28.10.26 14:05», для удалённых файлов — пометка.</summary>
+    private static string Meta(Item item)
     {
-        if (missing)
+        var record = item.Record;
+        var parts = new List<string>();
+        var book = record.Files.FirstOrDefault(f => f.IsBook);
+        if (book != null)
         {
-            History.Remove(file.Id);
-            return;
+            parts.Add(book.Extension.ToUpperInvariant());
+            parts.Add(Formatting.Size(book.Size));
         }
 
-        _confirmId = file.Id;
+        parts.Add(record.Date.LocalDateTime.ToString("dd.MM.yy HH:mm"));
+        if (item.Missing)
+        {
+            parts.Add("файлы удалены");
+        }
+
+        return string.Join(" · ", parts);
     }
 
-    private void Delete(SavedFile file)
-    {
-        _confirmId = null;
-        if (!Storage.Delete(file))
-        {
-            Toasts.Show("Файл не удалось удалить (возможно, он создан до переустановки приложения) — уберу из списка", ToastKind.Error);
-        }
+    private void Open(BookRecord record) => Nav.NavigateTo("books/" + record.Id);
 
-        History.Remove(file.Id);
+    private async Task Retry(BookRecord record)
+    {
+        if (await Actions.RetryAsync(record))
+        {
+            Nav.NavigateTo("");
+        }
     }
 
     private void ClearList()

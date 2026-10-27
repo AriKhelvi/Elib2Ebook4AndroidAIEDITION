@@ -227,6 +227,7 @@ code {
 /* Слой нажатия Material: полупрозрачная заливка цветом текста поверх элемента */
 .icon-button::after,
 .btn::after,
+.book-tile-main::after,
 .list-item::after,
 .filter-chip::after,
 .assist-chip::after,
@@ -245,6 +246,7 @@ code {
 
 .icon-button:active::after,
 .btn:active::after,
+.book-tile-main:active::after,
 button.list-item:active::after,
 a.list-item:active::after,
 label.list-item:active::after,
@@ -1121,6 +1123,21 @@ button.assist-chip {
     color: var(--md-on-secondary-container);
 }
 
+/* Формат, который не подходит для сайта (TXT для комиксов, CBZ для текста) */
+.segment:disabled,
+.switch:disabled {
+    opacity: 0.38;
+    cursor: default;
+}
+
+.segment:disabled::after {
+    display: none;
+}
+
+.supporting-text.warning {
+    color: var(--md-error);
+}
+
 /* --- Прогресс ------------------------------------------------------------- */
 
 /* Бегущая полоса: ядро не сообщает общее число глав, поэтому без процентов */
@@ -1359,6 +1376,130 @@ button.assist-chip {
     line-height: 18px;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+}
+
+/* --- Вкладка «Книги» и экран книги ---------------------------------------- */
+
+.book-tiles {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.book-tile {
+    display: flex;
+    align-items: center;
+    border: var(--card-border);
+    border-radius: 16px;
+    background: var(--md-surface-container);
+    overflow: hidden;
+}
+
+.book-tile-main {
+    position: relative;
+    overflow: hidden;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 4px 12px 12px;
+    border: none;
+    background: transparent;
+    color: var(--md-on-surface);
+    text-align: left;
+    cursor: pointer;
+}
+
+.book-tile-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.book-tile-title {
+    font-size: 16px;
+    line-height: 22px;
+    font-weight: 500;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+
+.book-tile-meta {
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.book-tile-error {
+    font-size: 14px;
+    line-height: 20px;
+    color: var(--md-error);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+
+.book-tile-error .icon {
+    display: inline-block;
+    vertical-align: -3px;
+    margin-right: 4px;
+}
+
+.book-tile-actions {
+    flex-shrink: 0;
+    padding-right: 4px;
+}
+
+.book-cover.tile {
+    width: 56px;
+    height: 80px;
+}
+
+.book-cover.large {
+    width: 96px;
+    height: 138px;
+    border-radius: 12px;
+}
+
+.book-details-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+}
+
+.book-details-title {
+    margin: 0;
+    font-size: 22px;
+    line-height: 28px;
+    font-weight: 400;
+    overflow-wrap: anywhere;
+}
+
+a.book-host {
+    color: var(--md-on-surface-variant);
+}
+
+/* На экране книги аннотация целиком */
+.book-annotation.full {
+    display: block;
+    -webkit-line-clamp: unset;
+    color: var(--md-on-surface);
+}
+
+.book-annotation.full p + p {
+    margin-top: 8px;
 }
 
 /* --- Сайты и настройки ---------------------------------------------------- */

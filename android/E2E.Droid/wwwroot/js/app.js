@@ -6,21 +6,61 @@
    data-theme с итоговой темой — по нему css/m3.css выбирает цвета. */
 (function () {
     const THEME_KEY = 'elib-theme';
+    const DYNAMIC_KEY = 'elib-dynamic';   // '0' — цвета из обоев выключены
+    const PALETTE_KEY = 'elib-palette';   // {light:{--md-…:#…}, dark:{…}} — палитра Material You от Android
     const MODES = ['system', 'light', 'dark', 'amoled', 'eink'];
     const DARK_THEMES = ['dark', 'amoled'];
+    // В AMOLED из палитры берутся только акценты — фон остаётся чисто чёрным
+    const AMOLED_KEYS = ['--md-primary', '--md-on-primary', '--md-primary-container', '--md-on-primary-container',
+        '--md-secondary-container', '--md-on-secondary-container', '--md-tertiary-container',
+        '--md-on-tertiary-container', '--md-inverse-primary'];
     const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+    let appliedKeys = [];
+
+    function read(key) {
+        try { return localStorage.getItem(key); } catch (e) { return null; }
+    }
+
+    function write(key, value) {
+        try {
+            if (value === null) localStorage.removeItem(key);
+            else localStorage.setItem(key, value);
+        } catch (e) { }
+    }
 
     function savedMode() {
-        try {
-            const value = localStorage.getItem(THEME_KEY);
-            return MODES.indexOf(value) > 0 ? value : 'system';
-        } catch (e) {
-            return 'system';
-        }
+        const value = read(THEME_KEY);
+        return MODES.indexOf(value) > 0 ? value : 'system';
     }
 
     function effective(mode) {
         return mode === 'system' ? (systemDark.matches ? 'dark' : 'light') : mode;
+    }
+
+    function dynamicEnabled() {
+        return read(DYNAMIC_KEY) !== '0';
+    }
+
+    function palette() {
+        try { return JSON.parse(read(PALETTE_KEY) || 'null'); } catch (e) { return null; }
+    }
+
+    // Цвета из обоев — inline-переменными на <html>: они перекрывают фиксированную палитру из m3.css
+    function applyPalette(theme) {
+        const style = document.documentElement.style;
+        appliedKeys.forEach(key => style.removeProperty(key));
+        appliedKeys = [];
+
+        const p = palette();
+        if (!dynamicEnabled() || !p || theme === 'eink') return;
+        const scheme = theme === 'light' ? p.light : p.dark;
+        if (!scheme) return;
+
+        Object.keys(scheme).forEach(key => {
+            if (theme === 'amoled' && AMOLED_KEYS.indexOf(key) < 0) return;
+            style.setProperty(key, scheme[key]);
+            appliedKeys.push(key);
+        });
     }
 
     function apply(mode) {
@@ -28,6 +68,7 @@
         const root = document.documentElement;
         root.setAttribute('data-theme', theme);
         root.style.colorScheme = DARK_THEMES.indexOf(theme) >= 0 ? 'dark' : 'light';
+        applyPalette(theme);
         return theme;
     }
 
@@ -78,6 +119,18 @@
             return theme;
         },
         syncNative: syncNative,
+        // Палитра Material You от Android (null — у системы её нет); запоминается для следующего запуска
+        setDynamicPalette: p => {
+            write(PALETTE_KEY, p && (p.light || p.dark) ? JSON.stringify(p) : null);
+            apply(savedMode());
+            syncNative();
+        },
+        getDynamicEnabled: () => dynamicEnabled(),
+        setDynamicEnabled: enabled => {
+            write(DYNAMIC_KEY, enabled ? null : '0');
+            apply(savedMode());
+            syncNative();
+        },
         blur: () => { if (document.activeElement) document.activeElement.blur(); },
         scrollToBottom: id => {
             const el = document.getElementById(id);

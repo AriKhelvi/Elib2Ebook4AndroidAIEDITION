@@ -77,8 +77,57 @@ public sealed record BookPreview(
     }
 }
 
-/// <summary>Результат задания: название и автор (для истории) и список созданных файлов в рабочей папке.</summary>
-public sealed record BookJobResult(string Title, string Author, string OutputDir, IReadOnlyList<string> Files);
+/// <summary>Сведения о скачанной книге для вкладки «Книги»: описание, сколько глав и до какой, обложка.</summary>
+public sealed record BookInfo(
+    string Url,
+    string Title,
+    string Author,
+    string AuthorUrl,
+    IReadOnlyList<string> CoAuthors,
+    string SeriaName,
+    string SeriaNumber,
+    string SeriaUrl,
+    string Annotation,
+    int Chapters,
+    string LastChapter,
+    byte[] Cover)
+{
+    /// <summary>Аннотации бывают огромными (с картинками и стихами) — в историю кладём не больше этого.</summary>
+    private const int MaxAnnotation = 8000;
+
+    public static BookInfo From(Book book)
+    {
+        // Глава без текста (IsValid == false) не скачалась или вне выбранного диапазона
+        var chapters = book.Chapters.Where(c => c.IsValid).ToList();
+        var annotation = book.Annotation;
+        if (annotation is { Length: > MaxAnnotation })
+        {
+            annotation = annotation[..MaxAnnotation] + "…";
+        }
+
+        return new BookInfo(
+            book.Url?.ToString(),
+            book.Title,
+            book.Author?.Name,
+            book.Author?.Url?.ToString(),
+            (book.CoAuthors ?? []).Select(a => a.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList(),
+            book.Seria?.Name,
+            book.Seria?.Number,
+            book.Seria?.Url?.ToString(),
+            annotation,
+            chapters.Count,
+            chapters.LastOrDefault()?.Title,
+            book.Cover?.Content is { Length: > 0 } cover ? cover : null);
+    }
+}
+
+/// <summary>Результат задания: сведения о книге (для истории) и список созданных файлов в рабочей папке.</summary>
+public sealed record BookJobResult(BookInfo Info, string OutputDir, IReadOnlyList<string> Files)
+{
+    public string Title => Info.Title;
+
+    public string Author => Info.Author;
+}
 
 /// <summary>
 /// Тот же конвейер, что в Elib2EbookCli/Elib2EbookWeb: Init → Authorize → Get → Build по форматам.
@@ -159,7 +208,8 @@ public static class BookPipeline
             }
 
             var files = Directory.EnumerateFiles(options.SavePath, "*", SearchOption.AllDirectories).ToList();
-            return new BookJobResult(book.Title, book.Author?.Name, options.SavePath, files);
+            // Обложку забираем до выхода: временные файлы книги удалятся вместе с book
+            return new BookJobResult(BookInfo.From(book), options.SavePath, files);
         }
         catch (Exception ex) when (ct.IsCancellationRequested && ex is not OperationCanceledException)
         {

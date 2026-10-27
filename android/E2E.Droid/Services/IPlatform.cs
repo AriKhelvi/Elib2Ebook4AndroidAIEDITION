@@ -55,6 +55,18 @@ public interface IPlatformServices
 
     bool IsInForeground { get; }
 
+    /// <summary>Есть ли у системы палитра из обоев (Material You, Android 12+).</summary>
+    bool SupportsDynamicColor { get; }
+
+    /// <summary>Палитра Material You для светлой или тёмной темы: CSS-переменная → #RRGGBB; null — палитры нет.</summary>
+    IReadOnlyDictionary<string, string> GetDynamicColorScheme(bool dark);
+
+    /// <summary>
+    /// Уменьшенная копия обложки для вкладки «Книги» (JPEG ~240 px по высоте) в личной папке приложения.
+    /// </summary>
+    /// <returns>Путь к файлу или null, если картинку не удалось прочитать.</returns>
+    string SaveThumbnail(byte[] image, string name);
+
     /// <summary>Версия приложения (versionName): 0.2.0 или 0.2.1-dev.5.</summary>
     string AppVersion { get; }
 

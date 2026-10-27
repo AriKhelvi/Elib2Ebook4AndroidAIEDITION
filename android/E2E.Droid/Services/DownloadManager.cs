@@ -266,8 +266,11 @@ public sealed class DownloadManager(
                     throw new InvalidOperationException("Ядро не создало ни одного файла");
                 }
 
-                // В историю («Книги») попадают только файлы из корня: книги и обложки, без россыпи доп. файлов
-                history.AddRange(saved.Where(f => string.IsNullOrEmpty(f.Folder)));
+                // Запись для вкладки «Книги»: сведения о книге и файлы из корня (книги и обложка, без доп. файлов)
+                var record = NewRecord(url, request);
+                record.Files = saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
+                FillRecord(record, result.Info);
+                history.Add(record);
                 lock (_saved) _saved.AddRange(saved);
                 Write(jobId, $"Готово: {result.Title} ({saved.Count} файл(ов))");
             }
@@ -290,6 +293,12 @@ public sealed class DownloadManager(
                 lock (_errors) _errors.Add($"{url}: {message}");
                 // В журнал — полный текст исключения со стеком: пригодится для отчёта об ошибке
                 Write(jobId, $"Генерация книги {url} завершилась с ошибкой. {ex}");
+
+                // Неудачная загрузка тоже попадает в «Книги» — с пометкой и кнопкой «Скачать заново»
+                var failed = NewRecord(url, request);
+                failed.Error = message;
+                FillRecord(failed, Preview);
+                history.Add(failed);
             }
             finally
             {
@@ -370,6 +379,59 @@ public sealed class DownloadManager(
             SavePath = Path.Combine(workDir, "out"), // сюда билдеры пишут готовые файлы
             TempPath = Path.Combine(workDir, "tmp")  // сюда ядро складывает скачанные картинки
         };
+    }
+
+    private static BookRecord NewRecord(string url, DownloadRequest request) => new()
+    {
+        Url = url,
+        Formats = request.Formats.ToList(),
+        NoImage = request.NoImage
+    };
+
+    /// <summary>Сведения о скачанной книге — из того, что вернуло ядро.</summary>
+    private void FillRecord(BookRecord record, BookInfo info)
+    {
+        record.Title = info.Title;
+        record.Author = info.Author;
+        record.AuthorUrl = info.AuthorUrl;
+        record.CoAuthors = info.CoAuthors.ToList();
+        record.SeriaName = info.SeriaName;
+        record.SeriaNumber = info.SeriaNumber;
+        record.SeriaUrl = info.SeriaUrl;
+        record.Annotation = info.Annotation;
+        record.Chapters = info.Chapters;
+        record.LastChapter = info.LastChapter;
+        record.CoverPath = info.Cover == null ? null : platform.SaveThumbnail(info.Cover, record.Id);
+    }
+
+    /// <summary>Не скачалось — берём что успели узнать из карточки книги (если ядро до неё дошло).</summary>
+    private void FillRecord(BookRecord record, BookPreview preview)
+    {
+        if (preview == null)
+        {
+            return;
+        }
+
+        record.Title = preview.Title;
+        record.Author = preview.Author;
+        record.AuthorUrl = preview.AuthorUrl;
+        record.SeriaName = preview.Seria;
+        record.SeriaUrl = preview.SeriaUrl;
+        record.Annotation = preview.Annotation;
+
+        // Обложка в карточке — data:-URL (data:image/jpeg;base64,…)
+        var comma = preview.CoverDataUrl?.IndexOf(',') ?? -1;
+        if (comma > 0)
+        {
+            try
+            {
+                record.CoverPath = platform.SaveThumbnail(Convert.FromBase64String(preview.CoverDataUrl[(comma + 1)..]), record.Id);
+            }
+            catch (FormatException)
+            {
+                // битая картинка — запись будет без обложки
+            }
+        }
     }
 
     /// <summary>Строка журнала от ядра или от нас: в журнал, в статус и (не чаще раза в секунду) в шторку.</summary>

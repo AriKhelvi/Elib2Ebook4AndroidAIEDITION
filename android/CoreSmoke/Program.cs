@@ -67,6 +67,9 @@ var result = await BookPipeline.RunAsync(options, logger, p => preview = p, Canc
 Console.WriteLine($"Готово за {sw.Elapsed.TotalSeconds:0.0} с, строк лога: {lines}");
 Console.WriteLine($"Превью: «{preview?.Title}» / {preview?.Author}, обложка: {(preview?.CoverDataUrl == null ? "нет" : preview.CoverDataUrl.Length + " симв.")}");
 Console.WriteLine($"Книга: «{result.Title}» / {result.Author}");
+var bookInfo = result.Info;
+Console.WriteLine($"Для «Книг»: глав {bookInfo.Chapters}, последняя «{bookInfo.LastChapter}», серия «{bookInfo.SeriaName}» #{bookInfo.SeriaNumber} ({bookInfo.SeriaUrl}), " +
+                  $"соавторы: {string.Join(", ", bookInfo.CoAuthors)}, аннотация: {bookInfo.Annotation?.Length ?? 0} симв., обложка: {bookInfo.Cover?.Length ?? 0} байт");
 
 foreach (var file in result.Files)
 {

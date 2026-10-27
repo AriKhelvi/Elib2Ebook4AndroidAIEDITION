@@ -106,6 +106,52 @@
         <ProjectReference Include="$(E2ECoreDir)src\ExternalServices\**\*.csproj" />
     </ItemGroup>
 
+    <!--
+      Нерабочие сайты. Проверено 2026-10-28 из сети владельца форка: домен через публичный DNS (dns.google) и
+      главная страница сайта (curl, 20–40 с). Обход защит сайтов (Cloudflare и т.п.) приложение не делает, поэтому
+      сайты, которые всегда показывают проверку «вы не робот», тоже считаются нерабочими.
+      - E2EDisabledLoader — загрузчик целиком не попадает в APK (все его сайты мертвы).
+      - E2EDeadSite — домен скрывается из вкладки «Сайты» и объясняется там (Reason); у живых загрузчиков
+        с несколькими доменами так прячутся только мёртвые домены.
+      Сайт ожил — уберите его отсюда (загрузчики остаются в ядре, в src/ExternalServices).
+      В Reason нельзя «;», кавычки, «%», «$» и «@» — список превращается в C#-код (см. E2EGenerateExternalServicesList).
+    -->
+    <ItemGroup Label="Нерабочие сайты">
+        <E2EDisabledLoader Include="Bookinist;Desu;IGram;Libbox;Litmir;Ranobe;Romfant;MirKnig;OnlineKnigi;DarkNovels;FanFicus;ReadManga;Librebook;BookInBook;Libst;Novelxo;WuxiaWorld;HubBook;Novelhall" />
+
+        <E2EDeadSite Include="bookinist.pw" Reason="домена больше нет в DNS" />
+        <E2EDeadSite Include="desu.me" Reason="домен не находится в публичном DNS" />
+        <E2EDeadSite Include="i-gram.ru" Reason="домен не находится в публичном DNS" />
+        <E2EDeadSite Include="libbox.ru" Reason="домена больше нет в DNS" />
+        <E2EDeadSite Include="litmir.me" Reason="домена больше нет в DNS" />
+        <E2EDeadSite Include="ранобэ.рф" Reason="DNS домена не отвечает" />
+        <E2EDeadSite Include="romfant.ru" Reason="DNS домена не отвечает, сайт не открывается" />
+        <E2EDeadSite Include="mir-knig.com" Reason="домен выставлен на продажу" />
+        <E2EDeadSite Include="online-knigi.com.ua" Reason="домен перехвачен — ведёт на сайт казино" />
+        <E2EDeadSite Include="dark-novels.ru" Reason="сайт отвечает «Сайт недоступен» (503)" />
+        <E2EDeadSite Include="fanficus.com" Reason="сайт закрыт на обслуживание (503)" />
+        <E2EDeadSite Include="readmanga.live" Reason="по этому адресу сайта больше нет (404)" />
+        <E2EDeadSite Include="librebook.me" Reason="по этому адресу сайта больше нет (404)" />
+        <E2EDeadSite Include="bookinbook.ru" Reason="сайт не отвечает" />
+        <E2EDeadSite Include="libst.ru" Reason="сайт не отвечает" />
+        <E2EDeadSite Include="novelxo.com" Reason="сайт не отвечает" />
+        <E2EDeadSite Include="ru.novelxo.com" Reason="сайт не отвечает" />
+        <E2EDeadSite Include="wuxiaworld.ru" Reason="сайт не отвечает" />
+        <E2EDeadSite Include="hub-book.com" Reason="всегда показывает проверку Cloudflare — без браузера не пройти" />
+        <E2EDeadSite Include="novelhall.com" Reason="всегда показывает проверку Cloudflare — без браузера не пройти" />
+        <!-- Мёртвые домены живых загрузчиков -->
+        <E2EDeadSite Include="bigliba.com" Reason="домен истёк (остался topliba.com)" />
+        <E2EDeadSite Include="eznovels.com" Reason="домен ведёт на рекламу (остался hotnovelpub.com)" />
+        <E2EDeadSite Include="lanovels.com" Reason="домена больше нет в DNS (остался hotnovelpub.com)" />
+        <E2EDeadSite Include="lightnoveldaily.com" Reason="домена больше нет в DNS (остался hotnovelpub.com)" />
+        <E2EDeadSite Include="novel.ovh" Reason="домена больше нет в DNS (остался manga.ovh)" />
+        <E2EDeadSite Include="erolate.com" Reason="сайт не отвечает (522) — остальные сайты Rulate работают" />
+        <E2EDeadSite Include="mlate.ru" Reason="ошибка защищённого соединения — остальные сайты Rulate работают" />
+    </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Remove="@(E2EDisabledLoader->'$(E2ECoreDir)src\ExternalServices\Elib2Ebook.ExternalServices.%(Identity)\Elib2Ebook.ExternalServices.%(Identity).csproj')" />
+    </ItemGroup>
+
     <!-- README ядра вшивается в приложение: из раздела «Поддерживаемые сайты» строится вкладка «Сайты» -->
     <ItemGroup>
         <EmbeddedResource Include="$(E2ECoreDir)README.md" LogicalName="Elib2Ebook.README.md" Visible="false" />
@@ -147,6 +193,11 @@
             <_E2ELine Include="    public static readonly string[] AssemblyNames =" />
             <_E2ELine Include="    [" />
             <_E2ELine Include="@(_E2EServiceProject->'        &quot;%(Filename)&quot;,')" />
+            <_E2ELine Include="    ]%3B" />
+            <_E2ELine Include="    // Нерабочие сайты: домен и причина (E2EDeadSite выше)" />
+            <_E2ELine Include="    public static readonly (string Host, string Reason)[] DisabledSites =" />
+            <_E2ELine Include="    [" />
+            <_E2ELine Include="@(E2EDeadSite->'        (&quot;%(Identity)&quot;, &quot;%(Reason)&quot;),')" />
             <_E2ELine Include="    ]%3B" />
             <_E2ELine Include="}" />
             <TrimmerRootAssembly Include="@(_E2EServiceProject->'%(Filename)')" />

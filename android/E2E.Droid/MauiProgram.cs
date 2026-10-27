@@ -18,6 +18,7 @@ public static class MauiProgram
         // Сайты на windows-1251 и т.п. — как в Elib2EbookCli
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         GetterResolver.Configure(ExternalServicesList.AssemblyNames);
+        SupportedSites.Configure(ExternalServicesList.DisabledSites);
 
         var builder = MauiApp.CreateBuilder();
         builder.UseMauiApp<App>();
@@ -35,6 +36,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<IBookStorage, AndroidBookStorage>();
         builder.Services.AddSingleton<IPlatformServices, AndroidPlatformServices>();
         builder.Services.AddSingleton<DownloadManager>();
+        builder.Services.AddSingleton<BookActions>();
 
         var app = builder.Build();
         Services = app.Services;

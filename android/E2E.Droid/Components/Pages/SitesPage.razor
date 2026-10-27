@@ -1,11 +1,11 @@
-@* E2E для Android — вкладка «Сайты»: README ядра, сверенный с загрузчиками (Material 3)
+@* E2E для Android — вкладка «Сайты»: сайты с загрузчиками в этой сборке и отключённые нерабочие (Material 3)
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @page "/sites"
 
 <div class="page">
     <p class="page-intro">
-        Список из <a href="https://github.com/OnlyFart/Elib2Ebook#поддерживаемые-сайты" target="_blank" rel="noopener">README Elib2Ebook</a>,
-        сверенный с загрузчиками ядра этой сборки. Откройте сайт, найдите книгу и поделитесь ею в E2E.
+        Сайты, для которых в этой сборке есть загрузчик: из <a href="https://github.com/OnlyFart/Elib2Ebook#поддерживаемые-сайты" target="_blank" rel="noopener">README Elib2Ebook</a>
+        и те, что ядро умеет, но в README их нет. Откройте сайт, найдите книгу и поделитесь ею в E2E.
     </p>
 
     @if (_sites == null)
@@ -14,63 +14,68 @@
     }
     else
     {
-        var inReadme = Filter(s => s.InReadme);
-        var coreOnly = Filter(s => !s.InReadme);
+        var available = Filter(s => s.Available);
+        var disabled = Filter(s => s.DisabledReason != null);
 
         <label class="search-bar">
             <Icon Name="search" />
             <input type="search" placeholder="Поиск сайта" aria-label="Поиск сайта" @bind="_search" @bind:event="oninput" />
         </label>
 
-        @if (inReadme.Count > 0)
+        @if (available.Count > 0)
         {
-            <section class="card list" aria-label="Сайты из README">
-                @foreach (var site in inReadme)
+            <section class="card list" aria-label="Поддерживаемые сайты">
+                @foreach (var site in available)
                 {
-                    <a class="list-item @(site.HasGetter ? "" : "two-line")" href="@site.Url" target="_blank" rel="noopener" @key="site.Url">
+                    <a class="list-item" href="@site.Url" target="_blank" rel="noopener" @key="site.Url">
                         <span class="list-item-leading"><Icon Name="globe" /></span>
-                        <span class="list-item-text">
-                            <span class="list-item-headline">@site.Name</span>
-                            @if (!site.HasGetter)
-                            {
-                                <span class="list-item-supporting">есть в README, но нет загрузчика в ядре</span>
-                            }
-                        </span>
+                        <span class="list-item-text"><span class="list-item-headline">@site.Name</span></span>
                         <span class="list-item-trailing"><Icon Name="external" Size="20" /></span>
                     </a>
                 }
             </section>
         }
-
-        @if (coreOnly.Count > 0)
-        {
-            <section class="section">
-                <h2 class="section-title">Есть в ядре, но нет в README</h2>
-                <div class="card list">
-                    @foreach (var site in coreOnly)
-                    {
-                        <a class="list-item" href="@site.Url" target="_blank" rel="noopener" @key="site.Url">
-                            <span class="list-item-leading"><Icon Name="globe" /></span>
-                            <span class="list-item-text"><span class="list-item-headline">@site.Name</span></span>
-                            <span class="list-item-trailing"><Icon Name="external" Size="20" /></span>
-                        </a>
-                    }
-                </div>
-            </section>
-        }
-
-        @if (inReadme.Count + coreOnly.Count == 0)
+        else
         {
             <div class="empty-state"><p>Ничего не найдено</p></div>
         }
 
-        <p class="hint-row">В README: @_sites.Count(s => s.InReadme) · работают в этой сборке: @_sites.Count(s => s.HasGetter)</p>
+        @if (disabled.Count > 0)
+        {
+            <section class="card" aria-label="Отключённые сайты">
+                <button type="button" class="list-item two-line" aria-expanded="@(_showDisabled ? "true" : "false")" @onclick="() => _showDisabled = !_showDisabled">
+                    <span class="list-item-leading"><Icon Name="error" /></span>
+                    <span class="list-item-text">
+                        <span class="list-item-headline">Отключены как нерабочие: @disabled.Count</span>
+                        <span class="list-item-supporting">Проверено 28.10.2026 — сайты закрылись или недоступны</span>
+                    </span>
+                    <Icon Name="chevron" Class="@($"chevron {(_showDisabled ? "open" : "")}")" />
+                </button>
+                @if (_showDisabled)
+                {
+                    <div class="list">
+                        @foreach (var site in disabled)
+                        {
+                            <div class="list-item two-line" @key="site.Url">
+                                <span class="list-item-text">
+                                    <span class="list-item-headline">@site.Name</span>
+                                    <span class="list-item-supporting">@site.DisabledReason</span>
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+        }
+
+        <p class="hint-row">Работают в этой сборке: @_sites.Count(s => s.Available)</p>
     }
 </div>
 
 @code {
     private string _search = string.Empty;
     private IReadOnlyList<SiteEntry> _sites;
+    private bool _showDisabled;
 
     protected override async Task OnInitializedAsync()
     {

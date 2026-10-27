@@ -1,0 +1,233 @@
+@* E2E для Android — экран книги из вкладки «Книги»: сведения, файлы, «Скачать заново» (Material 3)
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
+@page "/books/{Id}"
+@implements IDisposable
+@inject HistoryStore History
+@inject IBookStorage Storage
+@inject BookActions Actions
+@inject ToastService Toasts
+@inject NavigationManager Nav
+
+<div class="page">
+    @if (_record == null)
+    {
+        <div class="empty-state">
+            <Icon Name="library" Size="48" />
+            <p>Этой записи больше нет</p>
+            <a class="btn btn-filled" href="books">К списку книг</a>
+        </div>
+    }
+    else
+    {
+        var record = _record;
+        <section class="book-details-header">
+            <div class="book-cover large">
+                @if (_cover != null)
+                {
+                    <img src="@_cover" alt="Обложка" />
+                }
+                else
+                {
+                    <Icon Name="@(record.Failed ? "error" : "book")" Size="36" />
+                }
+            </div>
+            <div class="book-info">
+                <h2 class="book-details-title">@record.DisplayTitle</h2>
+                @if (!string.IsNullOrWhiteSpace(record.Author))
+                {
+                    <span class="book-meta">
+                        @if (string.IsNullOrEmpty(record.AuthorUrl))
+                        {
+                            @record.Author
+                        }
+                        else
+                        {
+                            <a href="@record.AuthorUrl" target="_blank" rel="noopener">@record.Author</a>
+                        }
+                        @if (record.CoAuthors.Count > 0)
+                        {
+                            <text>, @string.Join(", ", record.CoAuthors)</text>
+                        }
+                    </span>
+                }
+                @if (record.SeriaDisplay is { } seria)
+                {
+                    <span class="book-meta">
+                        Серия:
+                        @if (string.IsNullOrEmpty(record.SeriaUrl))
+                        {
+                            @seria
+                        }
+                        else
+                        {
+                            <a href="@record.SeriaUrl" target="_blank" rel="noopener">@seria</a>
+                        }
+                    </span>
+                }
+                @if (record.Host != null)
+                {
+                    <a class="book-host" href="@record.Url" target="_blank" rel="noopener">@record.Host</a>
+                }
+            </div>
+        </section>
+
+        @if (record.Failed)
+        {
+            <section class="card card-error" aria-label="Ошибка">
+                <div class="card-header">
+                    <span class="card-header-icon"><Icon Name="error" /></span>
+                    <div class="card-header-text"><h2 class="card-title">Не скачалось</h2></div>
+                </div>
+                <div class="card-body">
+                    <p class="error-text">@record.Error</p>
+                    <p class="card-subtitle">@record.Date.LocalDateTime.ToString("dd.MM.yyyy HH:mm") · подробности были в журнале на главном экране.</p>
+                </div>
+            </section>
+        }
+        else
+        {
+            <section class="card list" aria-label="Сведения">
+                @if (record.Chapters > 0)
+                {
+                    <div class="list-item two-line">
+                        <span class="list-item-leading"><Icon Name="range" /></span>
+                        <span class="list-item-text">
+                            <span class="list-item-headline">@Formatting.Plural(record.Chapters, "глава", "главы", "глав")</span>
+                            @if (!string.IsNullOrWhiteSpace(record.LastChapter))
+                            {
+                                <span class="list-item-supporting">Последняя: «@record.LastChapter»</span>
+                            }
+                        </span>
+                    </div>
+                }
+                <div class="list-item two-line">
+                    <span class="list-item-leading"><Icon Name="download" /></span>
+                    <span class="list-item-text">
+                        <span class="list-item-headline">Скачано @record.Date.LocalDateTime.ToString("dd.MM.yyyy HH:mm")</span>
+                        <span class="list-item-supporting">@string.Join(", ", record.Formats.Select(f => f.ToUpperInvariant()))@(record.NoImage ? " · без картинок" : "")</span>
+                    </span>
+                </div>
+            </section>
+        }
+
+        <div class="row">
+            <button type="button" class="btn @(record.Failed || _allMissing ? "btn-filled" : "btn-tonal")" @onclick="Retry">
+                <Icon Name="retry" Size="18" />Скачать заново
+            </button>
+            @if (!record.Failed && !_allMissing)
+            {
+                <button type="button" class="btn btn-outlined" @onclick="() => Actions.Share(record)"><Icon Name="share" Size="18" />Поделиться</button>
+            }
+        </div>
+
+        @if (record.Files.Count > 0)
+        {
+            <section class="section">
+                <h2 class="section-title">Файлы</h2>
+                <div class="card list">
+                    @foreach (var file in record.Files)
+                    {
+                        var missing = _missing.Contains(file.Id);
+                        <FileRow File="file" Missing="missing" ShowDate="false" @key="file.Id">
+                            @if (_confirmId == file.Id)
+                            {
+                                <button type="button" class="btn btn-text btn-danger" @onclick="() => DeleteFile(file)">Удалить</button>
+                                <button type="button" class="btn btn-text" @onclick="() => _confirmId = null">Нет</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="icon-button" aria-label="@(missing ? "Убрать из списка" : "Удалить файл")"
+                                        @onclick="() => AskDelete(file, missing)"><Icon Name="@(missing ? "close" : "delete")" /></button>
+                            }
+                        </FileRow>
+                    }
+                </div>
+            </section>
+        }
+
+        @if (SafeHtml.Clean(record.Annotation) is { } annotation)
+        {
+            <section class="section">
+                <h2 class="section-title">Аннотация</h2>
+                <div class="card card-padded book-annotation full">@((MarkupString)annotation)</div>
+            </section>
+        }
+
+        <div class="row centered">
+            <button type="button" class="btn btn-text btn-danger" @onclick="RemoveRecord">Убрать из списка (файлы останутся)</button>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public string Id { get; set; }
+
+    private BookRecord _record;
+    private string _cover;
+    private HashSet<string> _missing = [];
+    private bool _allMissing;
+    private string _confirmId;
+
+    protected override void OnInitialized() => History.Changed += OnChanged;
+
+    protected override Task OnParametersSetAsync() => Reload();
+
+    private async Task Reload()
+    {
+        _record = History.Get(Id);
+        if (_record == null)
+        {
+            return;
+        }
+
+        var record = _record;
+        (_cover, _missing) = await Task.Run(() => (
+            BookActions.CoverDataUrl(record),
+            record.Files.Where(f => !Storage.Exists(f)).Select(f => f.Id).ToHashSet()));
+        _allMissing = record.Files.Count > 0 && _missing.Count == record.Files.Count;
+    }
+
+    private async Task Retry()
+    {
+        if (await Actions.RetryAsync(_record))
+        {
+            Nav.NavigateTo("");
+        }
+    }
+
+    private void AskDelete(SavedFile file, bool missing)
+    {
+        if (missing)
+        {
+            History.RemoveFile(_record.Id, file.Id);
+            return;
+        }
+
+        _confirmId = file.Id;
+    }
+
+    private void DeleteFile(SavedFile file)
+    {
+        _confirmId = null;
+        if (!Storage.Delete(file))
+        {
+            Toasts.Show("Файл не удалось удалить (возможно, он создан до переустановки приложения) — уберу из списка", ToastKind.Error);
+        }
+
+        History.RemoveFile(_record.Id, file.Id);
+    }
+
+    private void RemoveRecord()
+    {
+        History.Remove(_record.Id);
+        Nav.NavigateTo("books");
+    }
+
+    private void OnChanged() => InvokeAsync(async () =>
+    {
+        await Reload();
+        StateHasChanged();
+    });
+
+    public void Dispose() => History.Changed -= OnChanged;
+}
