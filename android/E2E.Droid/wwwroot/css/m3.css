@@ -1,0 +1,1480 @@
+/* ============================================================================
+   E2E для Android — стили интерфейса в духе Material 3 (baseline, не Expressive)
+   ----------------------------------------------------------------------------
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
+   ============================================================================
+
+   Устройство:
+   - цвета — роли Material 3 (--md-primary, --md-surface-container…) на :root[data-theme]; тему ставит js/app.js
+     до первой отрисовки: light | dark | amoled | eink («как в системе» превращается в light или dark);
+   - AMOLED — тёмная тема на чистом чёрном; e-ink — монохром без серых заливок (на электронных чернилах они
+     рябят): контуры 2px, выбранное — чёрным, без анимаций (--dur: 0ms);
+   - всё, что отличает темы помимо цветов, тоже вынесено в переменные (--card-border, --menu-shadow…);
+   - только то, что умеет встроенный браузер Chrome 94+ (минимум для Blazor, см. MainActivity.MinWebViewMajor):
+     без :has(), color-mix(), вложенных правил, @layer и единиц dvh. */
+
+/* --- Цветовые схемы ------------------------------------------------------- */
+
+:root,
+:root[data-theme="light"] {
+    --md-primary: #0061A4;
+    --md-on-primary: #FFFFFF;
+    --md-primary-container: #D1E4FF;
+    --md-on-primary-container: #001D36;
+    --md-secondary-container: #D7E3F7;
+    --md-on-secondary-container: #101C2B;
+    --md-tertiary-container: #F2DAFF;
+    --md-on-tertiary-container: #251431;
+    --md-error: #BA1A1A;
+    --md-error-container: #FFDAD6;
+    --md-on-error-container: #410002;
+    --md-surface: #F8F9FF;
+    --md-on-surface: #191C20;
+    --md-on-surface-variant: #43474E;
+    --md-surface-container-low: #F2F3FA;
+    --md-surface-container: #ECEEF4;
+    --md-surface-container-high: #E6E8EE;
+    --md-surface-container-highest: #E0E2E8;
+    --md-outline: #73777F;
+    --md-outline-variant: #C3C7CF;
+    --md-inverse-surface: #2E3135;
+    --md-inverse-on-surface: #EFF0F7;
+    --md-inverse-primary: #9ECAFF;
+    --md-inverse-error: #FFB4AB;
+
+    --nav-bg: var(--md-surface-container);
+    --nav-border: none;
+    --menu-bg: var(--md-surface-container);
+    --menu-border: none;
+    --menu-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px 2px rgba(0, 0, 0, 0.15);
+    --card-border: none;
+    --cover-border: none;
+    --track: var(--md-secondary-container);
+    --track-border: none;
+    --bar-h: 4px;
+    --switch-off: var(--md-surface-container-highest);
+    --state-pressed: 0.12;
+    --dur: 200ms;
+}
+
+:root[data-theme="dark"],
+:root[data-theme="amoled"] {
+    --md-primary: #9ECAFF;
+    --md-on-primary: #003258;
+    --md-primary-container: #00497D;
+    --md-on-primary-container: #D1E4FF;
+    --md-secondary-container: #3B4858;
+    --md-on-secondary-container: #D7E3F7;
+    --md-tertiary-container: #523F5F;
+    --md-on-tertiary-container: #F2DAFF;
+    --md-error: #FFB4AB;
+    --md-error-container: #93000A;
+    --md-on-error-container: #FFDAD6;
+    --md-surface: #111418;
+    --md-on-surface: #E1E2E8;
+    --md-on-surface-variant: #C3C7CF;
+    --md-surface-container-low: #191C20;
+    --md-surface-container: #1D2024;
+    --md-surface-container-high: #272A2F;
+    --md-surface-container-highest: #32353A;
+    --md-outline: #8D9199;
+    --md-outline-variant: #43474E;
+    --md-inverse-surface: #E1E2E8;
+    --md-inverse-on-surface: #2E3135;
+    --md-inverse-primary: #0061A4;
+    --md-inverse-error: #BA1A1A;
+
+    --menu-bg: var(--md-surface-container-high);
+}
+
+/* AMOLED: та же тёмная, но фон — чистый чёрный (пиксели OLED-экрана выключены), а «приподнятые»
+   поверхности едва светлее; меню и нижняя панель отделяются тонкой линией вместо тени */
+:root[data-theme="amoled"] {
+    --md-surface: #000000;
+    --md-surface-container-low: #0A0C0F;
+    --md-surface-container: #121417;
+    --md-surface-container-high: #16191D;
+    --md-surface-container-highest: #1E2125;
+    --md-outline-variant: #33363B;
+
+    --nav-bg: #000000;
+    --nav-border: 1px solid #2A2D32;
+    --menu-bg: #16191D;
+    --menu-border: 1px solid #2A2D32;
+    --menu-shadow: none;
+    --switch-off: #1E2125;
+}
+
+/* E-ink: только чёрный и белый, всё выделяется контуром или инверсией; анимации выключены */
+:root[data-theme="eink"] {
+    --md-primary: #000000;
+    --md-on-primary: #FFFFFF;
+    --md-primary-container: #FFFFFF;
+    --md-on-primary-container: #000000;
+    --md-secondary-container: #000000;
+    --md-on-secondary-container: #FFFFFF;
+    --md-tertiary-container: #FFFFFF;
+    --md-on-tertiary-container: #000000;
+    --md-error: #000000;
+    --md-error-container: #FFFFFF;
+    --md-on-error-container: #000000;
+    --md-surface: #FFFFFF;
+    --md-on-surface: #000000;
+    --md-on-surface-variant: #2B2B2B;
+    --md-surface-container-low: #FFFFFF;
+    --md-surface-container: #FFFFFF;
+    --md-surface-container-high: #FFFFFF;
+    --md-surface-container-highest: #FFFFFF;
+    --md-outline: #000000;
+    --md-outline-variant: #000000;
+    --md-inverse-surface: #000000;
+    --md-inverse-on-surface: #FFFFFF;
+    --md-inverse-primary: #FFFFFF;
+    --md-inverse-error: #FFFFFF;
+
+    --nav-bg: #FFFFFF;
+    --nav-border: 2px solid #000000;
+    --menu-bg: #FFFFFF;
+    --menu-border: 2px solid #000000;
+    --menu-shadow: none;
+    --card-border: 2px solid #000000;
+    --cover-border: 2px solid #000000;
+    --track: #FFFFFF;
+    --track-border: 1px solid #000000;
+    --bar-h: 6px;
+    --switch-off: #FFFFFF;
+    --state-pressed: 0.2;
+    --dur: 0ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --dur: 0ms;
+    }
+}
+
+/* --- Основа --------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    background: var(--md-surface);
+    color: var(--md-on-surface);
+    font-family: Roboto, "Google Sans", "Noto Sans", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 24px;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+    color: inherit;
+}
+
+a {
+    color: var(--md-primary);
+    text-decoration: none;
+}
+
+code {
+    font-family: "Roboto Mono", ui-monospace, monospace;
+    font-size: 0.875em;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--md-surface-container-highest);
+}
+
+:root[data-theme="eink"] code {
+    border: 1px solid #000000;
+}
+
+/* На e-ink ссылки того же чёрного цвета, что и текст, — отличаем их подчёркиванием */
+:root[data-theme="eink"] .page-intro a,
+:root[data-theme="eink"] .book-meta a {
+    text-decoration: underline;
+}
+
+:focus {
+    outline: none;
+}
+
+:focus-visible {
+    outline: 2px solid var(--md-primary);
+    outline-offset: 2px;
+}
+
+.icon {
+    display: block;
+    flex-shrink: 0;
+}
+
+/* Слой нажатия Material: полупрозрачная заливка цветом текста поверх элемента */
+.icon-button::after,
+.btn::after,
+.list-item::after,
+.filter-chip::after,
+.assist-chip::after,
+.segment::after,
+.menu-item::after,
+.nav-indicator::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: currentColor;
+    opacity: 0;
+    transition: opacity var(--dur);
+    pointer-events: none;
+}
+
+.icon-button:active::after,
+.btn:active::after,
+button.list-item:active::after,
+a.list-item:active::after,
+label.list-item:active::after,
+.filter-chip:active::after,
+button.assist-chip:active::after,
+.segment:active::after,
+.menu-item:active::after,
+.nav-item:active .nav-indicator::after {
+    opacity: var(--state-pressed);
+}
+
+/* --- Каркас: верхняя панель, контент, нижняя навигация -------------------- */
+
+.app-shell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.top-app-bar {
+    height: 64px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 4px 0 16px;
+    background: var(--md-surface);
+}
+
+.top-app-bar-title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 22px;
+    line-height: 28px;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* «Качаю 1/2» в верхней панели, когда открыта другая вкладка */
+.top-bar-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 8px;
+    border: 1px solid var(--md-outline);
+    color: var(--md-on-surface);
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.app-content {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.nav-bar {
+    height: 80px;
+    flex-shrink: 0;
+    display: flex;
+    background: var(--nav-bg);
+    border-top: var(--nav-border);
+}
+
+/* Пока открыта клавиатура, нижняя панель прячется (класс ставит js/app.js) */
+.kb-open .nav-bar {
+    display: none;
+}
+
+.nav-item {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding-top: 12px;
+    color: var(--md-on-surface-variant);
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    text-decoration: none;
+}
+
+.nav-item.active {
+    color: var(--md-on-surface);
+    font-weight: 700;
+}
+
+.nav-indicator {
+    position: relative;
+    width: 64px;
+    height: 32px;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--dur);
+}
+
+.nav-item.active .nav-indicator {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+}
+
+.nav-badge {
+    position: absolute;
+    top: 4px;
+    right: 16px;
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--md-error);
+}
+
+:root[data-theme="eink"] .nav-item.active .nav-badge {
+    background: #FFFFFF;
+}
+
+/* --- Меню (выбор темы) ---------------------------------------------------- */
+
+.menu-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    padding: 0;
+    border: none;
+    background: transparent;
+}
+
+.menu {
+    position: absolute;
+    top: 56px;
+    right: 8px;
+    z-index: 21;
+    min-width: 232px;
+    padding: 8px 0;
+    border-radius: 4px;
+    border: var(--menu-border);
+    background: var(--menu-bg);
+    box-shadow: var(--menu-shadow);
+    display: flex;
+    flex-direction: column;
+}
+
+.menu-item {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 48px;
+    padding: 0 12px;
+    border: none;
+    background: transparent;
+    color: var(--md-on-surface);
+    font-size: 16px;
+    line-height: 24px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.menu-item.selected {
+    font-weight: 500;
+}
+
+.menu-item-icon {
+    display: flex;
+    color: var(--md-on-surface-variant);
+}
+
+.menu-item-label {
+    flex: 1;
+}
+
+.menu-item-check {
+    width: 24px;
+    display: flex;
+}
+
+/* --- Страница и текст ----------------------------------------------------- */
+
+.page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 8px 16px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.page-intro {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+}
+
+.section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Заголовок группы настроек — цветом primary, как в настройках Android */
+.section-title {
+    margin: 0;
+    padding: 0 4px;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    color: var(--md-primary);
+}
+
+/* Подпись над группой полей на главной */
+.section-label {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    color: var(--md-on-surface-variant);
+}
+
+.supporting-text {
+    margin: 4px 0 0;
+    padding: 0 16px;
+    font-size: 12px;
+    line-height: 16px;
+    letter-spacing: 0.4px;
+    color: var(--md-on-surface-variant);
+}
+
+.supporting-text.flush {
+    padding: 0;
+}
+
+.hint-row {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 12px;
+    line-height: 16px;
+    letter-spacing: 0.4px;
+    text-align: center;
+    color: var(--md-on-surface-variant);
+}
+
+.stack {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.row.centered {
+    justify-content: center;
+}
+
+.spacer {
+    flex: 1;
+}
+
+/* Прижать вправо — в том числе когда элемент перенёсся на новую строку */
+.push-end {
+    margin-left: auto;
+}
+
+.grid-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 48px 16px;
+    text-align: center;
+    color: var(--md-on-surface-variant);
+}
+
+.empty-state p {
+    margin: 0;
+}
+
+.boot-screen {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* --- Кнопки --------------------------------------------------------------- */
+
+.btn {
+    position: relative;
+    overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 24px;
+    border: none;
+    border-radius: 20px;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.btn:disabled {
+    opacity: 0.38;
+    cursor: default;
+}
+
+.btn-filled {
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+}
+
+.btn-tonal {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+}
+
+.btn-outlined {
+    background: transparent;
+    color: var(--md-primary);
+    border: 1px solid var(--md-outline);
+}
+
+.btn-text {
+    background: transparent;
+    color: var(--md-primary);
+    padding: 0 12px;
+}
+
+.btn-danger {
+    color: var(--md-error);
+}
+
+/* Главная кнопка экрана — во всю ширину и чуть выше (48 px: удобнее попасть пальцем) */
+.btn-block {
+    width: 100%;
+    height: 48px;
+    border-radius: 24px;
+}
+
+.icon-button {
+    position: relative;
+    overflow: hidden;
+    width: 48px;
+    height: 48px;
+    flex-shrink: 0;
+    padding: 0;
+    border: none;
+    border-radius: 24px;
+    background: transparent;
+    color: var(--md-on-surface-variant);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.icon-button.selected {
+    background: var(--md-surface-container-high);
+}
+
+:root[data-theme="eink"] .icon-button.selected {
+    background: #000000;
+    color: #FFFFFF;
+}
+
+/* --- Поля ввода (outlined text field) ------------------------------------ */
+
+.field {
+    display: flex;
+    flex-direction: column;
+}
+
+.text-field {
+    position: relative;
+    display: flex;
+    align-items: center;
+    min-height: 56px;
+    padding-left: 16px;
+    border: 1px solid var(--md-outline);
+    border-radius: 4px;
+}
+
+.text-field:focus-within {
+    border-color: var(--md-primary);
+    box-shadow: inset 0 0 0 1px var(--md-primary);
+}
+
+.text-field.disabled {
+    opacity: 0.6;
+}
+
+/* Подпись «приподнята» на рамку; фон подписи — цвет того, на чём лежит поле (карточки задают --field-bg) */
+.text-field-label {
+    position: absolute;
+    top: -9px;
+    left: 12px;
+    max-width: calc(100% - 24px);
+    padding: 0 4px;
+    font-size: 12px;
+    line-height: 16px;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--md-on-surface-variant);
+    background: var(--field-bg, var(--md-surface));
+    pointer-events: none;
+}
+
+.text-field:focus-within .text-field-label {
+    color: var(--md-primary);
+}
+
+.text-field-input {
+    flex: 1;
+    min-width: 0;
+    align-self: stretch;
+    margin: 0;
+    padding: 16px 16px 16px 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--md-on-surface);
+    font-size: 16px;
+    line-height: 24px;
+    resize: none;
+}
+
+.text-field-input::placeholder {
+    color: var(--md-on-surface-variant);
+    opacity: 0.7;
+}
+
+.text-field-input::-webkit-inner-spin-button,
+.text-field-input::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.text-field-input[type="number"] {
+    -moz-appearance: textfield;
+}
+
+/* Кнопка-иконка в конце поля; у многострочного поля — прижата к первой строке */
+.text-field-trailing {
+    align-self: center;
+}
+
+.text-field.multiline .text-field-trailing {
+    align-self: flex-start;
+    margin-top: 3px;
+}
+
+.text-field.has-trailing .text-field-input {
+    padding-right: 4px;
+}
+
+/* --- Карточки и списки ---------------------------------------------------- */
+
+.card {
+    --card-bg: var(--md-surface-container);
+    --field-bg: var(--card-bg);
+    background: var(--card-bg);
+    border: var(--card-border);
+    border-radius: 16px;
+    overflow: hidden;
+}
+
+.card-padded {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.card-error {
+    --card-bg: var(--md-error-container);
+    color: var(--md-on-error-container);
+}
+
+.card-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 4px 4px 16px;
+}
+
+.card-header-icon {
+    display: flex;
+    color: var(--md-primary);
+}
+
+.card-error .card-header-icon {
+    color: var(--md-error);
+}
+
+:root[data-theme="dark"] .card-error .card-header-icon,
+:root[data-theme="amoled"] .card-error .card-header-icon {
+    color: var(--md-on-error-container);
+}
+
+.card-header-text {
+    flex: 1;
+    min-width: 0;
+}
+
+.card-title {
+    margin: 0;
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 500;
+}
+
+.card-subtitle {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+}
+
+.card-error .card-subtitle {
+    color: inherit;
+}
+
+/* Сверху 16 px: у поля в начале карточки подпись выступает над рамкой на 9 px и иначе обрезалась бы */
+.card-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.card-section {
+    padding: 8px 16px;
+}
+
+.card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px 16px;
+}
+
+.card-actions.compact {
+    padding: 4px 8px 8px;
+}
+
+.card-note {
+    margin: 0;
+    padding: 0 16px 16px;
+    font-size: 12px;
+    line-height: 16px;
+    letter-spacing: 0.4px;
+    color: var(--md-on-surface-variant);
+}
+
+/* Пояснение — единственное, что есть в карточке */
+.card-note.standalone {
+    padding-top: 16px;
+}
+
+.list {
+    display: flex;
+    flex-direction: column;
+}
+
+.list-item {
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    min-height: 56px;
+    margin: 0;
+    padding: 8px 16px;
+    border: none;
+    background: transparent;
+    color: var(--md-on-surface);
+    text-align: left;
+    text-decoration: none;
+}
+
+.list-item.two-line {
+    min-height: 72px;
+}
+
+button.list-item,
+a.list-item,
+label.list-item {
+    cursor: pointer;
+}
+
+/* Строки с кнопками-иконками справа: у кнопок свои 48 px, поэтому отступ меньше */
+.list-item.has-actions {
+    padding-right: 4px;
+}
+
+.list-item-leading {
+    display: flex;
+    flex-shrink: 0;
+    color: var(--md-on-surface-variant);
+}
+
+.list-item-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.list-item-headline {
+    font-size: 16px;
+    line-height: 24px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.list-item-supporting {
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+    overflow-wrap: anywhere;
+}
+
+.list-item-trailing {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--md-on-surface-variant);
+}
+
+.list-item-trailing-text {
+    flex-shrink: 0;
+    font-size: 14px;
+    line-height: 20px;
+    color: var(--md-on-surface-variant);
+}
+
+.divider {
+    height: 1px;
+    margin: 0 16px;
+    border: none;
+    background: var(--md-outline-variant);
+}
+
+.chevron {
+    color: var(--md-on-surface-variant);
+    transition: transform var(--dur);
+}
+
+.chevron.open {
+    transform: rotate(180deg);
+}
+
+.expand-body {
+    padding: 8px 16px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* --- Переключатель, флажок, чипы, сегменты -------------------------------- */
+
+/* Переключатель Material 3 из обычного <input type="checkbox" role="switch"> */
+.switch {
+    -webkit-appearance: none;
+    appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 52px;
+    height: 32px;
+    margin: 0;
+    border: 2px solid var(--md-outline);
+    border-radius: 16px;
+    background: var(--switch-off);
+    cursor: pointer;
+    transition: background var(--dur), border-color var(--dur);
+}
+
+.switch::before {
+    content: "";
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--md-outline);
+    transition: top var(--dur), left var(--dur), width var(--dur), height var(--dur), background var(--dur);
+}
+
+.switch:checked {
+    border-color: var(--md-primary);
+    background: var(--md-primary);
+}
+
+.switch:checked::before {
+    top: 2px;
+    left: 22px;
+    width: 24px;
+    height: 24px;
+    background: var(--md-on-primary);
+}
+
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    min-height: 48px;
+    font-size: 14px;
+    line-height: 20px;
+    cursor: pointer;
+}
+
+.checkbox {
+    -webkit-appearance: none;
+    appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    margin: 3px;
+    border: 2px solid var(--md-on-surface-variant);
+    border-radius: 2px;
+    background: transparent;
+    cursor: pointer;
+}
+
+.checkbox:checked {
+    border-color: var(--md-primary);
+    background: var(--md-primary);
+}
+
+.checkbox:checked::after {
+    content: "";
+    position: absolute;
+    left: 4px;
+    top: 0;
+    width: 5px;
+    height: 10px;
+    border: solid var(--md-on-primary);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+.chip-set {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.filter-chip,
+.assist-chip {
+    position: relative;
+    overflow: hidden;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 16px;
+    border: 1px solid var(--md-outline);
+    border-radius: 8px;
+    background: transparent;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    white-space: nowrap;
+}
+
+.filter-chip {
+    color: var(--md-on-surface-variant);
+    cursor: pointer;
+}
+
+.filter-chip.selected {
+    padding-left: 8px;
+    border-color: var(--md-secondary-container);
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+}
+
+.assist-chip {
+    color: var(--md-on-surface);
+}
+
+.assist-chip.with-icon {
+    padding-left: 8px;
+}
+
+button.assist-chip {
+    cursor: pointer;
+}
+
+.segmented {
+    display: flex;
+    height: 40px;
+}
+
+.segment {
+    position: relative;
+    overflow: hidden;
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid var(--md-outline);
+    background: transparent;
+    color: var(--md-on-surface);
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.segment:first-child {
+    border-radius: 20px 0 0 20px;
+}
+
+.segment:last-child {
+    border-radius: 0 20px 20px 0;
+}
+
+.segment + .segment {
+    border-left: none;
+}
+
+.segment.selected {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+}
+
+/* --- Прогресс ------------------------------------------------------------- */
+
+/* Бегущая полоса: ядро не сообщает общее число глав, поэтому без процентов */
+.linear-progress {
+    position: relative;
+    height: var(--bar-h);
+    border-radius: 3px;
+    border: var(--track-border);
+    background: var(--track);
+    overflow: hidden;
+}
+
+.linear-progress::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 40%;
+    border-radius: 3px;
+    background: var(--md-primary);
+    animation: e2e-progress 1.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes e2e-progress {
+    from {
+        transform: translateX(-100%);
+    }
+
+    to {
+        transform: translateX(250%);
+    }
+}
+
+/* На e-ink анимация мерцает и оставляет следы — показываем неподвижный пунктир */
+:root[data-theme="eink"] .linear-progress::before {
+    width: 100%;
+    animation: none;
+    background: repeating-linear-gradient(90deg, #000000 0 6px, transparent 6px 12px);
+}
+
+.progress-status {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+
+.spinner {
+    display: inline-block;
+    width: 24px;
+    height: 24px;
+    flex-shrink: 0;
+    border: 3px solid var(--track);
+    border-top-color: var(--md-primary);
+    border-radius: 50%;
+    animation: e2e-spin 1s linear infinite;
+}
+
+.spinner.small {
+    width: 16px;
+    height: 16px;
+    border-width: 2px;
+}
+
+.spinner.large {
+    width: 48px;
+    height: 48px;
+    border-width: 4px;
+}
+
+@keyframes e2e-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+:root[data-theme="eink"] .spinner {
+    animation: none;
+    border-color: #000000;
+    border-style: dotted;
+}
+
+/* --- Книга и файлы -------------------------------------------------------- */
+
+.book-summary {
+    display: flex;
+    gap: 16px;
+}
+
+.book-cover {
+    width: 64px;
+    height: 92px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    border: var(--cover-border);
+    overflow: hidden;
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.book-cover.small {
+    width: 48px;
+    height: 68px;
+    border-radius: 6px;
+}
+
+.book-cover img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.book-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.book-title {
+    margin: 0;
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 500;
+    color: var(--md-on-surface);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.book-title a {
+    color: inherit;
+}
+
+.book-meta {
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+}
+
+.book-host {
+    margin-top: 6px;
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--md-outline);
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 22px;
+    color: var(--md-on-surface-variant);
+}
+
+.book-annotation {
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.book-annotation p {
+    margin: 0;
+}
+
+/* Значок формата в строке файла: «EPUB», «FB2»… */
+.file-badge {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    border: var(--cover-border);
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+/* Имя файла — главное в строке: до двух строк вместо обрезки на первой */
+.file-row .list-item-headline {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.file-row.missing .list-item-headline {
+    color: var(--md-on-surface-variant);
+    text-decoration: line-through;
+}
+
+.file-missing {
+    color: var(--md-error);
+}
+
+.error-text {
+    margin: 0;
+    font-size: 14px;
+    line-height: 20px;
+    overflow-wrap: anywhere;
+}
+
+.log-view {
+    max-height: 320px;
+    margin: 0 16px;
+    padding: 12px;
+    overflow: auto;
+    border: 1px solid var(--md-outline-variant);
+    border-radius: 8px;
+    background: var(--md-surface);
+    color: var(--md-on-surface-variant);
+    font-family: "Roboto Mono", ui-monospace, monospace;
+    font-size: 12px;
+    line-height: 18px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* --- Сайты и настройки ---------------------------------------------------- */
+
+.search-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    height: 56px;
+    padding: 0 16px;
+    border: var(--card-border);
+    border-radius: 28px;
+    background: var(--md-surface-container-high);
+    color: var(--md-on-surface-variant);
+}
+
+.search-bar input {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--md-on-surface);
+    font-size: 16px;
+    line-height: 24px;
+}
+
+.search-bar input::placeholder {
+    color: var(--md-on-surface-variant);
+}
+
+/* Пометка «сделано ИИ» в «О приложении» */
+.ai-note {
+    display: flex;
+    gap: 12px;
+    margin: 0 16px 8px;
+    padding: 12px 16px;
+    border: var(--card-border);
+    border-radius: 12px;
+    background: var(--md-tertiary-container);
+    color: var(--md-on-tertiary-container);
+    font-size: 14px;
+    line-height: 20px;
+}
+
+/* --- Всплывающие сообщения (snackbar) ------------------------------------- */
+
+.snackbars {
+    position: absolute;
+    left: 16px;
+    right: 16px;
+    bottom: 92px;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.kb-open .snackbars {
+    bottom: 12px;
+}
+
+.snackbar {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 48px;
+    padding: 14px 16px;
+    border: var(--menu-border);
+    border-radius: 4px;
+    background: var(--md-inverse-surface);
+    color: var(--md-inverse-on-surface);
+    box-shadow: var(--menu-shadow);
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    overflow-wrap: anywhere;
+}
+
+.snackbar .icon {
+    color: var(--md-inverse-primary);
+}
+
+.snackbar-error .icon {
+    color: var(--md-inverse-error);
+}
+
+/* --- Ошибка Blazor (div из index.html, показывается самим Blazor) --------- */
+
+#blazor-error-ui {
+    display: none;
+    position: fixed;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    z-index: 100;
+    padding: 14px 16px;
+    border: var(--card-border);
+    border-radius: 4px;
+    background: var(--md-error-container);
+    color: var(--md-on-error-container);
+    font-size: 14px;
+    line-height: 20px;
+}
+
+#blazor-error-ui .reload {
+    margin-left: 8px;
+    color: inherit;
+    font-weight: 500;
+    text-decoration: underline;
+}
+
+#blazor-error-ui .dismiss {
+    float: right;
+    padding: 0 4px;
+    cursor: pointer;
+}

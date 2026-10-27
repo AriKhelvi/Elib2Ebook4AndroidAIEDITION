@@ -1,44 +1,59 @@
 /* E2E для Android — тема, скрытие нижней панели при открытой клавиатуре, мелкие помощники
-   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. */
-/* E2E for Android — тема (логика из app.js веб-версии) и мелкие помощники для Blazor. */
+   [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
+
+   Темы: system (как в системе) | light | dark | amoled | eink. Выбор хранится в localStorage
+   (ключ тот же, что раньше, — старые значения light/dark подхватываются), на <html> ставится
+   data-theme с итоговой темой — по нему css/m3.css выбирает цвета. */
 (function () {
     const THEME_KEY = 'elib-theme';
+    const MODES = ['system', 'light', 'dark', 'amoled', 'eink'];
+    const DARK_THEMES = ['dark', 'amoled'];
     const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 
-    function saved() {
-        try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; }
-    }
-
-    function effective(pref) {
-        return pref === 'light' || pref === 'dark' ? pref : (systemDark.matches ? 'dark' : 'light');
-    }
-
-    function apply(pref) {
-        const theme = effective(pref);
-        document.documentElement.setAttribute('data-theme', theme);
-        document.documentElement.style.colorScheme = theme;
-        return theme;
-    }
-
-    // Сообщаем приложению, чтобы перекрасить фон под системными панелями и значки статус-бара
-    function notifyNative(theme) {
-        if (window.DotNet && window.DotNet.invokeMethodAsync) {
-            window.DotNet.invokeMethodAsync('E2E.Droid', 'ApplyNativeTheme', theme === 'dark').catch(() => {});
+    function savedMode() {
+        try {
+            const value = localStorage.getItem(THEME_KEY);
+            return MODES.indexOf(value) > 0 ? value : 'system';
+        } catch (e) {
+            return 'system';
         }
     }
 
-    apply(saved());
+    function effective(mode) {
+        return mode === 'system' ? (systemDark.matches ? 'dark' : 'light') : mode;
+    }
+
+    function apply(mode) {
+        const theme = effective(mode);
+        const root = document.documentElement;
+        root.setAttribute('data-theme', theme);
+        root.style.colorScheme = DARK_THEMES.indexOf(theme) >= 0 ? 'dark' : 'light';
+        return theme;
+    }
+
+    // Сообщаем приложению цвет фона темы — им красятся системные панели и фон под ними (ThemeInterop.cs)
+    function syncNative() {
+        const theme = document.documentElement.getAttribute('data-theme');
+        const background = getComputedStyle(document.documentElement).getPropertyValue('--md-surface').trim();
+        if (window.DotNet && window.DotNet.invokeMethodAsync) {
+            window.DotNet.invokeMethodAsync('E2E.Droid', 'ApplyNativeTheme', DARK_THEMES.indexOf(theme) >= 0, background)
+                .catch(() => { });
+        }
+    }
+
+    // До первой отрисовки, чтобы не мигнуть чужой темой
+    apply(savedMode());
 
     systemDark.addEventListener('change', () => {
-        const pref = saved();
-        if (pref !== 'light' && pref !== 'dark') {
-            notifyNative(apply('system'));
+        if (savedMode() === 'system') {
+            apply('system');
+            syncNative();
         }
     });
 
     // Пока открыта клавиатура, прячем нижнюю панель вкладок — иначе она всплывает над клавиатурой
     function isTextField(el) {
-        return el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !['checkbox', 'radio', 'button'].includes(el.type)));
+        return el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && ['checkbox', 'radio', 'button'].indexOf(el.type) < 0));
     }
     document.addEventListener('focusin', e => {
         if (isTextField(e.target)) document.body.classList.add('kb-open');
@@ -50,27 +65,23 @@
     });
 
     window.e2e = {
-        getThemeMode: () => {
-            const pref = saved();
-            return pref === 'light' || pref === 'dark' ? pref : 'system';
-        },
-        // Возвращает итоговую тему: 'light' | 'dark'
+        // 'system' | 'light' | 'dark' | 'amoled' | 'eink'
+        getThemeMode: () => savedMode(),
+        // Запоминает выбор и возвращает итоговую тему (без 'system')
         setThemeMode: mode => {
             try {
-                if (mode === 'light' || mode === 'dark') localStorage.setItem(THEME_KEY, mode);
-                else localStorage.removeItem(THEME_KEY);
+                if (mode === 'system' || MODES.indexOf(mode) < 0) localStorage.removeItem(THEME_KEY);
+                else localStorage.setItem(THEME_KEY, mode);
             } catch (e) { }
-            return apply(mode);
+            const theme = apply(mode);
+            syncNative();
+            return theme;
         },
-        effectiveTheme: () => effective(saved()),
+        syncNative: syncNative,
         blur: () => { if (document.activeElement) document.activeElement.blur(); },
         scrollToBottom: id => {
             const el = document.getElementById(id);
             if (el) el.scrollTop = el.scrollHeight;
-        },
-        scrollIntoView: id => {
-            const el = document.getElementById(id);
-            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     };
 })();

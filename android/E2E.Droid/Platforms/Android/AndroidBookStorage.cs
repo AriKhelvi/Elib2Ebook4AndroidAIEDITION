@@ -4,7 +4,9 @@
 // [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
 // ============================================================================
 
+using System.Runtime.Versioning;
 using Android.Content;
+using Android.Media;
 using Android.Provider;
 using E2E.Droid.Services;
 using AUri = Android.Net.Uri;
@@ -13,8 +15,8 @@ using AEnvironment = Android.OS.Environment;
 namespace E2E.Droid;
 
 /// <summary>
-/// Сохранение в «Загрузки/Elib2Ebook» через MediaStore (без разрешений, Android 10+)
-/// или в папку, выбранную через системный диалог (Storage Access Framework).
+/// Сохранение в «Загрузки/Elib2Ebook» (Android 10+ — через MediaStore без разрешений, Android 7–9 — по пути
+/// с разрешением на запись) или в папку, выбранную через системный диалог (Storage Access Framework).
 /// </summary>
 /// <remarks>
 /// Почему не просто File.Copy в /sdcard/Download: начиная с Android 10 приложениям запрещено писать
@@ -25,15 +27,27 @@ namespace E2E.Droid;
 /// <item>SAF (Storage Access Framework) — пользователь сам выбирает папку в системном диалоге и выдаёт
 /// приложению постоянный доступ к ней. Так можно писать хоть в папку Syncthing, хоть на SD-карту.</item>
 /// </list>
-/// Все файлы адресуются content://-ссылками (SavedFile.Uri), а не путями.
+/// На Android 7–9 коллекции Downloads в MediaStore ещё нет — там файл копируется в /sdcard/Download/Elib2Ebook
+/// по пути (разрешение WRITE_EXTERNAL_STORAGE спрашивается перед первой загрузкой, см. EnsureWriteAccessAsync).
+/// На некоторых читалках системный выбор папки вырезан — тогда остаются «Загрузки» (см. PickFolderAsync).
+/// <para>Файлы адресуются ссылками (SavedFile.Uri): content:// для MediaStore и SAF, file:// для Android 7–9.
+/// Наружу (в читалку, «Поделиться») file:// отдавать нельзя — такие ссылки заворачиваются в content://
+/// через FileProvider (см. ShareableUri).</para>
 /// </remarks>
 public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
 {
     /// <summary>Подпапка в «Загрузках» по умолчанию.</summary>
     private const string DefaultFolder = "Elib2Ebook";
 
+    /// <summary>Адрес FileProvider из AndroidManifest.xml (пути — Resources/xml/e2e_file_paths.xml).</summary>
+    private const string FileProviderAuthority = "e2e.droid.files";
+
     /// <summary>Права, которые берём на выбранную папку (и отпускаем при смене папки).</summary>
     private const ActivityFlags TreeFlags = ActivityFlags.GrantReadUriPermission | ActivityFlags.GrantWriteUriPermission;
+
+    /// <summary>Android 10+: «Загрузки» через MediaStore. Иначе (Android 7–9) — по пути.</summary>
+    [SupportedOSPlatformGuard("android29.0")]
+    private static bool UseMediaStore => OperatingSystem.IsAndroidVersionAtLeast(29);
 
     /// <summary>Для запуска чужих экранов лучше текущая Activity; если её нет — контекст приложения + NewTask.</summary>
     private static Context Context => Platform.CurrentActivity ?? Platform.AppContext;
@@ -65,7 +79,9 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
                 var name = Path.GetFileName(path);
                 var uri = tree != null
                     ? SaveToTree(tree, folder, name, path)
-                    : SaveToDownloads(folder, name, path);
+                    : UseMediaStore
+                        ? SaveToDownloads(folder, name, path)
+                        : SaveToLegacyDownloads(folder, name, path);
 
                 result.Add(decorate(new SavedFile
                 {
@@ -83,13 +99,42 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         });
     }
 
+    /// <summary>
+    /// Android 7–9 пишут в «Загрузки» по пути — для этого нужно разрешение на запись в память.
+    /// Android 10+ (MediaStore) и выбранная пользователем папка (SAF) обходятся без него.
+    /// </summary>
+    public async Task<bool> EnsureWriteAccessAsync()
+    {
+        if (UseMediaStore || HasTree())
+        {
+            return true;
+        }
+
+        return await MainThread.InvokeOnMainThreadAsync(async () =>
+            await Permissions.CheckStatusAsync<Permissions.StorageWrite>() == PermissionStatus.Granted
+            || await Permissions.RequestAsync<Permissions.StorageWrite>() == PermissionStatus.Granted);
+    }
+
     /// <summary>Системный диалог «Выберите папку» (SAF). Доступ к папке сохраняется и после перезапуска.</summary>
+    /// <exception cref="InvalidOperationException">
+    /// На устройстве нет системного выбора папки — так бывает на читалках с урезанным Android.
+    /// </exception>
     public async Task<bool> PickFolderAsync()
     {
         var intent = new Intent(Intent.ActionOpenDocumentTree);
         intent.AddFlags(TreeFlags | ActivityFlags.GrantPersistableUriPermission | ActivityFlags.GrantPrefixUriPermission);
 
-        var data = await ActivityResults.StartAsync(intent);
+        Intent data;
+        try
+        {
+            data = await ActivityResults.StartAsync(intent);
+        }
+        catch (ActivityNotFoundException)
+        {
+            throw new InvalidOperationException(
+                $"На этом устройстве нет системного выбора папки. Книги сохраняются в «Загрузки/{DefaultFolder}» — " +
+                "их видно в файловом менеджере и по USB.");
+        }
         var uri = data?.Data;
         if (uri == null)
         {
@@ -122,6 +167,11 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     {
         try
         {
+            if (LocalPath(file) is { } path)
+            {
+                return File.Exists(path);
+            }
+
             using var cursor = Resolver.Query(AUri.Parse(file.Uri)!, [IOpenableColumns.DisplayName], null, null, null);
             return cursor != null && cursor.MoveToFirst();
         }
@@ -139,6 +189,14 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     {
         try
         {
+            if (LocalPath(file) is { } path)
+            {
+                // Android 7–9: файл по пути; сканер уберёт его из индекса (иначе он ещё виден по USB)
+                File.Delete(path);
+                MediaScannerConnection.ScanFile(Platform.AppContext, [path], null, null);
+                return true;
+            }
+
             var uri = AUri.Parse(file.Uri)!;
             // Ссылки SAF удаляются через DocumentsContract, ссылки MediaStore — через ContentResolver
             return DocumentsContract.IsDocumentUri(Platform.AppContext, uri)
@@ -157,7 +215,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// </summary>
     public bool Open(SavedFile file)
     {
-        var uri = AUri.Parse(file.Uri)!;
+        var uri = ShareableUri(file);
         // Читалки регистрируют fb2 под разными типами — пробуем от точного к общему
         foreach (var mime in new[] { file.Mime ?? MimeTypes.ForIntent(file.Name), "application/octet-stream", "*/*" }.Distinct())
         {
@@ -194,7 +252,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
             return;
         }
 
-        var uris = files.Select(f => AUri.Parse(f.Uri)!).ToList();
+        var uris = files.Select(ShareableUri).ToList();
         var mimes = files.Select(f => f.Mime ?? MimeTypes.ForIntent(f.Name)).Distinct().ToList();
 
         Intent intent;
@@ -233,9 +291,61 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     }
 
     /// <summary>
-    /// Запись в «Загрузки/Elib2Ebook[/подпапка]» через MediaStore.
+    /// Ссылка, которую можно отдать другому приложению. file:// (Android 7–9) Android запрещает передавать наружу
+    /// (FileUriExposedException), поэтому такие ссылки заворачиваются в content:// через FileProvider.
+    /// </summary>
+    private static AUri ShareableUri(SavedFile file)
+    {
+        return LocalPath(file) is { } path
+            ? AndroidX.Core.Content.FileProvider.GetUriForFile(Platform.AppContext, FileProviderAuthority, new Java.IO.File(path))!
+            : AUri.Parse(file.Uri)!;
+    }
+
+    /// <summary>Путь к файлу, если он сохранён по пути (file://, Android 7–9), иначе null.</summary>
+    private static string LocalPath(SavedFile file)
+    {
+        var uri = AUri.Parse(file.Uri);
+        return uri?.Scheme == "file" ? uri.Path : null;
+    }
+
+    /// <summary>
+    /// Android 7–9: копирование в /sdcard/Download/Elib2Ebook[/подпапка] по пути (нужно разрешение на запись,
+    /// см. EnsureWriteAccessAsync). Имена при совпадении нумеруются так же, как это делает MediaStore.
+    /// </summary>
+    private static AUri SaveToLegacyDownloads(string folder, string name, string sourcePath)
+    {
+#pragma warning disable CA1422 // устарело в Android 10 — но это как раз ветка для Android 7–9
+        var downloads = AEnvironment.GetExternalStoragePublicDirectory(AEnvironment.DirectoryDownloads)!.AbsolutePath;
+#pragma warning restore CA1422
+        var dir = Path.Combine([downloads, DefaultFolder, .. folder.Split('/', StringSplitOptions.RemoveEmptyEntries)]);
+        Directory.CreateDirectory(dir);
+
+        var target = UniquePath(dir, name);
+        File.Copy(sourcePath, target);
+        // Без сканирования файл не виден по USB (MTP) и в части файловых менеджеров до перезагрузки
+        MediaScannerConnection.ScanFile(Platform.AppContext, [target], null, null);
+        return AUri.FromFile(new Java.IO.File(target))!;
+    }
+
+    /// <summary>«Книга.epub» уже есть → «Книга (1).epub», «Книга (2).epub»…</summary>
+    private static string UniquePath(string dir, string name)
+    {
+        var stem = Path.GetFileNameWithoutExtension(name);
+        var extension = Path.GetExtension(name);
+        var path = Path.Combine(dir, name);
+        for (var i = 1; File.Exists(path) || Directory.Exists(path); i++)
+        {
+            path = Path.Combine(dir, $"{stem} ({i}){extension}");
+        }
+
+        return path;
+    }
+
+    /// <summary>
+    /// Android 10+: запись в «Загрузки/Elib2Ebook[/подпапка]» через MediaStore.
     /// IsPending=1 прячет файл от других приложений, пока он не дописан; после копирования снимаем флаг.
     /// </summary>
+    [SupportedOSPlatform("android29.0")]
     private static AUri SaveToDownloads(string folder, string name, string sourcePath)
     {
         var relativePath = string.Join('/', new[] { AEnvironment.DirectoryDownloads, DefaultFolder, folder }.Where(s => !string.IsNullOrEmpty(s))) + "/";
@@ -359,6 +469,11 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
 
     private static string QueryDisplayName(AUri uri)
     {
+        if (uri.Scheme == "file")
+        {
+            return Path.GetFileName(uri.Path);
+        }
+
         try
         {
             using var cursor = Resolver.Query(uri, [IOpenableColumns.DisplayName], null, null, null);

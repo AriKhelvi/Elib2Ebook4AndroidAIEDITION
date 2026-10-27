@@ -15,6 +15,19 @@ public static class Formatting
         _ => $"{bytes / 1024.0 / 1024.0:0.#} МБ"
     };
 
+    /// <summary>Число со словом в нужной форме: 1 запись, 2 записи, 5 записей, 21 запись.</summary>
+    public static string Plural(int count, string one, string few, string many)
+    {
+        var n = Math.Abs(count) % 100;
+        var word = n is >= 11 and <= 14 ? many : (n % 10) switch
+        {
+            1 => one,
+            >= 2 and <= 4 => few,
+            _ => many
+        };
+        return $"{count} {word}";
+    }
+
     /// <summary>Ссылки из поля ввода: по одной в строке, через пробел или запятую; схему https:// можно не писать.</summary>
     public static IReadOnlyList<string> ParseUrls(string text)
     {

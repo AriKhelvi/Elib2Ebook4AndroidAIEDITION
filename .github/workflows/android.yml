@@ -60,12 +60,17 @@ jobs:
       DOTNET_INSTALL_DIR: ${{ github.workspace }}/../.dotnet
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
       DOTNET_NOLOGO: '1'
-      # Архитектуры APK (через свойство проекта E2EAbi, см. комментарии в E2E.Droid.csproj)
-      E2E_ABI: android-arm64
+      # Архитектуры APK (через свойство проекта E2EAbi, см. комментарии в E2E.Droid.csproj):
+      # arm64 — современные телефоны, arm (32 бита) — старые телефоны и большинство читалок на Android 7–10.
+      # Обе в одном APK, чтобы не приходилось выбирать файл.
+      E2E_ABI: android-arm64,android-arm
 
     steps:
       - name: Исходники
         uses: actions/checkout@v5
+        with:
+          # Вся история с тегами: версия приложения считается от последнего тега vX.Y.Z (git describe)
+          fetch-depth: 0
 
       - name: .NET 10
         uses: actions/setup-dotnet@v5
@@ -94,19 +99,51 @@ jobs:
           dotnet build android/E2E.Droid/E2E.Droid.csproj -t:InstallAndroidDependencies -f net10.0-android
           -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT" -p:JavaSdkDirectory="$JAVA_HOME" -p:AcceptAndroidSdkLicenses=True
 
+      # Схема версий (та же, что в android/build.ps1, — см. android/README.md, раздел «Версии»):
+      #   релиз с тегом v0.2.0                 → версия 0.2.0,         файл E2E-0.2.0.apk
+      #   5 коммитов после тега v0.2.0          → версия 0.2.1-dev.5,   файл E2E-0.2.1-dev.5-<коммит>.apk
+      #   тегов ещё нет                         → версия 0.0.0-dev.<число коммитов>
+      # versionCode — минуты с 01.01.2026: растёт сам с каждой сборкой, поэтому APK из Actions и собранные
+      # локально ставятся друг поверх друга в правильном порядке. Версия ядра Elib2Ebook — отдельно.
       - name: Версия
         id: version
         run: |
-          # versionName — версия ядра; versionCode — минуты с 01.01.2026 (та же схема, что в android/build.ps1,
-          # поэтому APK из Actions и собранные локально ставятся друг поверх друга в правильном порядке)
-          VERSION=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
+          CORE=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
           CODE=$(( ($(date +%s) - 1767225600) / 60 ))
           SHA=${GITHUB_SHA::7}
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Тег релиза «$TAG» не похож на версию. Нужен тег вида vX.Y.Z, например v0.1.0"
+              exit 1
+            fi
+            VERSION=${TAG#v}
+            NAME="E2E-$VERSION"
+          else
+            DESC=$(git describe --tags --match 'v[0-9]*' --long --abbrev=7 --always)
+            if [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?-([0-9]+)-g[0-9a-f]+$ ]]; then
+              MAJOR=${BASH_REMATCH[1]}; MINOR=${BASH_REMATCH[2]}; PATCH=${BASH_REMATCH[3]}
+              SUFFIX=${BASH_REMATCH[4]}; AHEAD=${BASH_REMATCH[5]}
+              if [ "$AHEAD" = "0" ]; then
+                VERSION="$MAJOR.$MINOR.$PATCH$SUFFIX"
+              elif [ -n "$SUFFIX" ]; then
+                VERSION="$MAJOR.$MINOR.$PATCH$SUFFIX.dev.$AHEAD"
+              else
+                VERSION="$MAJOR.$MINOR.$((PATCH + 1))-dev.$AHEAD"
+              fi
+            else
+              VERSION="0.0.0-dev.$(git rev-list --count HEAD)"
+            fi
+            NAME="E2E-$VERSION-$SHA"
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "core=$CORE" >> "$GITHUB_OUTPUT"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "name=E2E-$VERSION-$SHA" >> "$GITHUB_OUTPUT"
-          echo "Elib2Ebook $VERSION, коммит $SHA, versionCode $CODE"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "E2E $VERSION (ядро Elib2Ebook $CORE), коммит $SHA, versionCode $CODE"
 
       - name: Ключ подписи
         id: signing
@@ -165,10 +202,12 @@ jobs:
           # Подпись (схема v2/v3) и выравнивание нативных библиотек под 16 КБ-страницы (новые Pixel)
           "$BT/apksigner" verify --print-certs "$APK" | tee "$RUNNER_TEMP/cert.txt"
           "$BT/zipalign" -c -P 16 4 "$APK"
-          # Все сборки сайтов должны пережить тримминг (по одной libaot-*.so на сайт)
-          SITES=$(unzip -l "$APK" | grep -c 'libaot-Elib2Ebook.ExternalServices' || true)
-          echo "Сборок сайтов в APK: $SITES"
-          [ "$SITES" -gt 50 ] || { echo "::error::В APK подозрительно мало сборок сайтов: $SITES"; exit 1; }
+          # Все сборки сайтов должны пережить тримминг (по одной libaot-*.so на сайт и архитектуру)
+          SITES=$(unzip -l "$APK" | grep -c 'lib/arm64-v8a/libaot-Elib2Ebook.ExternalServices' || true)
+          SITES32=$(unzip -l "$APK" | grep -c 'lib/armeabi-v7a/libaot-Elib2Ebook.ExternalServices' || true)
+          echo "Сборок сайтов в APK: arm64 — $SITES, arm32 — $SITES32"
+          [ "$SITES" -gt 50 ] || { echo "::error::В APK подозрительно мало сборок сайтов (arm64): $SITES"; exit 1; }
+          [ "$SITES32" -eq "$SITES" ] || { echo "::error::32-битных сборок сайтов ($SITES32) не столько же, сколько 64-битных ($SITES)"; exit 1; }
 
           echo "path=$APK" >> "$GITHUB_OUTPUT"
           {
@@ -176,6 +215,8 @@ jobs:
             echo ""
             echo "| | |"
             echo "|:--|:--|"
+            echo "| Версия | ${{ steps.version.outputs.version }} |"
+            echo "| Ядро Elib2Ebook | ${{ steps.version.outputs.core }} |"
             echo "| Размер | $(du -h "$APK" | cut -f1) |"
             echo "| versionCode | ${{ steps.version.outputs.code }} |"
             echo "| Сайтов | $SITES |"

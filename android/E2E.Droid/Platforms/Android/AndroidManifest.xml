@@ -5,11 +5,20 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- allowBackup=false: SecureStorage (сохранённые пароли) не переживает восстановление из бэкапа -->
-    <application android:allowBackup="false" android:icon="@mipmap/appicon" android:roundIcon="@mipmap/appicon_round" android:supportsRtl="true" android:label="E2E"></application>
+    <application android:allowBackup="false" android:icon="@mipmap/appicon" android:roundIcon="@mipmap/appicon_round" android:supportsRtl="true" android:label="E2E">
+        <!-- Android 7–9: книги лежат в «Загрузках» по пути, а отдать file:// в читалку или «Поделиться» Android
+             не даёт — FileProvider выдаёт на такие файлы content://-ссылки (см. AndroidBookStorage.ShareableUri).
+             Свой адрес e2e.droid.files, чтобы не пересекаться с провайдером MAUI (e2e.droid.fileProvider). -->
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="e2e.droid.files" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/e2e_file_paths" />
+        </provider>
+    </application>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Запись в «Загрузки» по пути — только Android 7–9; с Android 10 хватает MediaStore без разрешений -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 </manifest>

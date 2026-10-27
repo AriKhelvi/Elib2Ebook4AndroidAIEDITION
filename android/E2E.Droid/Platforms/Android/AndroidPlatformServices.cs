@@ -4,9 +4,10 @@
 // [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
 // ============================================================================
 
-using Android.App;
+using AndroidX.Core.App;
 using AndroidX.Core.View;
 using E2E.Droid.Services;
+using Microsoft.Maui.Platform;
 
 namespace E2E.Droid;
 
@@ -29,8 +30,11 @@ public sealed class AndroidPlatformServices : IPlatformServices
 
     public bool IsInForeground => Foreground;
 
-    /// <summary>versionName (версия ядра) и versionCode (номер сборки) — для «О приложении».</summary>
-    public string AppVersion => $"{AppInfo.Current.VersionString} ({AppInfo.Current.BuildString})";
+    /// <summary>versionName — версия приложения от git-тега (0.2.0, 0.2.1-dev.5), см. android/README.md, «Версии».</summary>
+    public string AppVersion => AppInfo.Current.VersionString;
+
+    /// <summary>versionCode — номер сборки (минуты с 01.01.2026), растёт с каждой сборкой.</summary>
+    public string BuildNumber => AppInfo.Current.BuildString;
 
     /// <summary>
     /// Android 13+ требует явного разрешения на уведомления. Отказ ничего не ломает:
@@ -92,47 +96,66 @@ public sealed class AndroidPlatformServices : IPlatformServices
     /// <summary>Уведомление «Книга готова» — показывается, только если приложение свёрнуто; по нажатию открывает его.</summary>
     public void NotifyFinished(string title, string text)
     {
-        if (Context.GetSystemService(Android.Content.Context.NotificationService) is not NotificationManager manager)
-        {
-            return;
-        }
-
         DownloadService.EnsureChannels(Context);
-        var notification = new Notification.Builder(Context, DownloadService.FinishedChannel)
-            .SetSmallIcon(Resource.Drawable.ic_stat_e2e)
-            .SetContentTitle(title)
-            .SetContentText(text)
-            .SetStyle(new Notification.BigTextStyle().BigText(text))
-            .SetAutoCancel(true)
-            .SetContentIntent(DownloadService.OpenAppIntent(Context))
-            .Build();
-        manager.Notify(FinishedId, notification);
+        var notification = new NotificationCompat.Builder(Context, DownloadService.FinishedChannel)
+            .SetSmallIcon(Resource.Drawable.ic_stat_e2e)!
+            .SetContentTitle(title)!
+            .SetContentText(text)!
+            .SetStyle(new NotificationCompat.BigTextStyle().BigText(text))!
+            .SetPriority(NotificationCompat.PriorityDefault)!
+            .SetAutoCancel(true)!
+            .SetContentIntent(DownloadService.OpenAppIntent(Context))!
+            .Build()!;
+
+        try
+        {
+            NotificationManagerCompat.From(Context).Notify(FinishedId, notification);
+        }
+        catch
+        {
+            // нет разрешения на уведомления — книга всё равно сохранена
+        }
     }
 
     /// <summary>
-    /// Синхронизация системных панелей с темой веб-интерфейса (светлая/тёмная/как в системе).
-    /// На Android 15+ приложение рисуется «от края до края», а MainPage с SafeAreaEdges=All отступает
-    /// от статус-бара и жестовой панели — под ними виден фон страницы. Его и красим в цвет темы,
-    /// а значки статус-бара делаем тёмными на светлом фоне и светлыми на тёмном.
+    /// Синхронизация системных панелей с темой интерфейса (см. wwwroot/js/app.js).
+    /// <list type="bullet">
+    /// <item>Android 15+: приложение рисуется «от края до края», а MainPage с SafeAreaEdges=All отступает от
+    /// статус-бара и жестовой панели — под ними виден фон страницы. Его и красим в цвет темы.</item>
+    /// <item>Android 7–14: статус-бар и навигационная панель — отдельные полосы, красим и их.</item>
+    /// </list>
+    /// Значки на панелях — тёмные на светлом фоне и светлые на тёмном. Тёмные значки навигационной панели
+    /// бывают только с Android 8, поэтому на Android 7 в светлой теме она остаётся чёрной.
     /// </summary>
-    public void ApplyTheme(bool dark)
+    /// <param name="dark">Тёмная тема (тёмная или AMOLED).</param>
+    /// <param name="background">Цвет фона темы (#RRGGBB) — --md-surface из m3.css.</param>
+    public void ApplyTheme(bool dark, string background)
     {
         MainThread.BeginInvokeOnMainThread(() =>
         {
-            // Цвета совпадают с --bg в e2e-web.css: светлая тема #F5F5F7, тёмная #000000
+            var color = Color.FromArgb(string.IsNullOrWhiteSpace(background) ? (dark ? "#111418" : "#F8F9FF") : background.Trim());
             var page = Microsoft.Maui.Controls.Application.Current?.Windows.FirstOrDefault()?.Page;
             if (page != null)
             {
-                page.BackgroundColor = Color.FromArgb(dark ? "#000000" : "#F5F5F7");
+                page.BackgroundColor = color;
             }
 
             var window = Platform.CurrentActivity?.Window;
-            if (window != null)
+            if (window == null)
             {
-                var controller = WindowCompat.GetInsetsController(window, window.DecorView);
-                controller.AppearanceLightStatusBars = !dark;
-                controller.AppearanceLightNavigationBars = !dark;
+                return;
             }
+
+            var lightNavigationIcons = !dark && OperatingSystem.IsAndroidVersionAtLeast(26);
+            if (!OperatingSystem.IsAndroidVersionAtLeast(35))
+            {
+                window.SetStatusBarColor(color.ToPlatform());
+                window.SetNavigationBarColor(dark || lightNavigationIcons ? color.ToPlatform() : Android.Graphics.Color.Black);
+            }
+
+            var controller = WindowCompat.GetInsetsController(window, window.DecorView);
+            controller.AppearanceLightStatusBars = !dark;
+            controller.AppearanceLightNavigationBars = lightNavigationIcons;
         });
     }
 }

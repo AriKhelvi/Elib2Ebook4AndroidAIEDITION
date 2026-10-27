@@ -23,7 +23,17 @@ internal static class ActivityResults
         var code = Interlocked.Increment(ref _nextCode) & 0xFFFF;
         var tcs = new TaskCompletionSource<Intent>(TaskCreationOptions.RunContinuationsAsynchronously);
         Pending[code] = tcs;
-        activity.StartActivityForResult(intent, code);
+        try
+        {
+            activity.StartActivityForResult(intent, code);
+        }
+        catch
+        {
+            // Например, ActivityNotFoundException: системного диалога на устройстве нет
+            Pending.TryRemove(code, out _);
+            throw;
+        }
+
         return tcs.Task;
     }
 

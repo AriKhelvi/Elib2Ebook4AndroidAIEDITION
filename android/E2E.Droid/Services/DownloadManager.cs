@@ -99,6 +99,14 @@ public sealed class DownloadManager(
     /// <summary>Номер текущей ссылки (с 1) при скачивании нескольких книг.</summary>
     public int Current { get; private set; }
 
+    /// <summary>
+    /// Сколько глав текущей книги уже загружено — по строкам журнала «Загружаю главу …» (GetterBase ядра).
+    /// Общего числа глав ядро не сообщает, поэтому полоса прогресса бегущая, а рядом — этот счётчик.
+    /// </summary>
+    public int ChaptersLoaded => _chapters;
+
+    private int _chapters;
+
     public int Total { get; private set; }
 
     // Коллекции читаются из UI-потока, а пишутся из фонового — поэтому отдаём копии под lock
@@ -143,6 +151,13 @@ public sealed class DownloadManager(
     {
         if (IsRunning || request.Urls.Count == 0)
         {
+            return;
+        }
+
+        // Android 7–9: без разрешения на запись книгу некуда сохранить — не начинаем зря
+        if (!await storage.EnsureWriteAccessAsync())
+        {
+            toasts.Show("Без доступа к памяти книги некуда сохранить. Разрешите доступ или выберите папку в настройках", ToastKind.Error, 8);
             return;
         }
 
@@ -213,6 +228,7 @@ public sealed class DownloadManager(
             {
                 Current = i + 1;
                 Preview = null;
+                Interlocked.Exchange(ref _chapters, 0);
             }
 
             try
@@ -366,6 +382,10 @@ public sealed class DownloadManager(
 
         AppendLog(line);
         Status = line.Length > 300 ? line[..300] + "…" : line;
+        if (line.StartsWith("Загружаю главу", StringComparison.Ordinal))
+        {
+            Interlocked.Increment(ref _chapters);
+        }
 
         // Обновлять уведомление чаще раза в секунду бессмысленно, а Android начинает такие обновления пропускать
         if (DateTime.UtcNow - _lastNotificationUpdate > TimeSpan.FromSeconds(1))

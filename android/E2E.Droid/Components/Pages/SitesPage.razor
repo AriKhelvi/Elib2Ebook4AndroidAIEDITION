@@ -1,63 +1,70 @@
-@* E2E для Android — вкладка «Сайты»: README ядра, сверенный с загрузчиками
+@* E2E для Android — вкладка «Сайты»: README ядра, сверенный с загрузчиками (Material 3)
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @page "/sites"
 
 <div class="page">
-    <div class="page-header">
-        <h1 class="page-title">Поддерживаемые сайты</h1>
-        <p class="page-subtitle">
-            Список из <a href="https://github.com/OnlyFart/Elib2Ebook#поддерживаемые-сайты" target="_blank" rel="noopener">README Elib2Ebook</a>,
-            сверенный с загрузчиками ядра в этой сборке. Нажмите на сайт, найдите книгу и поделитесь ею в E2E.
-        </p>
-    </div>
+    <p class="page-intro">
+        Список из <a href="https://github.com/OnlyFart/Elib2Ebook#поддерживаемые-сайты" target="_blank" rel="noopener">README Elib2Ebook</a>,
+        сверенный с загрузчиками ядра этой сборки. Откройте сайт, найдите книгу и поделитесь ею в E2E.
+    </p>
 
     @if (_sites == null)
     {
-        <div class="empty-state"><div class="google-spinner"></div></div>
+        <div class="empty-state"><span class="spinner large"></span></div>
     }
     else
     {
-        <div class="supported-search">
-            <Icon Name="search" Class="search-icon" />
-            <input type="search" class="supported-input" placeholder="Поиск сайта…" @bind="_search" @bind:event="oninput" />
-        </div>
+        var inReadme = Filter(s => s.InReadme);
+        var coreOnly = Filter(s => !s.InReadme);
 
-        <div class="supported-sites">
-            @foreach (var site in Filter(s => s.InReadme))
-            {
-                <a class="site-card @(site.HasGetter ? "" : "site-card-missing")" href="@site.Url" target="_blank" rel="noopener" @key="site.Url">
-                    <div class="site-card-icon"><Icon Name="globe" Size="24" /></div>
-                    <div class="site-card-info">
-                        <span class="site-card-name">@site.Name</span>
-                        @if (!site.HasGetter)
-                        {
-                            <span class="site-card-url">есть в README, но нет загрузчика в ядре</span>
-                        }
-                    </div>
-                </a>
-            }
-        </div>
+        <label class="search-bar">
+            <Icon Name="search" />
+            <input type="search" placeholder="Поиск сайта" aria-label="Поиск сайта" @bind="_search" @bind:event="oninput" />
+        </label>
 
-        @if (Filter(s => !s.InReadme).Count > 0)
+        @if (inReadme.Count > 0)
         {
-            <h2 class="section-title">Есть в ядре, но нет в README</h2>
-            <div class="supported-sites">
-                @foreach (var site in Filter(s => !s.InReadme))
+            <section class="card list" aria-label="Сайты из README">
+                @foreach (var site in inReadme)
                 {
-                    <a class="site-card" href="@site.Url" target="_blank" rel="noopener" @key="site.Url">
-                        <div class="site-card-icon"><Icon Name="globe" Size="24" /></div>
-                        <div class="site-card-info"><span class="site-card-name">@site.Name</span></div>
+                    <a class="list-item @(site.HasGetter ? "" : "two-line")" href="@site.Url" target="_blank" rel="noopener" @key="site.Url">
+                        <span class="list-item-leading"><Icon Name="globe" /></span>
+                        <span class="list-item-text">
+                            <span class="list-item-headline">@site.Name</span>
+                            @if (!site.HasGetter)
+                            {
+                                <span class="list-item-supporting">есть в README, но нет загрузчика в ядре</span>
+                            }
+                        </span>
+                        <span class="list-item-trailing"><Icon Name="external" Size="20" /></span>
                     </a>
                 }
-            </div>
+            </section>
         }
 
-        @if (Filter(_ => true).Count == 0)
+        @if (coreOnly.Count > 0)
         {
-            <div class="supported-empty"><p>Ничего не найдено</p></div>
+            <section class="section">
+                <h2 class="section-title">Есть в ядре, но нет в README</h2>
+                <div class="card list">
+                    @foreach (var site in coreOnly)
+                    {
+                        <a class="list-item" href="@site.Url" target="_blank" rel="noopener" @key="site.Url">
+                            <span class="list-item-leading"><Icon Name="globe" /></span>
+                            <span class="list-item-text"><span class="list-item-headline">@site.Name</span></span>
+                            <span class="list-item-trailing"><Icon Name="external" Size="20" /></span>
+                        </a>
+                    }
+                </div>
+            </section>
         }
 
-        <p class="field-hint center">В README: @_sites.Count(s => s.InReadme) · работают в этой сборке: @_sites.Count(s => s.HasGetter)</p>
+        @if (inReadme.Count + coreOnly.Count == 0)
+        {
+            <div class="empty-state"><p>Ничего не найдено</p></div>
+        }
+
+        <p class="hint-row">В README: @_sites.Count(s => s.InReadme) · работают в этой сборке: @_sites.Count(s => s.HasGetter)</p>
     }
 </div>
 

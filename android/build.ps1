@@ -21,8 +21,8 @@
     Перед сборкой выполнить git pull --ff-only (например, после кнопки «Sync fork» на GitHub).
 
 .PARAMETER Abi
-    Архитектуры через ';'. По умолчанию android-arm64 (Pixel 9a и почти все современные телефоны).
-    Для эмулятора: -Abi "android-arm64;android-x64".
+    Архитектуры через запятую. По умолчанию android-arm64,android-arm: 64 бита — Pixel 9a и почти все
+    современные телефоны, 32 бита — старые телефоны и читалки. Для эмулятора: -Abi android-arm64,android-x64.
 
 .PARAMETER SigningDir
     Папка с ключом подписи (e2e.keystore + password.txt). По умолчанию $env:E2E_SIGNING_DIR,
@@ -33,7 +33,7 @@
 #>
 param(
     [switch]$Pull,
-    [string]$Abi = 'android-arm64',
+    [string[]]$Abi = @('android-arm64', 'android-arm'),
     [string]$SigningDir = $(if ($env:E2E_SIGNING_DIR) { $env:E2E_SIGNING_DIR } else { Join-Path $env:LOCALAPPDATA 'Elib2EbookAndroid\signing' })
 )
 
@@ -67,10 +67,38 @@ if ($Pull) {
 }
 
 $commit = (git -C $repo rev-parse --short HEAD).Trim()
-# Версия ядра — из корневого Directory.Build.props (она же станет versionName приложения)
+# Версия ядра — из корневого Directory.Build.props (показывается в «О приложении» отдельно от версии приложения)
 $props = [xml](Get-Content (Join-Path $repo 'Directory.Build.props') -Raw)
-$version = ($props.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
-Write-Host "    Elib2Ebook $version ($commit)"
+$coreVersion = ($props.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
+
+# Версия приложения — от последнего git-тега vX.Y.Z, та же схема, что в .github/workflows/android.yml
+# (см. android/README.md, раздел «Версии»):
+#   ровно на теге v0.2.0        → 0.2.0
+#   5 коммитов после v0.2.0     → 0.2.1-dev.5
+#   тегов нет                   → 0.0.0-dev.<число коммитов>
+#   есть незакоммиченные правки → в конце добавляется «local»
+# --always: без тегов git печатает просто хэш, а не ошибку (ошибка в stderr роняет скрипт в PowerShell 5.1)
+$describe = (git -C $repo describe --tags --match 'v[0-9]*' --long --abbrev=7 --always).Trim()
+if ($describe -match '^v(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?-(\d+)-g[0-9a-f]+$') {
+    $ahead = [int]$Matches[5]
+    $suffix = $Matches[4]
+    if ($ahead -eq 0) {
+        $version = "$($Matches[1]).$($Matches[2]).$($Matches[3])$suffix"
+    }
+    elseif ($suffix) {
+        $version = "$($Matches[1]).$($Matches[2]).$($Matches[3])$suffix.dev.$ahead"
+    }
+    else {
+        $version = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)-dev.$ahead"
+    }
+}
+else {
+    $version = "0.0.0-dev.$((git -C $repo rev-list --count HEAD).Trim())"
+}
+if (git -C $repo status --porcelain) {
+    if ($version.Contains('-')) { $version += '.local' } else { $version += '-local' }
+}
+Write-Host "    E2E $version (ядро Elib2Ebook $coreVersion, коммит $commit)"
 
 # --- 2. Ключ подписи (вне репозитория!) ------------------------------------
 $keystore = Join-Path $SigningDir 'e2e.keystore'
@@ -107,12 +135,15 @@ foreach ($dir in @('E2E.Droid\obj\Release', 'E2E.Droid\bin\Release')) {
     if (Test-Path $full) { Remove-Item -Recurse -Force $full }
 }
 
-Write-Host "==> Собираю APK (versionCode $versionCode, $Abi)" -ForegroundColor Cyan
+# -Abi можно передать списком (a,b), строкой "a,b" или по-старому "a;b" — приводим к «a,b» для свойства E2EAbi
+$abiList = (($Abi -join ',') -split '[,;\s]+' | Where-Object { $_ }) -join ','
+
+Write-Host "==> Собираю APK $version (versionCode $versionCode, $abiList)" -ForegroundColor Cyan
 # ВАЖНО: без -o и без -p:RuntimeIdentifiers — глобальные свойства командной строки уходят во все
 # 60+ библиотек ядра и ломают их сборку. Архитектуры передаются через свойство проекта E2EAbi.
 & $dotnet publish (Join-Path $android 'E2E.Droid\E2E.Droid.csproj') `
     -c Release -f net10.0-android -nologo -v:minimal `
-    "-p:E2EAbi=$Abi" `
+    "-p:E2EAbi=$abiList" `
     "-p:AndroidSdkDirectory=$sdk" `
     "-p:JavaSdkDirectory=$jdk" `
     "-p:ApplicationDisplayVersion=$version" `
@@ -132,7 +163,9 @@ if (-not $apk) { throw "Подписанный APK не найден в $publish
 # --- 4. Результат ----------------------------------------------------------
 $dist = Join-Path $android 'dist'
 New-Item -ItemType Directory -Force $dist | Out-Null
-$target = Join-Path $dist "E2E-$version-$commit.apk"
+# Сборка ровно с релизного тега — просто E2E-0.2.0.apk, иначе с коммитом: E2E-0.2.1-dev.5-abc1234.apk
+$fileName = if ($version.Contains('-')) { "E2E-$version-$commit.apk" } else { "E2E-$version.apk" }
+$target = Join-Path $dist $fileName
 Copy-Item $apk.FullName $target -Force
 Write-Host ''
 Write-Host "Готово: $target ($([math]::Round($apk.Length / 1MB, 1)) МБ)" -ForegroundColor Green

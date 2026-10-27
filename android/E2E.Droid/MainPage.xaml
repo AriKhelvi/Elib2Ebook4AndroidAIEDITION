@@ -8,7 +8,7 @@
              xmlns:components="clr-namespace:E2E.Droid.Components"
              x:Class="E2E.Droid.MainPage"
              SafeAreaEdges="All"
-             BackgroundColor="{AppThemeBinding Light=#F5F5F7, Dark=#000000}">
+             BackgroundColor="{AppThemeBinding Light=#F8F9FF, Dark=#111418}">
 
     <BlazorWebView x:Name="blazorWebView" HostPage="wwwroot/index.html">
         <BlazorWebView.RootComponents>

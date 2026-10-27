@@ -33,20 +33,25 @@
         <ApplicationTitle>E2E</ApplicationTitle>
         <!-- Идентификатор пакета. Если поменять — Android будет считать это другим приложением -->
         <ApplicationId>e2e.droid</ApplicationId>
-        <!-- build.ps1 подставляет версию Elib2Ebook (versionName) и растущий versionCode;
-             без растущего versionCode Android откажется ставить обновление поверх -->
-        <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+        <!-- Версия приложения (versionName) — от git-тега vX.Y.Z, versionCode — растущий номер сборки.
+             Их подставляют android/build.ps1 и CI (см. android/README.md, раздел «Версии»);
+             без растущего versionCode Android откажется ставить обновление поверх. -->
+        <ApplicationDisplayVersion>0.0.0-dev</ApplicationDisplayVersion>
         <ApplicationVersion>1</ApplicationVersion>
 
-        <!-- Android 10+: можно писать в «Загрузки» через MediaStore без разрешений на хранилище -->
-        <SupportedOSPlatformVersion>29.0</SupportedOSPlatformVersion>
+        <!-- Android 7.0+. Ниже не пускает сам BlazorWebView (MAUI поддерживает его только с API 24).
+             На Android 7–9 книги пишутся в «Загрузки» по пути (с разрешением на память), с Android 10 — через MediaStore
+             без разрешений; см. AndroidBookStorage. -->
+        <SupportedOSPlatformVersion>24.0</SupportedOSPlatformVersion>
 
-        <!-- Архитектуры. Pixel 9a и почти все современные телефоны — arm64.
-             Для эмулятора: -p:E2EAbi="android-arm64;android-x64".
+        <!-- Архитектуры, через запятую. arm64 — Pixel 9a и почти все современные телефоны;
+             arm (32 бита) — старые телефоны и большинство читалок на Android 7–10. Обе — в одном APK.
+             Для эмулятора: -p:E2EAbi=android-arm64,android-x64.
              ВАЖНО: не передавайте -p:RuntimeIdentifiers в командной строке — глобальное свойство уходит во все
-             60+ библиотек ядра, и их сборка ломается. Поэтому архитектуры передаются через своё свойство E2EAbi. -->
-        <E2EAbi Condition="'$(E2EAbi)' == ''">android-arm64</E2EAbi>
-        <RuntimeIdentifiers>$(E2EAbi)</RuntimeIdentifiers>
+             60+ библиотек ядра, и их сборка ломается. Поэтому архитектуры передаются через своё свойство E2EAbi
+             (а запятая вместо «;» — потому что «;» в -p: MSBuild считает разделителем свойств). -->
+        <E2EAbi Condition="'$(E2EAbi)' == ''">android-arm64,android-arm</E2EAbi>
+        <RuntimeIdentifiers>$(E2EAbi.Replace(',', ';'))</RuntimeIdentifiers>
 
         <!-- Ядро использует HTTP/2 и свои настройки HttpClientHandler (cookies, прокси, распаковка).
              Нативный AndroidMessageHandler HTTP/2 не умеет, поэтому включаем управляемый SocketsHttpHandler —
@@ -144,7 +149,8 @@
         </ItemGroup>
     </Target>
 
-    <!-- Версия ядра (из ../../Directory.Build.props) и коммит (передаёт build.ps1) — для экрана «О приложении» -->
+    <!-- Версия ядра (из ../../Directory.Build.props) и коммит форка, из которого собран APK (передают build.ps1 и CI), —
+         для экрана «О приложении». Версия самого приложения берётся из versionName (AppInfo.VersionString). -->
     <Target Name="E2ECoreVersion" BeforeTargets="GetAssemblyAttributes">
         <XmlPeek XmlInputPath="$(E2ECoreDir)Directory.Build.props" Query="/Project/PropertyGroup/Version/text()">
             <Output TaskParameter="Result" PropertyName="E2ECoreVersionValue" />
@@ -155,7 +161,7 @@
                 <_Parameter2>$(E2ECoreVersionValue)</_Parameter2>
             </AssemblyAttribute>
             <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
-                <_Parameter1>Elib2EbookCommit</_Parameter1>
+                <_Parameter1>BuildCommit</_Parameter1>
                 <_Parameter2>$(E2ECommit)</_Parameter2>
             </AssemblyAttribute>
         </ItemGroup>

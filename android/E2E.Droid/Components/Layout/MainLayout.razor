@@ -1,78 +1,108 @@
-@* E2E для Android — каркас: верхняя панель, контент, нижние вкладки
+@* E2E для Android — каркас: верхняя панель с меню темы, контент, нижняя навигация (Material 3)
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @inherits LayoutComponentBase
 @implements IDisposable
 @inject IJSRuntime Js
-@inject IPlatformServices Platform
 @inject DownloadManager Downloads
 @inject NavigationManager Nav
 
 <div class="app-shell">
-    <header class="topbar">
-        <NavLink class="topbar-brand" href="" Match="NavLinkMatch.All">
-            <Icon Name="library" Size="26" Class="topbar-logo" />
-            <span>Elib2Ebook</span>
-        </NavLink>
-        <div class="topbar-actions">
-            @if (Downloads.IsRunning && !IsHome)
-            {
-                <NavLink class="topbar-progress" href="" Match="NavLinkMatch.All">
-                    <span class="google-spinner small"></span>
-                    @(Downloads.Total > 1 ? $"{Downloads.Current}/{Downloads.Total}" : "Качаю")
-                </NavLink>
-            }
-            <button type="button" class="theme-toggle" @onclick="CycleTheme" aria-label="Тема">
-                @if (_themeMode == "system")
-                {
-                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M12 2a10 10 0 0 1 0 20z" fill-opacity="1"/>
-                        <path d="M12 2a10 10 0 0 0 0 20z" fill-opacity="0.18"/>
-                    </svg>
-                }
-                else
-                {
-                    <Icon Name="@(_themeMode == "dark" ? "sun" : "moon")" Size="22" />
-                }
-            </button>
-        </div>
+    <header class="top-app-bar">
+        <h1 class="top-app-bar-title">@Title</h1>
+        @if (Downloads.IsRunning && !IsHome)
+        {
+            <NavLink class="top-bar-progress" href="" Match="NavLinkMatch.All">
+                <span class="spinner small"></span>
+                @(Downloads.Total > 1 ? $"Качаю {Downloads.Current}/{Downloads.Total}" : "Качаю")
+            </NavLink>
+        }
+        <button type="button" class="icon-button @(_menuOpen ? "selected" : "")" aria-label="Тема оформления"
+                aria-haspopup="menu" aria-expanded="@(_menuOpen ? "true" : "false")" @onclick="() => _menuOpen = !_menuOpen">
+            <Icon Name="theme" />
+        </button>
     </header>
 
     <main class="app-content">
         @Body
     </main>
 
-    <nav class="bottom-nav">
-        <NavLink class="bottom-nav-link" href="" Match="NavLinkMatch.All">
-            <span class="bottom-nav-icon">
-                <Icon Name="download" Size="22" />
+    <nav class="nav-bar" aria-label="Разделы">
+        <NavLink class="nav-item" href="" Match="NavLinkMatch.All" aria-label="@(Downloads.IsRunning ? "Скачать, идёт загрузка" : "Скачать")">
+            <span class="nav-indicator">
+                <Icon Name="download" />
                 @if (Downloads.IsRunning)
                 {
-                    <span class="bottom-nav-dot"></span>
+                    <span class="nav-badge"></span>
                 }
             </span>
             <span>Скачать</span>
         </NavLink>
-        <NavLink class="bottom-nav-link" href="books">
-            <span class="bottom-nav-icon"><Icon Name="library" Size="22" /></span>
+        <NavLink class="nav-item" href="books">
+            <span class="nav-indicator"><Icon Name="library" /></span>
             <span>Книги</span>
         </NavLink>
-        <NavLink class="bottom-nav-link" href="sites">
-            <span class="bottom-nav-icon"><Icon Name="globe" Size="22" /></span>
+        <NavLink class="nav-item" href="sites">
+            <span class="nav-indicator"><Icon Name="globe" /></span>
             <span>Сайты</span>
         </NavLink>
-        <NavLink class="bottom-nav-link" href="settings">
-            <span class="bottom-nav-icon"><Icon Name="settings" Size="22" /></span>
+        <NavLink class="nav-item" href="settings">
+            <span class="nav-indicator"><Icon Name="settings" /></span>
             <span>Настройки</span>
         </NavLink>
     </nav>
+
+    @if (_menuOpen)
+    {
+        @* Прозрачная подложка на весь экран: нажатие мимо меню закрывает его *@
+        <button type="button" class="menu-scrim" aria-label="Закрыть меню" @onclick="() => _menuOpen = false"></button>
+        <div class="menu" role="menu" aria-label="Тема оформления">
+            @foreach (var (id, label, icon) in Themes)
+            {
+                var selected = id == _themeMode;
+                <button type="button" class="menu-item @(selected ? "selected" : "")" role="menuitemradio"
+                        aria-checked="@(selected ? "true" : "false")" @onclick="() => SetTheme(id)">
+                    <span class="menu-item-icon"><Icon Name="@icon" /></span>
+                    <span class="menu-item-label">@label</span>
+                    <span class="menu-item-check">
+                        @if (selected)
+                        {
+                            <Icon Name="check" />
+                        }
+                    </span>
+                </button>
+            }
+        </div>
+    }
 
     <Toasts />
 </div>
 
 @code {
-    private string _themeMode = "system";
+    /// <summary>Темы для меню — те же значения, что понимает e2e.setThemeMode в js/app.js.</summary>
+    private static readonly (string Id, string Label, string Icon)[] Themes =
+    [
+        ("system", "Как в системе", "theme"),
+        ("light", "Светлая", "sun"),
+        ("dark", "Тёмная", "moon"),
+        ("amoled", "AMOLED", "amoled"),
+        ("eink", "E-ink", "eink")
+    ];
 
-    private bool IsHome => Nav.ToBaseRelativePath(Nav.Uri).Split('?', '#')[0].Length == 0;
+    private string _themeMode = "system";
+    private bool _menuOpen;
+
+    private string Route => Nav.ToBaseRelativePath(Nav.Uri).Split('?', '#')[0];
+
+    private bool IsHome => Route.Length == 0;
+
+    /// <summary>Заголовок верхней панели — название раздела (на главной — название программы).</summary>
+    private string Title => Route switch
+    {
+        "books" => "Книги",
+        "sites" => "Сайты",
+        "settings" => "Настройки",
+        _ => "Elib2Ebook"
+    };
 
     protected override void OnInitialized()
     {
@@ -85,25 +115,18 @@
     {
         if (firstRender)
         {
+            // Тема уже применена скриптом до отрисовки — узнаём выбор для меню и красим системные панели
             _themeMode = await Js.InvokeAsync<string>("e2e.getThemeMode");
-            var effective = await Js.InvokeAsync<string>("e2e.effectiveTheme");
-            Platform.ApplyTheme(effective == "dark");
+            await Js.InvokeVoidAsync("e2e.syncNative");
             StateHasChanged();
         }
     }
 
-    private async Task CycleTheme()
+    private async Task SetTheme(string mode)
     {
-        // светлая → тёмная → как в системе → светлая
-        _themeMode = _themeMode switch
-        {
-            "light" => "dark",
-            "dark" => "system",
-            _ => "light"
-        };
-
-        var effective = await Js.InvokeAsync<string>("e2e.setThemeMode", _themeMode);
-        Platform.ApplyTheme(effective == "dark");
+        _menuOpen = false;
+        _themeMode = mode;
+        await Js.InvokeAsync<string>("e2e.setThemeMode", mode);
     }
 
     // Ссылка пришла через «Поделиться», а открыта другая вкладка — переходим на главную, она заберёт ссылку
@@ -117,7 +140,11 @@
 
     private void OnChanged() => InvokeAsync(StateHasChanged);
 
-    private void OnLocationChanged(object sender, LocationChangedEventArgs e) => InvokeAsync(StateHasChanged);
+    private void OnLocationChanged(object sender, LocationChangedEventArgs e) => InvokeAsync(() =>
+    {
+        _menuOpen = false;
+        StateHasChanged();
+    });
 
     public void Dispose()
     {

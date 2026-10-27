@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  E2E для Android — папки, на файлы из которых FileProvider выдаёт content://-ссылки (см. AndroidManifest.xml)
+  [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
+-->
+<paths>
+    <!-- /sdcard/Download — туда Android 7–9 кладут книги (Загрузки/Elib2Ebook) -->
+    <external-path name="downloads" path="Download/" />
+</paths>

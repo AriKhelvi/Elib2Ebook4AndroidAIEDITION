@@ -15,7 +15,13 @@ public interface IBookStorage
     /// <summary>Копирует дерево файлов из рабочей папки задания в папку сохранения.</summary>
     Task<IReadOnlyList<SavedFile>> SaveTreeAsync(string sourceDir, Func<SavedFile, SavedFile> decorate);
 
+    /// <summary>
+    /// Разрешение на запись, если оно нужно (Android 7–9 пишут в «Загрузки» по пути). false — пользователь отказал.
+    /// </summary>
+    Task<bool> EnsureWriteAccessAsync();
+
     /// <summary>Системный выбор папки (SAF). false — пользователь отменил.</summary>
+    /// <exception cref="InvalidOperationException">На устройстве нет системного выбора папки.</exception>
     Task<bool> PickFolderAsync();
 
     void ResetFolder();
@@ -44,10 +50,14 @@ public interface IPlatformServices
 
     void NotifyFinished(string title, string text);
 
-    /// <summary>Подстраивает цвет фона под системными панелями и цвет их значков под тему веб-интерфейса.</summary>
-    void ApplyTheme(bool dark);
+    /// <summary>Подстраивает цвет фона под системными панелями и цвет их значков под тему интерфейса.</summary>
+    void ApplyTheme(bool dark, string background);
 
     bool IsInForeground { get; }
 
+    /// <summary>Версия приложения (versionName): 0.2.0 или 0.2.1-dev.5.</summary>
     string AppVersion { get; }
+
+    /// <summary>Номер сборки (versionCode).</summary>
+    string BuildNumber { get; }
 }

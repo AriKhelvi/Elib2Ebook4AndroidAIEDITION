@@ -1,4 +1,4 @@
-@* E2E для Android — вкладка «Книги»: история скачанных файлов
+@* E2E для Android — вкладка «Книги»: история скачанных файлов (Material 3)
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @page "/books"
 @implements IDisposable
@@ -7,45 +7,46 @@
 @inject ToastService Toasts
 
 <div class="page">
-    <div class="page-header">
-        <h1 class="page-title">Книги</h1>
-        <p class="page-subtitle">Сохраняются в «@Storage.DestinationLabel». Отправить на читалку — кнопка <Icon Name="share" Size="14" /> (Telegram, почта, Send to Kindle, облако читалки).</p>
-    </div>
+    <p class="page-intro">
+        Сохраняются в «@Storage.DestinationLabel». Отправить на читалку — кнопка «Поделиться»:
+        Telegram, почта, Send to Kindle, облако читалки.
+    </p>
 
     @if (_items == null)
     {
-        <div class="empty-state"><div class="google-spinner"></div></div>
+        <div class="empty-state"><span class="spinner large"></span></div>
     }
     else if (_items.Count == 0)
     {
         <div class="empty-state">
             <Icon Name="library" Size="48" />
             <p>Здесь появятся скачанные книги</p>
-            <a class="google-button google-button-primary" href="">Скачать книгу</a>
+            <a class="btn btn-filled" href=""><Icon Name="download" Size="18" />Скачать книгу</a>
         </div>
     }
     else
     {
-        <div class="card file-list">
+        <section class="card list" aria-label="Скачанные книги">
             @foreach (var file in _items)
             {
                 var missing = _missing.Contains(file.Id);
                 <FileRow File="file" Missing="missing" ShowBookTitle="true" ShowDate="true" @key="file.Id">
                     @if (_confirmId == file.Id)
                     {
-                        <div class="confirm-inline">
-                            <button type="button" class="chip chip-danger" @onclick="() => Delete(file)">Удалить</button>
-                            <button type="button" class="chip" @onclick="() => _confirmId = null">Нет</button>
-                        </div>
+                        <button type="button" class="btn btn-text btn-danger" @onclick="() => Delete(file)">Удалить</button>
+                        <button type="button" class="btn btn-text" @onclick="() => _confirmId = null">Нет</button>
                     }
                     else
                     {
-                        <button type="button" class="icon-btn" @onclick="() => AskDelete(file, missing)" aria-label="Удалить"><Icon Name="delete" /></button>
+                        <button type="button" class="icon-button" @onclick="() => AskDelete(file, missing)"
+                                aria-label="@(missing ? "Убрать из списка" : "Удалить файл")"><Icon Name="@(missing ? "close" : "delete")" /></button>
                     }
                 </FileRow>
             }
+        </section>
+        <div class="row centered">
+            <button type="button" class="btn btn-text" @onclick="ClearList">Очистить список (файлы останутся)</button>
         </div>
-        <button type="button" class="link-button" @onclick="ClearList">Очистить список (файлы останутся)</button>
     }
 </div>
 

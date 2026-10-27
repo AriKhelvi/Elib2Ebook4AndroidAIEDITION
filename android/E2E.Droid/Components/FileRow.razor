@@ -1,16 +1,16 @@
-@* E2E для Android — строка файла: открыть / поделиться / удалить
+@* E2E для Android — строка файла: значок формата, название, размер; открыть / поделиться / удалить
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @inject IBookStorage Storage
 @inject ToastService Toasts
 
-<div class="file-row @(Missing ? "file-row-missing" : "")">
-    <div class="file-icon"><Icon Name="@IconName" Size="22" /><span>@File.Extension.ToUpperInvariant()</span></div>
-    <div class="file-info">
-        <div class="file-title">@(ShowBookTitle && !string.IsNullOrEmpty(File.BookTitle) ? File.BookTitle : File.Name)</div>
-        <div class="file-meta">
+<div class="list-item two-line has-actions file-row @(Missing ? "missing" : "")">
+    <span class="file-badge" aria-hidden="true">@Badge</span>
+    <div class="list-item-text">
+        <span class="list-item-headline">@(ShowBookTitle && !string.IsNullOrEmpty(File.BookTitle) ? File.BookTitle : File.Name)</span>
+        <span class="list-item-supporting">
             @if (ShowBookTitle && !string.IsNullOrEmpty(File.Author))
             {
-                <span>@File.Author · </span>
+                @File.Author<text> · </text>
             }
             @if (Missing)
             {
@@ -18,19 +18,19 @@
             }
             else
             {
-                <span>@Formatting.Size(File.Size)</span>
+                @Formatting.Size(File.Size)
                 @if (ShowDate)
                 {
-                    <span> · @File.SavedAt.LocalDateTime.ToString("dd.MM.yy HH:mm")</span>
+                    <text> · </text>@File.SavedAt.LocalDateTime.ToString("dd.MM.yy HH:mm")
                 }
             }
-        </div>
+        </span>
     </div>
-    <div class="file-actions">
+    <div class="list-item-trailing">
         @if (!Missing)
         {
-            <button type="button" class="icon-btn" @onclick="Open" aria-label="Открыть"><Icon Name="open" /></button>
-            <button type="button" class="icon-btn" @onclick="() => Storage.Share([File])" aria-label="Поделиться"><Icon Name="share" /></button>
+            <button type="button" class="icon-button" @onclick="Open" aria-label="Открыть @File.Name"><Icon Name="open" /></button>
+            <button type="button" class="icon-button" @onclick="() => Storage.Share([File])" aria-label="Поделиться @File.Name"><Icon Name="share" /></button>
         }
         @ChildContent
     </div>
@@ -47,12 +47,15 @@
 
     [Parameter] public RenderFragment ChildContent { get; set; }
 
-    private string IconName => File.Extension switch
+    /// <summary>«EPUB», «FB2», «JPG»… — не длиннее четырёх букв, чтобы влезло в значок.</summary>
+    private string Badge
     {
-        "epub" or "fb2" or "cbz" or "txt" => File.Extension,
-        "jpg" or "jpeg" or "png" or "webp" or "gif" => "cbz",
-        _ => "fb2"
-    };
+        get
+        {
+            var extension = (File.Extension ?? string.Empty).ToUpperInvariant();
+            return extension.Length > 4 ? extension[..4] : extension;
+        }
+    }
 
     private void Open()
     {

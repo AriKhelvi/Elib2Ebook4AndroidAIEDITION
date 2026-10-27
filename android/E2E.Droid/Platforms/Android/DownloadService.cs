@@ -8,6 +8,8 @@ using Android.App;
 using Android.Content;
 using Android.Content.PM;
 using Android.OS;
+using AndroidX.Core.App;
+using AndroidX.Core.Content;
 using E2E.Droid.Services;
 
 namespace E2E.Droid;
@@ -23,6 +25,9 @@ namespace E2E.Droid;
 /// <para>Тип dataSync — «передача данных по инициативе пользователя». С Android 14 тип обязателен
 /// (и отдельное разрешение FOREGROUND_SERVICE_DATA_SYNC в манифесте), с Android 15 у него лимит
 /// 6 часов в сутки — по истечении система вызывает OnTimeout.</para>
+/// <para>Приложение работает с Android 7, а запуск сервиса и уведомления там устроены иначе (нет каналов
+/// уведомлений, нет startForegroundService и типов сервиса). Поэтому всё делается через обёртки AndroidX —
+/// ContextCompat, ServiceCompat, NotificationCompat: они сами выбирают способ под версию системы.</para>
 /// <para>Сервис сам ничего не качает: он только живёт, пока DownloadManager работает, и рисует уведомление.</para>
 /// </remarks>
 [Service(Exported = false, ForegroundServiceType = ForegroundService.TypeDataSync)]
@@ -35,6 +40,12 @@ public sealed class DownloadService : Service
     public const string FinishedChannel = "finished";
 
     private const int ProgressId = 1001;
+
+    /// <summary>
+    /// ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC числом: константа Android помечена как «только с Android 10»,
+    /// а ServiceCompat на старых версиях тип и не передаёт.
+    /// </summary>
+    private const int ForegroundServiceTypeDataSync = 1;
 
     /// <summary>Действие кнопки «Отмена» в уведомлении.</summary>
     private const string ActionCancel = "e2e.droid.CANCEL";
@@ -62,7 +73,8 @@ public sealed class DownloadService : Service
 
         var intent = new Intent(context, typeof(DownloadService));
         intent.PutExtra(ExtraText, text);
-        context.StartForegroundService(intent);
+        // Android 8+: startForegroundService; Android 7: обычный startService
+        ContextCompat.StartForegroundService(context, intent);
     }
 
     /// <summary>
@@ -96,10 +108,7 @@ public sealed class DownloadService : Service
             }
         }
 
-        if (context.GetSystemService(NotificationService) is NotificationManager manager)
-        {
-            manager.Notify(ProgressId, BuildProgress(context, text));
-        }
+        NotificationManagerCompat.From(context).Notify(ProgressId, BuildProgress(context, text));
     }
 
     public override IBinder OnBind(Intent intent) => null;
@@ -114,7 +123,8 @@ public sealed class DownloadService : Service
 
         EnsureChannels(this);
         var notification = BuildProgress(this, intent?.GetStringExtra(ExtraText) ?? "Скачивание…");
-        StartForeground(ProgressId, notification, ForegroundService.TypeDataSync);
+        // Тип сервиса передаётся только с Android 10 — ServiceCompat сам выберет нужный вызов
+        ServiceCompat.StartForeground(this, ProgressId, notification, ForegroundServiceTypeDataSync);
 
         bool stopNow;
         lock (Sync)
@@ -158,7 +168,7 @@ public sealed class DownloadService : Service
             }
         }
 
-        StopForeground(StopForegroundFlags.Remove);
+        ServiceCompat.StopForeground(this, ServiceCompat.StopForegroundRemove);
         StopSelf();
     }
 
@@ -178,25 +188,22 @@ public sealed class DownloadService : Service
         }
 
         _wakeLock = null;
-        StopForeground(StopForegroundFlags.Remove);
+        ServiceCompat.StopForeground(this, ServiceCompat.StopForegroundRemove);
         base.OnDestroy();
     }
 
+    /// <summary>Каналы уведомлений (Android 8+; на Android 7 каналов нет, и вызов ничего не делает).</summary>
     public static void EnsureChannels(Context context)
     {
-        if (context.GetSystemService(NotificationService) is not NotificationManager manager)
-        {
-            return;
-        }
-
-        manager.CreateNotificationChannel(new NotificationChannel(ProgressChannel, "Скачивание книг", NotificationImportance.Low)
-        {
-            Description = "Прогресс скачивания"
-        });
-        manager.CreateNotificationChannel(new NotificationChannel(FinishedChannel, "Готовые книги", NotificationImportance.Default)
-        {
-            Description = "Уведомление, когда книга скачана"
-        });
+        var manager = NotificationManagerCompat.From(context);
+        manager.CreateNotificationChannel(new NotificationChannelCompat.Builder(ProgressChannel, NotificationManagerCompat.ImportanceLow)
+            .SetName("Скачивание книг")!
+            .SetDescription("Прогресс скачивания")!
+            .Build());
+        manager.CreateNotificationChannel(new NotificationChannelCompat.Builder(FinishedChannel, NotificationManagerCompat.ImportanceDefault)
+            .SetName("Готовые книги")!
+            .SetDescription("Уведомление, когда книга скачана")!
+            .Build());
     }
 
     public static PendingIntent OpenAppIntent(Context context)
@@ -212,23 +219,20 @@ public sealed class DownloadService : Service
         cancel.SetAction(ActionCancel);
         var cancelIntent = PendingIntent.GetService(context, 1, cancel, PendingIntentFlags.Immutable | PendingIntentFlags.UpdateCurrent);
 
-        var builder = new Notification.Builder(context, ProgressChannel)
-            .SetSmallIcon(Resource.Drawable.ic_stat_e2e)
-            .SetContentTitle("Скачиваю книгу")
-            .SetContentText(text)
-            .SetStyle(new Notification.BigTextStyle().BigText(text))
-            .SetProgress(0, 0, true)
-            .SetOngoing(true)
-            .SetOnlyAlertOnce(true)
-            .SetContentIntent(OpenAppIntent(context))
-            .AddAction(new Notification.Action.Builder((Android.Graphics.Drawables.Icon)null, "Отмена", cancelIntent).Build());
-
-        if (OperatingSystem.IsAndroidVersionAtLeast(31))
-        {
-            // Показать уведомление сразу, а не через 10 секунд после старта сервиса
-            builder.SetForegroundServiceBehavior((int)NotificationForegroundService.Immediate);
-        }
-
-        return builder.Build()!;
+        return new NotificationCompat.Builder(context, ProgressChannel)
+            .SetSmallIcon(Resource.Drawable.ic_stat_e2e)!
+            .SetContentTitle("Скачиваю книгу")!
+            .SetContentText(text)!
+            .SetStyle(new NotificationCompat.BigTextStyle().BigText(text))!
+            .SetProgress(0, 0, true)!
+            .SetOngoing(true)!
+            .SetOnlyAlertOnce(true)!
+            // На Android 7 каналов нет — «тихое» уведомление задаётся приоритетом
+            .SetPriority(NotificationCompat.PriorityLow)!
+            .SetContentIntent(OpenAppIntent(context))!
+            .AddAction(0, "Отмена", cancelIntent)!
+            // Android 12+: показать уведомление сразу, а не через 10 секунд после старта сервиса
+            .SetForegroundServiceBehavior(NotificationCompat.ForegroundServiceImmediate)!
+            .Build()!;
     }
 }

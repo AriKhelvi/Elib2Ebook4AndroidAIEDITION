@@ -52,6 +52,13 @@ public sealed class AppSettings
         set => Set(nameof(BookNamePattern), string.IsNullOrWhiteSpace(value) ? DefaultBookNamePattern : value.Trim());
     }
 
+    /// <summary>Картинки в книге (обложка и иллюстрации). Выключено — как --no-image консольной версии.</summary>
+    public bool Images
+    {
+        get => P.Get(nameof(Images), true);
+        set => Set(nameof(Images), value);
+    }
+
     /// <summary>Сохранять обложку отдельным файлом рядом с книгой (--cover).</summary>
     public bool Cover
     {

@@ -1,58 +1,77 @@
-@* E2E для Android — карточка книги: обложка, автор, серия, аннотация
+@* E2E для Android — карточка книги: обложка, название, автор, серия, сайт, аннотация
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
-@* Карточка книги, как ShortBook.razor в веб-версии *@
-<div class="book-card">
-    <div class="book-card-cover">
+<div class="book-summary">
+    @* Обложки бывают не у всех книг — тогда вместо неё значок *@
+    <div class="book-cover @(Compact ? "small" : "")">
         @if (!string.IsNullOrEmpty(Book.CoverDataUrl))
         {
             <img src="@Book.CoverDataUrl" alt="Обложка" />
         }
         else
         {
-            <div class="book-card-cover-empty"><Icon Name="epub" Size="40" /></div>
+            <Icon Name="book" Size="@(Compact ? 22 : 28)" />
         }
     </div>
-    <div class="book-card-info">
-        <a class="book-card-title" href="@Book.Url" target="_blank" rel="noopener">@(Book.Title ?? "Без названия")</a>
+    <div class="book-info">
+        <h2 class="book-title">
+            @if (string.IsNullOrEmpty(Book.Url))
+            {
+                @(Book.Title ?? "Без названия")
+            }
+            else
+            {
+                <a href="@Book.Url" target="_blank" rel="noopener">@(Book.Title ?? "Без названия")</a>
+            }
+        </h2>
 
         @if (!string.IsNullOrWhiteSpace(Book.Author))
         {
-            <div class="book-card-meta">
-                <span>Автор: </span>
+            <span class="book-meta">
                 @if (string.IsNullOrEmpty(Book.AuthorUrl))
                 {
-                    <span>@Book.Author</span>
+                    @Book.Author
                 }
                 else
                 {
                     <a href="@Book.AuthorUrl" target="_blank" rel="noopener">@Book.Author</a>
                 }
-            </div>
+            </span>
         }
 
         @if (!string.IsNullOrWhiteSpace(Book.Seria))
         {
-            <div class="book-card-meta">
-                <span>Серия: </span>
+            <span class="book-meta">
+                Серия:
                 @if (string.IsNullOrEmpty(Book.SeriaUrl))
                 {
-                    <span>@Book.Seria</span>
+                    @Book.Seria
                 }
                 else
                 {
                     <a href="@Book.SeriaUrl" target="_blank" rel="noopener">@Book.Seria</a>
                 }
-            </div>
+            </span>
         }
 
-        @if (!string.IsNullOrWhiteSpace(Book.Annotation))
+        @if (!Compact && Host != null)
         {
-            <div class="book-card-annotation">@((MarkupString)Book.Annotation)</div>
+            <span class="book-host">@Host</span>
         }
     </div>
 </div>
 
+@if (!Compact && !string.IsNullOrWhiteSpace(Book.Annotation))
+{
+    <div class="book-annotation">@((MarkupString)Book.Annotation)</div>
+}
+
 @code {
     [Parameter, EditorRequired]
     public BookPreview Book { get; set; }
+
+    /// <summary>Компактно (в карточке «Готово»): маленькая обложка, без сайта и аннотации.</summary>
+    [Parameter]
+    public bool Compact { get; set; }
+
+    private string Host => Uri.TryCreate(Book.Url, UriKind.Absolute, out var uri) ? uri.Host : null;
 }

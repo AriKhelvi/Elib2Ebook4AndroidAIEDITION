@@ -1,15 +1,16 @@
-@* E2E для Android — отрисовка всплывающих сообщений
+@* E2E для Android — всплывающие сообщения (snackbar Material 3) над нижней панелью
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @implements IDisposable
 @inject ToastService ToastService
 
 @if (ToastService.Toasts.Count > 0)
 {
-    <div class="toasts">
+    <div class="snackbars" aria-live="polite">
         @foreach (var toast in ToastService.Toasts)
         {
-            <div class="toast toast-@toast.Kind.ToString().ToLowerInvariant()" @key="toast.Id" @onclick="() => ToastService.Dismiss(toast.Id)">
-                <Icon Name="@(toast.Kind == ToastKind.Error ? "error" : toast.Kind == ToastKind.Success ? "check" : "info")" Size="20" />
+            @* Нажатие убирает сообщение раньше времени *@
+            <div class="snackbar snackbar-@toast.Kind.ToString().ToLowerInvariant()" role="status" @key="toast.Id" @onclick="() => ToastService.Dismiss(toast.Id)">
+                <Icon Name="@(toast.Kind == ToastKind.Error ? "error" : toast.Kind == ToastKind.Success ? "check-circle" : "info")" Size="20" />
                 <span>@toast.Text</span>
             </div>
         }

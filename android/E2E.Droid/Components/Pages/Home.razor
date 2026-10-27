@@ -1,4 +1,4 @@
-@* E2E для Android — главный экран: форма скачивания, прогресс, результат, журнал
+@* E2E для Android — главный экран: результат, ссылка, прогресс или форма скачивания, журнал (Material 3)
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @page "/"
 @implements IDisposable
@@ -10,236 +10,287 @@
 @inject ToastService Toasts
 @inject IJSRuntime Js
 
-<div class="page home-page">
-    <div class="book-form">
-        <!-- Ссылка -->
-        <div class="form-section">
-            <label class="google-label" for="url-input">Ссылка на книгу</label>
-            <div class="url-field">
-                <textarea id="url-input" class="google-input url-input" rows="@UrlRows"
-                          placeholder="https://author.today/work/123456"
-                          autocapitalize="off" autocomplete="off" spellcheck="false" inputmode="url"
-                          disabled="@Downloads.IsRunning"
-                          @bind="Form.Urls" @bind:event="oninput" @bind:after="OnUrlsChanged"></textarea>
-                @if (!Downloads.IsRunning)
-                {
-                    @if (string.IsNullOrWhiteSpace(Form.Urls))
-                    {
-                        <button type="button" class="url-paste" @onclick="Paste"><Icon Name="paste" Size="18" />Вставить</button>
-                    }
-                    else
-                    {
-                        <button type="button" class="url-clear" @onclick="ClearUrls" aria-label="Очистить"><Icon Name="close" Size="18" /></button>
-                    }
-                }
-            </div>
-            <p class="field-hint">Откройте книгу в браузере → «Поделиться» → E2E, и ссылка подставится сама. Несколько ссылок — каждая с новой строки.</p>
-        </div>
+@{
+    var log = Downloads.Log;
+    var saved = Downloads.Saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
+    var extra = Downloads.Saved.Count - saved.Count;
+    var errors = Downloads.Errors;
+    var finished = !Downloads.IsRunning && Downloads.State != DownloadState.Idle;
+}
 
-        <!-- Формат -->
-        <div class="form-section">
-            <label class="google-label">Формат</label>
-            <div class="format-cards">
-                @foreach (var format in FormatsInfo)
-                {
-                    <button type="button" class="format-card @(_formats.Contains(format.Id) ? "format-card-selected" : "")"
-                            @onclick="() => ToggleFormat(format.Id)">
-                        <div class="format-card-icon"><Icon Name="@format.Id" Size="22" /></div>
-                        <div class="format-card-label">@format.Id.ToUpperInvariant()</div>
-                        <div class="format-card-desc">@format.Description</div>
-                        @if (_formats.Contains(format.Id))
-                        {
-                            <div class="format-card-check"><Icon Name="check" Size="14" /></div>
-                        }
-                    </button>
-                }
-            </div>
-        </div>
-
-        <!-- Авторизация -->
-        <div class="form-section">
-            <button type="button" class="auth-header" @onclick="() => Form.ShowAuth = !Form.ShowAuth">
-                <span class="auth-header-icon"><Icon Name="lock" Size="16" /></span>
-                <span class="auth-header-label">Авторизация</span>
-                <span class="auth-header-hint">@(HasSavedLogin ? "сохранено" : "Необязательно")</span>
-                <Icon Name="chevron" Size="18" Class="@($"auth-header-chevron {(Form.ShowAuth ? "open" : "")}")" />
-            </button>
-            <div class="auth-body @(Form.ShowAuth ? "open" : "")">
-                @if (Form.ShowAuth)
-                {
-                    <div class="auth-group">
-                        <div class="auth-input-wrapper">
-                            <Icon Name="person" Size="18" Class="auth-icon" />
-                            <input type="text" class="auth-input" placeholder="Логин" autocomplete="username" autocapitalize="off"
-                                   @bind="Form.Login" @bind:event="oninput" @bind:after="() => Form.CredentialsAutoFilled = false" />
-                        </div>
-                        <div class="auth-input-wrapper">
-                            <Icon Name="lock" Size="18" Class="auth-icon" />
-                            <input type="@(_showPassword ? "text" : "password")" class="auth-input" placeholder="Пароль" autocomplete="current-password"
-                                   @bind="Form.Password" @bind:event="oninput" @bind:after="() => Form.CredentialsAutoFilled = false" />
-                            <button type="button" class="auth-password-toggle" @onclick="() => _showPassword = !_showPassword" aria-label="Показать пароль">
-                                <Icon Name="@(_showPassword ? "eye" : "eye-off")" />
-                            </button>
-                        </div>
-                        <label class="switch-row">
-                            <span>Запомнить для @(CurrentHost ?? "этого сайта")</span>
-                            <input type="checkbox" class="switch" @bind="Form.RememberCredentials" />
-                        </label>
-                    </div>
-                }
-            </div>
-        </div>
-
-        <!-- Диапазон глав -->
-        <div class="form-section">
-            <button type="button" class="auth-header" @onclick="() => Form.ShowRange = !Form.ShowRange">
-                <span class="auth-header-icon"><Icon Name="range" Size="16" /></span>
-                <span class="auth-header-label">Диапазон глав</span>
-                <span class="auth-header-hint">@(HasRange ? "задан" : "Необязательно")</span>
-                <Icon Name="chevron" Size="18" Class="@($"auth-header-chevron {(Form.ShowRange ? "open" : "")}")" />
-            </button>
-            <div class="auth-body @(Form.ShowRange ? "open" : "")">
-                @if (Form.ShowRange)
-                {
-                    <div class="range-body">
-                        <div class="radio-group radio-group-row">
-                            <button type="button" class="google-radio @(!Form.RangeByName ? "radio-selected" : "")" @onclick="() => SwitchRange(false)">По номеру</button>
-                            <button type="button" class="google-radio @(Form.RangeByName ? "radio-selected" : "")" @onclick="() => SwitchRange(true)">По названию</button>
-                        </div>
-                        @if (Form.RangeByName)
-                        {
-                            <div class="range-fields range-fields-row">
-                                <input type="text" class="google-input range-field" placeholder="Глава от" @bind="Form.StartName" @bind:event="oninput" />
-                                <input type="text" class="google-input range-field" placeholder="Глава до" @bind="Form.EndName" @bind:event="oninput" />
-                            </div>
-                        }
-                        else
-                        {
-                            <div class="range-fields range-fields-row">
-                                <input type="text" inputmode="numeric" class="google-input range-field" placeholder="Глава от" @bind="Form.StartNum" @bind:event="oninput" />
-                                <input type="text" inputmode="numeric" class="google-input range-field" placeholder="Глава до" @bind="Form.EndNum" @bind:event="oninput" />
-                            </div>
-                            <p class="field-hint">Отрицательные числа считаются с конца: «−3» — три последние главы.</p>
-                        }
-                    </div>
-                }
-            </div>
-        </div>
-
-        <!-- Кнопки -->
-        <div class="form-section form-actions">
-            @if (Downloads.IsRunning)
-            {
-                <div class="progress-box">
-                    <div class="progress-status">
-                        <div class="google-spinner"></div>
-                        <span class="progress-text">
-                            @if (Downloads.Total > 1)
-                            {
-                                <b>@Downloads.Current/@Downloads.Total · </b>
-                            }
-                            @Downloads.Status
-                        </span>
-                    </div>
-                    <button type="button" class="google-button google-button-secondary" @onclick="Downloads.Cancel">
-                        <Icon Name="stop" Size="18" />Отмена
-                    </button>
-                </div>
-            }
-            else
-            {
-                <div class="button-group">
-                    <button type="button" class="google-button google-button-primary full-width" @onclick="() => Start(false)">
-                        <Icon Name="download" Size="18" Class="button-icon" />Скачать
-                    </button>
-                    <div class="split-menu @(_showMenu ? "open" : "")">
-                        <button type="button" class="split-toggle" @onclick="() => _showMenu = !_showMenu" aria-label="Ещё">
-                            <Icon Name="chevron" Size="24" />
-                        </button>
-                        @if (_showMenu)
-                        {
-                            <div class="split-dropdown" @onclick="() => Start(true)">
-                                <div class="dropdown-item"><Icon Name="image-off" Size="18" />Скачать без картинок</div>
-                            </div>
-                        }
-                    </div>
-                </div>
-                <p class="field-hint center">Сохраняется в: @Storage.DestinationLabel</p>
-            }
-        </div>
-    </div>
-
-    @if (Downloads.Preview != null)
+<div class="page">
+    @* Итог прошлого скачивания — сверху, чтобы не листать до него *@
+    @if (finished && saved.Count > 0)
     {
-        <ShortBook Book="Downloads.Preview" />
+        <section class="card" aria-label="Результат">
+            <div class="card-header">
+                <span class="card-header-icon"><Icon Name="check-circle" /></span>
+                <div class="card-header-text">
+                    <h2 class="card-title">@(errors.Count == 0 ? "Готово" : "Готово, но не всё")</h2>
+                    <p class="card-subtitle">Сохранено в «@Storage.DestinationLabel»@(extra > 0 ? $", плюс доп. файлов: {extra}" : "")</p>
+                </div>
+                <button type="button" class="icon-button" aria-label="Скрыть результат" @onclick="Downloads.Dismiss"><Icon Name="close" /></button>
+            </div>
+            @if (Downloads.Preview != null)
+            {
+                <div class="card-section"><ShortBook Book="Downloads.Preview" Compact="true" /></div>
+            }
+            <div class="list">
+                @foreach (var file in saved)
+                {
+                    <FileRow File="file" @key="file.Id" />
+                }
+            </div>
+            @if (saved.Count > 1)
+            {
+                <div class="card-actions">
+                    <button type="button" class="btn btn-tonal btn-block" @onclick="() => Storage.Share(saved)">
+                        <Icon Name="share" Size="18" />Поделиться всеми (@saved.Count)
+                    </button>
+                </div>
+            }
+        </section>
     }
 
-    @if (!Downloads.IsRunning && Downloads.State != DownloadState.Idle)
+    @if (finished && errors.Count > 0)
     {
-        var saved = Downloads.Saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
-        var extra = Downloads.Saved.Count - saved.Count;
-
-        if (saved.Count > 0)
-        {
-            <div class="card result-card">
-                <div class="card-header">
-                    <Icon Name="check" Size="20" Class="result-icon" />
-                    <div class="card-title">Готово</div>
-                    <button type="button" class="icon-btn" @onclick="Downloads.Dismiss" aria-label="Скрыть"><Icon Name="close" /></button>
-                </div>
-                <p class="card-subtitle">Сохранено в «@Storage.DestinationLabel»@(extra > 0 ? $", плюс доп. файлов: {extra}" : "")</p>
-                <div class="file-list">
-                    @foreach (var file in saved)
-                    {
-                        <FileRow File="file" @key="file.Id" />
-                    }
-                </div>
-                @if (saved.Count > 1)
+        <section class="card card-error" aria-label="Ошибки">
+            <div class="card-header">
+                <span class="card-header-icon"><Icon Name="error" /></span>
+                <div class="card-header-text"><h2 class="card-title">Не получилось</h2></div>
+                @if (saved.Count == 0)
                 {
-                    <button type="button" class="google-button google-button-secondary full-width" @onclick="() => Storage.Share(saved)">
-                        <Icon Name="share" Size="18" />Поделиться всеми
-                    </button>
+                    <button type="button" class="icon-button" aria-label="Скрыть" @onclick="Downloads.Dismiss"><Icon Name="close" /></button>
                 }
             </div>
-        }
-
-        if (Downloads.Errors.Count > 0)
-        {
-            <div class="card error-card-mobile">
-                <div class="card-header">
-                    <Icon Name="error" Size="20" Class="error-icon" />
-                    <div class="card-title">Не получилось</div>
-                    @if (saved.Count == 0)
-                    {
-                        <button type="button" class="icon-btn" @onclick="Downloads.Dismiss" aria-label="Скрыть"><Icon Name="close" /></button>
-                    }
-                </div>
-                @foreach (var error in Downloads.Errors)
+            <div class="card-body">
+                @foreach (var error in errors)
                 {
                     <p class="error-text">@error</p>
                 }
-                <p class="field-hint">Подробности — в журнале ниже. Если сайт требует входа, заполните «Авторизацию»; при таймаутах увеличьте таймаут в настройках.</p>
+                <p class="card-subtitle">Подробности — в журнале ниже. Если сайт требует входа, заполните «Вход на сайт»; при таймаутах увеличьте таймаут в настройках.</p>
             </div>
-        }
+        </section>
     }
 
-    @if (Downloads.Log.Count > 0)
+    <!-- Ссылка -->
+    <div class="field">
+        <div class="text-field multiline has-trailing @(Downloads.IsRunning ? "disabled" : "")">
+            <label class="text-field-label" for="url-input">Ссылка на книгу</label>
+            <textarea id="url-input" class="text-field-input" rows="@UrlRows"
+                      placeholder="https://author.today/work/…"
+                      autocapitalize="off" autocomplete="off" spellcheck="false" inputmode="url"
+                      disabled="@Downloads.IsRunning"
+                      @bind="Form.Urls" @bind:event="oninput" @bind:after="OnUrlsChanged"></textarea>
+            @if (!Downloads.IsRunning)
+            {
+                @if (string.IsNullOrWhiteSpace(Form.Urls))
+                {
+                    <button type="button" class="icon-button text-field-trailing" aria-label="Вставить ссылку из буфера" @onclick="Paste"><Icon Name="paste" /></button>
+                }
+                else
+                {
+                    <button type="button" class="icon-button text-field-trailing" aria-label="Очистить" @onclick="ClearUrls"><Icon Name="close" /></button>
+                }
+            }
+        </div>
+        <p class="supporting-text">Или из браузера: «Поделиться» → «Скачать книгу (E2E)». Несколько ссылок — каждая с новой строки.</p>
+    </div>
+
+    @if (Downloads.IsRunning)
     {
-        <div class="card log-card">
-            <button type="button" class="auth-header" @onclick="ToggleLog">
-                <span class="auth-header-icon"><Icon Name="log" Size="16" /></span>
-                <span class="auth-header-label">Журнал</span>
-                <span class="auth-header-hint">@Downloads.Log.Count</span>
-                <Icon Name="chevron" Size="18" Class="@($"auth-header-chevron {(_showLog ? "open" : "")}")" />
+        <!-- Идёт загрузка -->
+        <section class="card card-padded" aria-label="Загрузка">
+            @if (Downloads.Preview != null)
+            {
+                <ShortBook Book="Downloads.Preview" />
+            }
+            else
+            {
+                <div class="book-summary">
+                    <div class="book-cover" aria-hidden="true"><span class="spinner"></span></div>
+                    <div class="book-info">
+                        <h2 class="book-title">Получаю данные о книге…</h2>
+                        @if (CurrentHost != null)
+                        {
+                            <span class="book-host">@CurrentHost</span>
+                        }
+                    </div>
+                </div>
+            }
+            <div class="stack">
+                <div class="linear-progress" role="progressbar" aria-label="Идёт загрузка"></div>
+                <p class="progress-status">@Downloads.Status</p>
+            </div>
+            <div class="row">
+                @if (Downloads.ChaptersLoaded > 0)
+                {
+                    <span class="assist-chip">Глав: @Downloads.ChaptersLoaded</span>
+                }
+                @if (Downloads.Total > 1)
+                {
+                    <span class="assist-chip with-icon"><Icon Name="queue" Size="18" />Книга @Downloads.Current из @Downloads.Total</span>
+                }
+                <button type="button" class="btn btn-outlined push-end" @onclick="Downloads.Cancel">Отменить</button>
+            </div>
+        </section>
+        <p class="supporting-text">Приложение можно свернуть: загрузка продолжится в фоне, прогресс — в уведомлении.</p>
+    }
+    else
+    {
+        <!-- Формат -->
+        <section class="section" aria-label="Формат">
+            <h2 class="section-label">Формат</h2>
+            <div class="chip-set">
+                @foreach (var (id, description) in FormatsInfo)
+                {
+                    var on = _formats.Contains(id);
+                    <button type="button" class="filter-chip @(on ? "selected" : "")" aria-pressed="@(on ? "true" : "false")"
+                            title="@description" @onclick="() => ToggleFormat(id)">
+                        @if (on)
+                        {
+                            <Icon Name="check" Size="18" />
+                        }
+                        @id.ToUpperInvariant()
+                    </button>
+                }
+            </div>
+            <p class="supporting-text flush">EPUB и FB2 — для читалок, CBZ — комиксы и сканы, TXT — простой текст.</p>
+        </section>
+
+        <!-- Картинки, вход, диапазон глав -->
+        <section class="card" aria-label="Параметры">
+            <label class="list-item two-line">
+                <span class="list-item-leading"><Icon Name="image" /></span>
+                <span class="list-item-text">
+                    <span class="list-item-headline">Картинки в книге</span>
+                    <span class="list-item-supporting">@(Settings.Images ? "Обложка и иллюстрации" : "Только текст — файл легче")</span>
+                </span>
+                <input type="checkbox" role="switch" class="switch" checked="@Settings.Images" @onchange="e => Settings.Images = (bool)e.Value!" />
+            </label>
+
+            <hr class="divider" />
+
+            <button type="button" class="list-item two-line" aria-expanded="@(Form.ShowAuth ? "true" : "false")" @onclick="() => Form.ShowAuth = !Form.ShowAuth">
+                <span class="list-item-leading"><Icon Name="lock" /></span>
+                <span class="list-item-text">
+                    <span class="list-item-headline">Вход на сайт</span>
+                    <span class="list-item-supporting">@AuthHint</span>
+                </span>
+                <Icon Name="chevron" Class="@($"chevron {(Form.ShowAuth ? "open" : "")}")" />
+            </button>
+            @if (Form.ShowAuth)
+            {
+                <div class="expand-body">
+                    <div class="text-field">
+                        <label class="text-field-label" for="login">Логин</label>
+                        <input id="login" type="text" class="text-field-input" placeholder="Логин или почта" autocomplete="username" autocapitalize="off" spellcheck="false"
+                               @bind="Form.Login" @bind:event="oninput" @bind:after="() => Form.CredentialsAutoFilled = false" />
+                    </div>
+                    <div class="text-field has-trailing">
+                        <label class="text-field-label" for="password">Пароль</label>
+                        <input id="password" type="@(_showPassword ? "text" : "password")" class="text-field-input" autocomplete="current-password"
+                               @bind="Form.Password" @bind:event="oninput" @bind:after="() => Form.CredentialsAutoFilled = false" />
+                        <button type="button" class="icon-button text-field-trailing" aria-label="@(_showPassword ? "Скрыть пароль" : "Показать пароль")"
+                                @onclick="() => _showPassword = !_showPassword">
+                            <Icon Name="@(_showPassword ? "eye-off" : "eye")" />
+                        </button>
+                    </div>
+                    <label class="checkbox-row">
+                        <input type="checkbox" class="checkbox" @bind="Form.RememberCredentials" />
+                        <span>Запомнить для @(CurrentHost ?? "этого сайта")</span>
+                    </label>
+                </div>
+            }
+
+            <hr class="divider" />
+
+            <button type="button" class="list-item two-line" aria-expanded="@(Form.ShowRange ? "true" : "false")" @onclick="() => Form.ShowRange = !Form.ShowRange">
+                <span class="list-item-leading"><Icon Name="range" /></span>
+                <span class="list-item-text">
+                    <span class="list-item-headline">Диапазон глав</span>
+                    <span class="list-item-supporting">@RangeHint</span>
+                </span>
+                <Icon Name="chevron" Class="@($"chevron {(Form.ShowRange ? "open" : "")}")" />
+            </button>
+            @if (Form.ShowRange)
+            {
+                <div class="expand-body">
+                    <div class="segmented" role="group" aria-label="Как задать диапазон">
+                        <button type="button" class="segment @(!Form.RangeByName ? "selected" : "")" aria-pressed="@(!Form.RangeByName ? "true" : "false")" @onclick="() => SwitchRange(false)">
+                            @if (!Form.RangeByName)
+                            {
+                                <Icon Name="check" Size="18" />
+                            }
+                            По номеру
+                        </button>
+                        <button type="button" class="segment @(Form.RangeByName ? "selected" : "")" aria-pressed="@(Form.RangeByName ? "true" : "false")" @onclick="() => SwitchRange(true)">
+                            @if (Form.RangeByName)
+                            {
+                                <Icon Name="check" Size="18" />
+                            }
+                            По названию
+                        </button>
+                    </div>
+                    @if (Form.RangeByName)
+                    {
+                        <div class="grid-2">
+                            <div class="text-field">
+                                <label class="text-field-label" for="from">С главы</label>
+                                <input id="from" type="text" class="text-field-input" placeholder="Пролог" @bind="Form.StartName" @bind:event="oninput" />
+                            </div>
+                            <div class="text-field">
+                                <label class="text-field-label" for="to">По главу</label>
+                                <input id="to" type="text" class="text-field-input" placeholder="Эпилог" @bind="Form.EndName" @bind:event="oninput" />
+                            </div>
+                        </div>
+                        <p class="supporting-text flush">Названия глав — как на сайте книги.</p>
+                    }
+                    else
+                    {
+                        <div class="grid-2">
+                            <div class="text-field">
+                                <label class="text-field-label" for="from">С главы</label>
+                                <input id="from" type="text" inputmode="numeric" class="text-field-input" placeholder="1" @bind="Form.StartNum" @bind:event="oninput" />
+                            </div>
+                            <div class="text-field">
+                                <label class="text-field-label" for="to">По главу</label>
+                                <input id="to" type="text" inputmode="numeric" class="text-field-input" placeholder="−3" @bind="Form.EndNum" @bind:event="oninput" />
+                            </div>
+                        </div>
+                        <p class="supporting-text flush">Отрицательные числа считаются с конца: «−3» — три последние главы.</p>
+                    }
+                </div>
+            }
+        </section>
+
+        <!-- Скачать -->
+        <div class="stack">
+            <button type="button" class="btn btn-filled btn-block" @onclick="Start">
+                <Icon Name="download" Size="18" />Скачать
+            </button>
+            <p class="hint-row"><Icon Name="folder" Size="16" />Сохраняется в «@Storage.DestinationLabel»</p>
+        </div>
+    }
+
+    @if (log.Count > 0)
+    {
+        <!-- Журнал -->
+        <section class="card" aria-label="Журнал">
+            <button type="button" class="list-item" aria-expanded="@(_showLog ? "true" : "false")" @onclick="ToggleLog">
+                <span class="list-item-leading"><Icon Name="log" /></span>
+                <span class="list-item-text"><span class="list-item-headline">Журнал</span></span>
+                <span class="list-item-trailing-text">@Formatting.Plural(log.Count, "запись", "записи", "записей")</span>
+                <Icon Name="chevron" Class="@($"chevron {(_showLog ? "open" : "")}")" />
             </button>
             @if (_showLog)
             {
-                <pre id="log-view" class="log-view">@string.Join('\n', Downloads.Log.TakeLast(500))</pre>
-                <button type="button" class="google-button google-button-secondary full-width" @onclick="CopyLog">
-                    <Icon Name="copy" Size="18" />Скопировать журнал
-                </button>
+                <pre id="log-view" class="log-view">@string.Join('\n', log.TakeLast(500))</pre>
+                <div class="card-actions compact">
+                    <button type="button" class="btn btn-text" @onclick="CopyLog"><Icon Name="copy" Size="18" />Скопировать журнал</button>
+                </div>
             }
-        </div>
+        </section>
     }
 </div>
 
@@ -254,18 +305,46 @@
 
     private List<string> _formats = [];
     private bool _showPassword;
-    private bool _showMenu;
     private bool _showLog;
 
-    private int UrlRows => Math.Clamp((Form.Urls ?? string.Empty).Count(c => c == '\n') + 1, 2, 6);
+    private int UrlRows => Math.Clamp((Form.Urls ?? string.Empty).Count(c => c == '\n') + 1, 1, 6);
 
     private string CurrentHost => CredentialStore.NormalizeHost(Formatting.ParseUrls(Form.Urls).FirstOrDefault());
 
     private bool HasSavedLogin => CurrentHost != null && CurrentHost == Form.CredentialsHost && !string.IsNullOrEmpty(Form.Login);
 
-    private bool HasRange => Form.RangeByName
-        ? !string.IsNullOrWhiteSpace(Form.StartName) || !string.IsNullOrWhiteSpace(Form.EndName)
-        : !string.IsNullOrWhiteSpace(Form.StartNum) || !string.IsNullOrWhiteSpace(Form.EndNum);
+    /// <summary>Подпись под «Вход на сайт»: что сейчас будет использовано.</summary>
+    private string AuthHint
+    {
+        get
+        {
+            if (HasSavedLogin && Form.CredentialsAutoFilled)
+            {
+                return $"Сохранён для {CurrentHost}: {Form.Login}";
+            }
+
+            return string.IsNullOrWhiteSpace(Form.Login) ? "Необязательно" : $"Логин: {Form.Login}";
+        }
+    }
+
+    /// <summary>Подпись под «Диапазон глав»: «Все главы» или заданные границы.</summary>
+    private string RangeHint
+    {
+        get
+        {
+            var (from, to) = Form.RangeByName
+                ? (Quote(Form.StartName), Quote(Form.EndName))
+                : (Form.StartNum?.Trim(), Form.EndNum?.Trim());
+            if (string.IsNullOrEmpty(from) && string.IsNullOrEmpty(to))
+            {
+                return "Все главы";
+            }
+
+            return $"С {(string.IsNullOrEmpty(from) ? "начала" : from)} по {(string.IsNullOrEmpty(to) ? "конец" : to)}";
+
+            static string Quote(string name) => string.IsNullOrWhiteSpace(name) ? null : $"«{name.Trim()}»";
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -305,7 +384,7 @@
 
         if (Settings.AutoStartOnShare)
         {
-            await Start(false);
+            await Start();
         }
     }
 
@@ -370,9 +449,8 @@
         Form.StartNum = Form.EndNum = Form.StartName = Form.EndName = string.Empty;
     }
 
-    private async Task Start(bool noImage)
+    private async Task Start()
     {
-        _showMenu = false;
         await Js.InvokeVoidAsync("e2e.blur");
 
         var urls = Formatting.ParseUrls(Form.Urls);
@@ -395,7 +473,7 @@
             {
                 if (!int.TryParse(Form.StartNum.Replace('−', '-').Trim(), out var s))
                 {
-                    Toasts.Show("«Глава от» должна быть числом", ToastKind.Error);
+                    Toasts.Show("«С главы» должно быть числом", ToastKind.Error);
                     return;
                 }
 
@@ -406,7 +484,7 @@
             {
                 if (!int.TryParse(Form.EndNum.Replace('−', '-').Trim(), out var e))
                 {
-                    Toasts.Show("«Глава до» должна быть числом", ToastKind.Error);
+                    Toasts.Show("«По главу» должно быть числом", ToastKind.Error);
                     return;
                 }
 
@@ -430,7 +508,7 @@
             Formats = _formats.ToList(),
             Login = hasLogin ? Form.Login : null,
             Password = hasLogin ? Form.Password : null,
-            NoImage = noImage,
+            NoImage = !Settings.Images,
             Start = start,
             End = end,
             StartName = Form.RangeByName ? Form.StartName : null,
