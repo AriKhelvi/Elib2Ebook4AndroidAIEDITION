@@ -135,15 +135,17 @@ foreach ($dir in @('E2E.Droid\obj\Release', 'E2E.Droid\bin\Release')) {
     if (Test-Path $full) { Remove-Item -Recurse -Force $full }
 }
 
-# -Abi можно передать списком (a,b), строкой "a,b" или по-старому "a;b" — приводим к «a,b» для свойства E2EAbi
+# -Abi можно передать списком (a,b), строкой "a,b" или по-старому "a;b". В -p: и «;», и «,» MSBuild считает
+# разделителями свойств, поэтому в командную строку уходит «a%3Bb» (MSBuild сам превратит %3B в «;»)
 $abiList = (($Abi -join ',') -split '[,;\s]+' | Where-Object { $_ }) -join ','
+$abiArg = $abiList -replace ',', '%3B'
 
 Write-Host "==> Собираю APK $version (versionCode $versionCode, $abiList)" -ForegroundColor Cyan
 # ВАЖНО: без -o и без -p:RuntimeIdentifiers — глобальные свойства командной строки уходят во все
 # 60+ библиотек ядра и ломают их сборку. Архитектуры передаются через свойство проекта E2EAbi.
 & $dotnet publish (Join-Path $android 'E2E.Droid\E2E.Droid.csproj') `
     -c Release -f net10.0-android -nologo -v:minimal `
-    "-p:E2EAbi=$abiList" `
+    "-p:E2EAbi=$abiArg" `
     "-p:AndroidSdkDirectory=$sdk" `
     "-p:JavaSdkDirectory=$jdk" `
     "-p:ApplicationDisplayVersion=$version" `
