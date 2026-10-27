@@ -25,27 +25,30 @@ public sealed class AppSettings
     }
 
     /// <summary>
-    /// Формат на главном экране — один: сразу несколько форматов почти никому не нужны.
-    /// Хранится в том же ключе Formats (раньше выбирали несколько — берём первый).
+    /// Текстовый формат по умолчанию (epub, fb2, txt) — для книг и ранобэ. Манга и комиксы распознаются по сайту
+    /// и получают CBZ (см. FormatSupport.ForUrl). Если настройку ещё не задавали — берётся прежний выбор
+    /// с главного экрана (ключ Formats), когда он был текстовым.
     /// </summary>
-    public string Format
+    public string TextFormat
     {
-        get => Formats.FirstOrDefault(FormatSupport.All.Contains) ?? "epub";
-        set => Formats = [value];
+        get
+        {
+            var value = P.Get(nameof(TextFormat), string.Empty);
+            if (FormatSupport.TextFormats.Contains(value))
+            {
+                return value;
+            }
+
+            return Formats.FirstOrDefault(FormatSupport.TextFormats.Contains) ?? "epub";
+        }
+        set => Set(nameof(TextFormat), FormatSupport.TextFormats.Contains(value) ? value : "epub");
     }
 
-    /// <summary>Экспериментально: для сайтов с мангой и комиксами сам выбирать CBZ при вставке ссылки.</summary>
+    /// <summary>Экспериментально: распознавать сайты с мангой и комиксами и выбирать для них CBZ.</summary>
     public bool AutoFormat
     {
         get => P.Get(nameof(AutoFormat), true);
         set => Set(nameof(AutoFormat), value);
-    }
-
-    /// <summary>Формат автоскачивания из «Поделиться»: auto (как на главном экране) или epub/fb2/cbz/txt.</summary>
-    public string ShareFormat
-    {
-        get => P.Get(nameof(ShareFormat), "auto");
-        set => Set(nameof(ShareFormat), value);
     }
 
     /// <summary>Таймаут одного запроса в секундах (--timeout, по умолчанию 120).</summary>
@@ -105,6 +108,9 @@ public sealed class AppSettings
     }
 
     /// <summary>Начинать скачивание сразу, как только ссылка пришла через «Поделиться».</summary>
+    /// <remarks>
+    /// В интерфейсе — «Пропустить диалог скачивания» (Да/Нет). Ключ хранения прежний, чтобы выбор не сбросился.
+    /// </remarks>
     public bool AutoStartOnShare
     {
         get => P.Get(nameof(AutoStartOnShare), false);

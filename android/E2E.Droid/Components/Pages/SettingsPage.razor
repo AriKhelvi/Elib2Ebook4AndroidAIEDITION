@@ -86,41 +86,77 @@
     </section>
 
     <section class="section">
-        <h2 class="section-title">Поведение</h2>
+        <h2 class="section-title">Скачивание</h2>
         <div class="card">
-            <label class="list-item two-line">
-                <span class="list-item-text">
-                    <span class="list-item-headline">Автоскачивание из «Поделиться»</span>
-                    <span class="list-item-supporting">Когда вы делитесь ссылкой на книгу из браузера в E2E, она сразу начинает скачиваться — без нажатия «Скачать»</span>
-                </span>
-                <input type="checkbox" role="switch" class="switch" checked="@Settings.AutoStartOnShare" @onchange="e => Settings.AutoStartOnShare = (bool)e.Value!" />
-            </label>
-            @if (Settings.AutoStartOnShare)
-            {
-                <div class="expand-body">
-                    <div class="segmented" role="radiogroup" aria-label="Формат автоскачивания">
-                        @foreach (var id in ShareFormats)
-                        {
-                            var on = Settings.ShareFormat == id;
-                            <button type="button" class="segment @(on ? "selected" : "")" role="radio" aria-checked="@(on ? "true" : "false")"
-                                    @onclick="() => Settings.ShareFormat = id">
-                                @(id == "auto" ? "Авто" : id.ToUpperInvariant())
-                            </button>
-                        }
-                    </div>
-                    <p class="supporting-text flush">Формат автоскачивания. «Авто» — как выбрано на главном экране, а для манги и комиксов — CBZ.</p>
+            <div class="card-body">
+                <h3 class="setting-title">Текстовый формат по умолчанию</h3>
+                <div class="segmented" role="radiogroup" aria-label="Текстовый формат по умолчанию">
+                    @foreach (var id in FormatSupport.TextFormats)
+                    {
+                        var on = Settings.TextFormat == id;
+                        <button type="button" class="segment @(on ? "selected" : "")" role="radio" aria-checked="@(on ? "true" : "false")"
+                                @onclick="() => Settings.TextFormat = id">
+                            @if (on)
+                            {
+                                <Icon Name="check" Size="18" />
+                            }
+                            @id.ToUpperInvariant()
+                        </button>
+                    }
                 </div>
-            }
+                <p class="supporting-text flush">
+                    Для книг и ранобэ: этот формат получает каждая новая ссылка. Манга и комиксы распознаются по сайту
+                    и получают CBZ — поэтому после манги следующая книга снова будет в текстовом формате.
+                    На главном экране формат можно поменять для одной ссылки.
+                </p>
+            </div>
 
             <hr class="divider" />
 
             <label class="list-item two-line">
                 <span class="list-item-text">
-                    <span class="list-item-headline">Автовыбор формата (экспериментально)</span>
-                    <span class="list-item-supporting">Для сайтов с мангой и комиксами сразу выбирать CBZ, когда вставлена ссылка</span>
+                    <span class="list-item-headline wrap">Распознавать мангу и комиксы (экспериментально)</span>
+                    <span class="list-item-supporting">Для сайтов с мангой и комиксами выбирать CBZ. Выключено — всем ссылкам текстовый формат по умолчанию</span>
                 </span>
                 <input type="checkbox" role="switch" class="switch" checked="@Settings.AutoFormat" @onchange="e => Settings.AutoFormat = (bool)e.Value!" />
             </label>
+
+            <hr class="divider" />
+
+            <div class="card-body">
+                <h3 class="setting-title">Пропустить диалог скачивания</h3>
+                <div class="segmented" role="radiogroup" aria-label="Пропустить диалог скачивания">
+                    @foreach (var (value, title) in YesNo)
+                    {
+                        var on = Settings.AutoStartOnShare == value;
+                        <button type="button" class="segment @(on ? "selected" : "")" role="radio" aria-checked="@(on ? "true" : "false")"
+                                @onclick="() => Settings.AutoStartOnShare = value">
+                            @if (on)
+                            {
+                                <Icon Name="check" Size="18" />
+                            }
+                            @title
+                        </button>
+                    }
+                </div>
+                <div class="setting-explain">
+                    <p>
+                        Касается ссылок, которыми вы делитесь в E2E из браузера или другого приложения
+                        («Поделиться» → «Скачать книгу (E2E)»).
+                    </p>
+                    <p>
+                        <b>Да</b> — книга начинает скачиваться сразу, без нажатия «Скачать». Формат выбирается сам: CBZ для
+                        манги и комиксов, для остального — текстовый формат по умолчанию. Подставляется сохранённый вход на сайт,
+                        главы — все, картинки — как в переключателе на главном экране. Ход загрузки виден на главном экране
+                        и в шторке, там же её можно отменить.
+                    </p>
+                    <p>
+                        <b>Нет</b> — ссылка только подставляется на главный экран: можно проверить формат, вход на сайт
+                        и диапазон глав и нажать «Скачать» самому.
+                    </p>
+                    <p>Ссылки, вставленные в приложение вручную, всегда ждут нажатия «Скачать».</p>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -268,7 +304,7 @@
         ("images", "Картинки")
     ];
 
-    private static readonly string[] ShareFormats = ["auto", "epub", "fb2", "cbz", "txt"];
+    private static readonly (bool Value, string Title)[] YesNo = [(true, "Да"), (false, "Нет")];
 
     /// <summary>Схемы прокси, которые понимает HttpClient .NET 10 (https:// — TLS до самого прокси).</summary>
     private static readonly (string Id, string Title)[] ProxyTypes =

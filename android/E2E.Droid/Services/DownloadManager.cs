@@ -28,10 +28,19 @@ public sealed class DownloadRequest
     /// <summary>epub, fb2, cbz, txt — как ключ --format консольной версии.</summary>
     public IReadOnlyList<string> Formats { get; init; } = [];
 
+    /// <summary>
+    /// Свой формат для отдельных ссылок — когда в одной пачке и манга (CBZ), и ранобэ (текстовый формат);
+    /// ссылкам, которых тут нет, достаётся Formats.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> FormatByUrl { get; init; }
+
+    public IReadOnlyList<string> FormatsFor(string url)
+        => FormatByUrl != null && FormatByUrl.TryGetValue(url, out var format) ? [format] : Formats;
+
     public string Login { get; init; }
     public string Password { get; init; }
 
-    /// <summary>«Скачать без картинок» (--no-image).</summary>
+    /// <summary>«Скачать без картинок» (--no-image). Для CBZ не применяется — там нужны именно картинки.</summary>
     public bool NoImage { get; init; }
 
     /// <summary>Диапазон глав по номерам (--start/--end); отрицательные числа считаются с конца.</summary>
@@ -361,13 +370,13 @@ public sealed class DownloadManager(
         return new Options
         {
             Url = [url],
-            Format = request.Formats,
+            Format = request.FormatsFor(url),
             Login = NullIfEmpty(request.Login),
             Password = NullIfEmpty(request.Password),
             Proxy = NullIfEmpty(settings.Proxy),
             Timeout = settings.Timeout,
             Delay = settings.Delay,
-            NoImage = request.NoImage,
+            NoImage = request.NoImage && !request.FormatsFor(url).Contains("cbz"),
             Start = request.Start,
             End = request.End,
             StartName = NullIfEmpty(request.StartName),
@@ -384,7 +393,7 @@ public sealed class DownloadManager(
     private static BookRecord NewRecord(string url, DownloadRequest request) => new()
     {
         Url = url,
-        Formats = request.Formats.ToList(),
+        Formats = request.FormatsFor(url).ToList(),
         NoImage = request.NoImage
     };
 

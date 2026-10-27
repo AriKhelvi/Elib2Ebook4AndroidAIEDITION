@@ -308,8 +308,14 @@
     /// <summary>Выбранный формат (один).</summary>
     private string _format = "epub";
 
-    /// <summary>Формат выбран автоматически по сайту — когда ссылку уберут, вернётся привычный.</summary>
-    private bool _autoChosen;
+    /// <summary>
+    /// Ссылка, для которой выбран формат. Новая ссылка — новый выбор по сайту (FormatSupport.ForUrl): после манги в CBZ
+    /// следующее ранобэ сразу получает текстовый формат из настроек. Начальное значение — заведомо «не ссылка».
+    /// </summary>
+    private string _formatUrl = "\u0001";
+
+    /// <summary>Формат для этой ссылки выбран вручную (до смены ссылки; в настройки не запоминается).</summary>
+    private bool _manual;
 
     /// <summary>В поле есть ссылка — значит, известно, комикс это или текст.</summary>
     private bool _hostKnown;
@@ -336,14 +342,19 @@
     {
         get
         {
-            if (_autoChosen && _comic)
+            if (_manual)
             {
-                return "CBZ выбран автоматически: на этом сайте книги — это картинки (экспериментально, отключается в настройках).";
+                return FormatDescription(_format) + " Выбран только для этой ссылки.";
             }
 
-            if (_autoChosen)
+            if (_comic && _format == "cbz" && Settings.AutoFormat)
             {
-                return $"{_format.ToUpperInvariant()} вместо {Settings.Format.ToUpperInvariant()}. {FormatSupport.Problem(Settings.Format, _comic)}.";
+                return "CBZ выбран автоматически: сайт распознан как манга или комиксы (экспериментально, отключается в настройках).";
+            }
+
+            if (_format == Settings.TextFormat)
+            {
+                return $"{_format.ToUpperInvariant()} — текстовый формат по умолчанию, его можно поменять в настройках.";
             }
 
             return FormatDescription(_format);
@@ -391,7 +402,6 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _format = Settings.Format;
         Downloads.Changed += OnChanged;
         // Ссылка могла остаться в поле с прошлого раза (переход между вкладками) — сразу проверяем сайт и формат
         await CheckSite();
@@ -424,18 +434,15 @@
         }
 
         Form.Urls = urls;
+        // Это новая книга — диапазон глав от прошлой к ней не относится
+        Form.StartNum = Form.EndNum = Form.StartName = Form.EndName = string.Empty;
+        Form.ShowRange = false;
         Downloads.Dismiss();
         await OnUrlsChanged();
 
+        // «Пропустить диалог скачивания»: формат уже выбран по сайту (CheckSite), логин подставлен — сразу качаем
         if (Settings.AutoStartOnShare)
         {
-            // Формат для автоскачивания: «авто» — как выбрано на экране (с автовыбором CBZ), иначе заданный в настройках
-            var shareFormat = Settings.ShareFormat;
-            if (shareFormat != "auto" && FormatSupport.All.Contains(shareFormat))
-            {
-                _format = FormatSupport.Fit(shareFormat, _comic);
-            }
-
             await Start();
         }
     }
@@ -489,8 +496,9 @@
     }
 
     /// <summary>
-    /// Проверки по ссылке в поле: есть ли загрузчик для сайта и какой формат подходит
-    /// (для манги и комиксов — CBZ, если включён автовыбор; неподходящий формат заменяется).
+    /// Проверки по ссылке в поле: есть ли загрузчик для сайта и какой формат взять.
+    /// Формат выбирается заново для каждой новой ссылки: манга и комиксы → CBZ (если распознавание включено),
+    /// остальное → текстовый формат по умолчанию из настроек. Ручной выбор живёт до смены ссылки.
     /// </summary>
     private async Task CheckSite()
     {
@@ -498,22 +506,11 @@
         _hostKnown = url != null;
         _comic = FormatSupport.IsComic(url);
 
-        if (_hostKnown && Settings.AutoFormat && FormatSupport.Auto(url) is { } auto)
+        if (url != _formatUrl)
         {
-            _autoChosen = _format != auto || _autoChosen;
-            _format = auto;
-        }
-        else if (_autoChosen)
-        {
-            // Ссылку на комикс убрали или заменили — возвращаем привычный формат
-            _format = Settings.Format;
-            _autoChosen = false;
-        }
-
-        if (_hostKnown && FormatSupport.Problem(_format, _comic) != null)
-        {
-            _format = FormatSupport.Fit(_format, _comic);
-            _autoChosen = true;
+            _formatUrl = url;
+            _format = FormatSupport.ForUrl(url, Settings.TextFormat, Settings.AutoFormat);
+            _manual = false;
         }
 
         _unsupportedHost = null;
@@ -525,15 +522,11 @@
         }
     }
 
+    /// <summary>Ручной выбор — только для текущей ссылки; формат по умолчанию задаётся в настройках.</summary>
     private void PickFormat(string format)
     {
         _format = format;
-        _autoChosen = false;
-        // Привычный формат запоминаем только для обычных (текстовых) книг — выбор для комиксов его не трогает
-        if (!_hostKnown || !_comic)
-        {
-            Settings.Format = format;
-        }
+        _manual = true;
     }
 
     private void SwitchRange(bool byName)
@@ -601,10 +594,12 @@
         {
             Urls = urls,
             Formats = [_format],
+            // Без ручного выбора у каждой ссылки свой формат по сайту: манга → CBZ, остальное → текстовый по умолчанию
+            FormatByUrl = _manual ? null : urls.ToDictionary(u => u, u => FormatSupport.ForUrl(u, Settings.TextFormat, Settings.AutoFormat)),
             Login = hasLogin ? Form.Login : null,
             Password = hasLogin ? Form.Password : null,
-            // В CBZ кладутся только картинки — без них архив вышел бы пустым
-            NoImage = !Settings.Images && _format != "cbz",
+            // Для CBZ «без картинок» не применяется (см. DownloadManager.BuildOptions) — архив вышел бы пустым
+            NoImage = !Settings.Images,
             Start = start,
             End = end,
             StartName = Form.RangeByName ? Form.StartName : null,

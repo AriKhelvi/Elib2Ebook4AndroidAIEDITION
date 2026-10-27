@@ -905,6 +905,12 @@ label.list-item {
     text-overflow: ellipsis;
 }
 
+/* Длинный заголовок, который важно прочитать целиком (в настройках) */
+.list-item-headline.wrap {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
 .list-item-supporting {
     font-size: 14px;
     line-height: 20px;
@@ -1529,6 +1535,35 @@ a.book-host {
 
 .search-bar input::placeholder {
     color: var(--md-on-surface-variant);
+}
+
+/* Настройка с переключателем-сегментами и подробным пояснением */
+.setting-title {
+    margin: 0;
+    font-size: 16px;
+    line-height: 24px;
+    font-weight: 400;
+    color: var(--md-on-surface);
+}
+
+.setting-explain {
+    font-size: 14px;
+    line-height: 20px;
+    letter-spacing: 0.25px;
+    color: var(--md-on-surface-variant);
+}
+
+.setting-explain p {
+    margin: 0 0 8px;
+}
+
+.setting-explain p:last-child {
+    margin-bottom: 0;
+}
+
+.setting-explain b {
+    color: var(--md-on-surface);
+    font-weight: 500;
 }
 
 /* Пометка «сделано ИИ» в «О приложении» */

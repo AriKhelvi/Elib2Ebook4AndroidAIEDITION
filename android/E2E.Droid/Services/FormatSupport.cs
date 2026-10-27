@@ -24,6 +24,9 @@ public static class FormatSupport
 {
     public static readonly IReadOnlyList<string> All = ["epub", "fb2", "cbz", "txt"];
 
+    /// <summary>Форматы для текстовых книг — из них выбирается «текстовый формат по умолчанию».</summary>
+    public static readonly IReadOnlyList<string> TextFormats = ["epub", "fb2", "txt"];
+
     /// <summary>
     /// Домены, где книга — это картинки (манга, манхва, комиксы). Список ручной: при добавлении сайта-комикса
     /// в ядро его нужно дописать сюда (иначе просто не будет автовыбора CBZ — скачивание работает и так).
@@ -61,8 +64,16 @@ public static class FormatSupport
         _ => null
     };
 
-    /// <summary>Формат по ссылке для автовыбора: CBZ для комиксов, иначе null (остаётся выбранный пользователем).</summary>
-    public static string Auto(string url) => IsComic(url) ? "cbz" : null;
+    /// <summary>
+    /// Формат для ссылки — заново для каждой ссылки, без памяти о прошлой загрузке: манга и комиксы → CBZ
+    /// (если распознавание включено), всё остальное → текстовый формат по умолчанию из настроек.
+    /// Так после манги в CBZ следующее ранобэ сразу получает EPUB/FB2/TXT.
+    /// </summary>
+    public static string ForUrl(string url, string textFormat, bool detectComics)
+    {
+        var comic = IsComic(url);
+        return comic && detectComics ? "cbz" : Fit(textFormat, comic);
+    }
 
     /// <summary>Подходящий формат: выбранный, а если он не годится для сайта — запасной.</summary>
     public static string Fit(string format, bool comic) => Problem(format, comic) == null ? format : comic ? "cbz" : "epub";
