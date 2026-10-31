@@ -13,7 +13,8 @@ public interface IBookStorage
     string DestinationLabel { get; }
 
     /// <summary>Копирует дерево файлов из рабочей папки задания в папку сохранения.</summary>
-    Task<IReadOnlyList<SavedFile>> SaveTreeAsync(string sourceDir, Func<SavedFile, SavedFile> decorate);
+    Task<IReadOnlyList<SavedFile>> SaveTreeAsync(string sourceDir, Func<SavedFile, SavedFile> decorate,
+        CancellationToken cancellationToken = default, IProgress<StorageProgress> progress = null);
 
     /// <summary>
     /// Разрешение на запись, если оно нужно (Android 7–9 пишут в «Загрузки» по пути). false — пользователь отказал.
@@ -36,6 +37,9 @@ public interface IBookStorage
 
     void Share(IReadOnlyCollection<SavedFile> files);
 }
+
+/// <summary>Прогресс копирования: завершённые файлы и записанные байты.</summary>
+public sealed record StorageProgress(int CompletedFiles, int TotalFiles, long CopiedBytes, long TotalBytes);
 
 /// <summary>Системные функции: уведомления, фоновая работа, системные панели.</summary>
 public interface IPlatformServices

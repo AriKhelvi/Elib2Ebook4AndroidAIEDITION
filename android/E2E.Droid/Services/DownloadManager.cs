@@ -268,20 +268,45 @@ public sealed class DownloadManager(
                     f.Author = result.Author;
                     f.SourceUrl = url;
                     return f;
-                });
-
-                if (saved.Count == 0)
+                }, ct, new StorageProgressReporter(p =>
                 {
-                    throw new InvalidOperationException("Ядро не создало ни одного файла");
-                }
+                    if (jobId != _jobId) return;
+                    Status = $"Сохраняю: {p.CompletedFiles}/{p.TotalFiles} файлов, {p.CopiedBytes / 1024}/{p.TotalBytes / 1024} КБ";
+                    NotifyChanged();
+                }));
 
-                // Запись для вкладки «Книги»: сведения о книге и файлы из корня (книги и обложка, без доп. файлов)
-                var record = NewRecord(url, request);
-                record.Files = saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
-                FillRecord(record, result.Info);
-                history.Add(record);
-                lock (_saved) _saved.AddRange(saved);
-                Write(jobId, $"Готово: {result.Title} ({saved.Count} файл(ов))");
+                var handedToHistory = false;
+                try
+                {
+                    if (jobId != _jobId) return;
+                    ct.ThrowIfCancellationRequested();
+                    if (saved.Count == 0)
+                    {
+                        throw new InvalidOperationException("Ядро не создало ни одного файла");
+                    }
+
+                    // Запись для вкладки «Книги»: сведения о книге и файлы из корня (книги и обложка, без доп. файлов)
+                    var record = NewRecord(url, request);
+                    record.Files = saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
+                    FillRecord(record, result.Info);
+                    if (jobId != _jobId) return;
+                    ct.ThrowIfCancellationRequested();
+                    // Add может выбросить исключение из Changed уже после сохранения записи.
+                    // С момента передачи истории удалять эти файлы здесь больше нельзя.
+                    handedToHistory = true;
+                    history.Add(record);
+                    lock (_saved) _saved.AddRange(saved);
+                    Write(jobId, $"Готово: {result.Title} ({saved.Count} файл(ов))");
+                }
+                finally
+                {
+                    // Отмена могла прийти уже после возврата SaveTreeAsync. Пока файлы не переданы
+                    // истории, они принадлежат этой операции и должны быть удалены при выходе.
+                    if (!handedToHistory)
+                    {
+                        foreach (var file in saved) storage.Delete(file);
+                    }
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -518,6 +543,12 @@ public sealed class DownloadManager(
         {
             // временные файлы подчистятся при следующем запуске
         }
+    }
+
+    // Синхронный отчёт не оставляет в очереди колбэки, способные затереть статус «Готово».
+    private sealed class StorageProgressReporter(Action<StorageProgress> report) : IProgress<StorageProgress>
+    {
+        public void Report(StorageProgress value) => report(value);
     }
 
     private static string NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
