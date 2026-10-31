@@ -60,33 +60,56 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// <summary>
     /// Переносит всё, что ядро собрало в рабочей папке задания (книги, обложку, подпапки с доп. файлами),
     /// в папку сохранения, сохраняя структуру подпапок. Работает в фоновом потоке.
-    /// При отмене удаляет и недописанный файл, и уже сохранённые этим вызовом (см. IBookStorage).
     /// </summary>
-    public Task<IReadOnlyList<SavedFile>> SaveTreeAsync(string sourceDir, Func<SavedFile, SavedFile> decorate, CancellationToken ct)
+    public Task<IReadOnlyList<SavedFile>> SaveTreeAsync(string sourceDir, Func<SavedFile, SavedFile> decorate,
+        CancellationToken cancellationToken = default, IProgress<StorageProgress> progress = null)
     {
         return Task.Run<IReadOnlyList<SavedFile>>(() =>
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var tree = HasTree() ? AUri.Parse(settings.SaveFolderUri) : null;
             var result = new List<SavedFile>();
+            // Кэш принадлежит одному сохранению: не устаревает при смене папки или разрешений.
+            var directories = new Dictionary<string, AUri>(StringComparer.Ordinal);
+            long copiedBytes = 0;
+            long totalBytes = 0;
+            var completedFiles = 0;
 
             // Сначала файлы книг из корня, затем доп. файлы по подпапкам
             var files = Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories)
-                .Select(path => (path, folder: GetFolder(sourceDir, path)))
+                .Select(path =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return (path, folder: GetFolder(sourceDir, path));
+                })
                 .OrderBy(f => f.folder.Length)
-                .ThenBy(f => f.path, StringComparer.OrdinalIgnoreCase);
+                .ThenBy(f => f.path, StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var file in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                totalBytes += new FileInfo(file.path).Length;
+            }
+            void Report(long bytes)
+            {
+                copiedBytes += bytes;
+                progress?.Report(new StorageProgress(completedFiles, files.Count, copiedBytes, totalBytes));
+            }
+            Report(0);
 
+            // URI храним отдельно от результата: декоратор и чтение метаданных тоже могут упасть.
+            var created = new List<AUri>();
             try
             {
                 foreach (var (path, folder) in files)
                 {
-                    ct.ThrowIfCancellationRequested();
+                    cancellationToken.ThrowIfCancellationRequested();
                     var name = Path.GetFileName(path);
-                    // Недописанный при отмене файл каждый из SaveTo… удаляет сам
                     var uri = tree != null
-                        ? SaveToTree(tree, folder, name, path, ct)
+                        ? SaveToTree(tree, folder, name, path, directories, cancellationToken, Report)
                         : UseMediaStore
-                            ? SaveToDownloads(folder, name, path, ct)
-                            : SaveToLegacyDownloads(folder, name, path, ct);
+                            ? SaveToDownloads(folder, name, path, cancellationToken, Report)
+                            : SaveToLegacyDownloads(folder, name, path, cancellationToken, Report);
+                    created.Add(uri);
 
                     result.Add(decorate(new SavedFile
                     {
@@ -98,21 +121,24 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
                         Mime = MimeTypes.ForIntent(name),
                         Size = new FileInfo(path).Length
                     }));
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Отменили посреди книги: убираем и уже сохранённые её файлы, чтобы не осталось «половины» книги
-                foreach (var file in result)
-                {
-                    Delete(file);
+                    completedFiles++;
+                    Report(0);
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
+                return result;
+            }
+            catch
+            {
+                // Текущий недописанный файл удаляет SaveTo*. Здесь откатываем уже готовые файлы
+                // этого вызова; существующие файлы и папки не затрагиваем.
+                foreach (var uri in created)
+                {
+                    Delete(new SavedFile { Uri = uri.ToString() });
+                }
                 throw;
             }
-
-            return result;
-        }, ct);
+        }, cancellationToken);
     }
 
     /// <summary>
@@ -157,8 +183,24 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
             return false; // пользователь нажал «Назад»
         }
 
-        // Без TakePersistableUriPermission доступ пропал бы после перезапуска приложения
-        Resolver.TakePersistableUriPermission(uri, TreeFlags);
+        // Провайдер может вернуть меньше прав, чем мы запросили. Не берём права, которых он не выдал.
+        var grantedFlags = data.Flags & TreeFlags;
+        if ((grantedFlags & ActivityFlags.GrantWriteUriPermission) == 0)
+        {
+            throw new InvalidOperationException("Выбранная папка не разрешает запись. Выберите другую папку");
+        }
+
+        // Без TakePersistableUriPermission доступ пропал бы после перезапуска приложения.
+        // Старую папку сохраняем, пока постоянное разрешение на новую не получено.
+        try
+        {
+            Resolver.TakePersistableUriPermission(uri, grantedFlags);
+        }
+        catch (Java.Lang.SecurityException)
+        {
+            throw new InvalidOperationException(
+                "Не удалось сохранить доступ к выбранной папке. Выберите её повторно или укажите другую папку");
+        }
         // Права на старую папку больше не нужны — отпускаем (у Android есть лимит на число таких прав)
         ReleaseTree(except: uri);
 
@@ -328,7 +370,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// Android 7–9: копирование в /sdcard/Download/Elib2Ebook[/подпапка] по пути (нужно разрешение на запись,
     /// см. EnsureWriteAccessAsync). Имена при совпадении нумеруются так же, как это делает MediaStore.
     /// </summary>
-    private static AUri SaveToLegacyDownloads(string folder, string name, string sourcePath, CancellationToken ct)
+    private static AUri SaveToLegacyDownloads(string folder, string name, string sourcePath, CancellationToken cancellationToken, Action<long> report)
     {
 #pragma warning disable CA1422 // устарело в Android 10 — но это как раз ветка для Android 7–9
         var downloads = AEnvironment.GetExternalStoragePublicDirectory(AEnvironment.DirectoryDownloads)!.AbsolutePath;
@@ -337,36 +379,23 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         Directory.CreateDirectory(dir);
 
         var target = UniquePath(dir, name);
-        using (var input = File.OpenRead(sourcePath))
+        var created = false;
+        try
         {
-            // CreateNew: файл создаём сами, поэтому при сбое удаляем только свой, а не чужой с тем же именем
-            var output = new FileStream(target, FileMode.CreateNew);
-            try
+            using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write))
             {
-                using (output)
-                {
-                    CopyStream(input, output, ct);
-                }
+                created = true;
+                CopyTo(output, sourcePath, cancellationToken, report);
             }
-            catch
-            {
-                // Не оставляем в «Загрузках» недописанный файл (отмена или ошибка записи)
-                try
-                {
-                    File.Delete(target);
-                }
-                catch
-                {
-                    // не вышло — останется, как после File.Copy
-                }
-
-                throw;
-            }
+            // Без сканирования файл не виден по USB (MTP) и в части файловых менеджеров до перезагрузки
+            MediaScannerConnection.ScanFile(Platform.AppContext, [target], null, null);
+            return AUri.FromFile(new Java.IO.File(target))!;
         }
-
-        // Без сканирования файл не виден по USB (MTP) и в части файловых менеджеров до перезагрузки
-        MediaScannerConnection.ScanFile(Platform.AppContext, [target], null, null);
-        return AUri.FromFile(new Java.IO.File(target))!;
+        catch
+        {
+            try { if (created) File.Delete(target); } catch { /* Сохраняем исходную ошибку копирования. */ }
+            throw;
+        }
     }
 
     /// <summary>«Книга.epub» уже есть → «Книга (1).epub», «Книга (2).epub»…</summary>
@@ -388,7 +417,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// IsPending=1 прячет файл от других приложений, пока он не дописан; после копирования снимаем флаг.
     /// </summary>
     [SupportedOSPlatform("android29.0")]
-    private static AUri SaveToDownloads(string folder, string name, string sourcePath, CancellationToken ct)
+    private static AUri SaveToDownloads(string folder, string name, string sourcePath, CancellationToken cancellationToken, Action<long> report)
     {
         var relativePath = string.Join('/', new[] { AEnvironment.DirectoryDownloads, DefaultFolder, folder }.Where(s => !string.IsNullOrEmpty(s))) + "/";
 
@@ -402,7 +431,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
                   ?? throw new IOException($"Не удалось создать файл {name} в папке Загрузки");
         try
         {
-            CopyTo(uri, sourcePath, ct);
+            CopyTo(uri, sourcePath, cancellationToken, report);
 
             values.Clear();
             values.Put(MediaStore.IMediaColumns.IsPending, 0);
@@ -412,30 +441,39 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         catch
         {
             // Не оставляем в «Загрузках» недописанный пустой файл
-            Resolver.Delete(uri, null, null);
+            try { Resolver.Delete(uri, null, null); } catch { /* Сохраняем исходную ошибку. */ }
             throw;
         }
     }
 
     /// <summary>Запись в выбранную пользователем папку (SAF): подпапки создаются по пути, затем сам файл.</summary>
-    private static AUri SaveToTree(AUri tree, string folder, string name, string sourcePath, CancellationToken ct)
+    private static AUri SaveToTree(AUri tree, string folder, string name, string sourcePath, Dictionary<string, AUri> directories, CancellationToken cancellationToken, Action<long> report)
     {
         var parent = DocumentsContract.BuildDocumentUriUsingTree(tree, DocumentsContract.GetTreeDocumentId(tree))!;
+        var key = string.Empty;
         foreach (var segment in folder.Split('/', StringSplitOptions.RemoveEmptyEntries))
         {
-            parent = FindOrCreateDirectory(tree, parent, segment);
+            cancellationToken.ThrowIfCancellationRequested();
+            key += "/" + segment;
+            if (!directories.TryGetValue(key, out var cached))
+            {
+                cached = FindOrCreateDirectory(tree, parent, segment, cancellationToken);
+                directories.Add(key, cached);
+            }
+            parent = cached;
         }
+        cancellationToken.ThrowIfCancellationRequested();
 
         var uri = DocumentsContract.CreateDocument(Resolver, parent, MimeTypes.ForStorage(name), name)
                   ?? throw new IOException($"Не удалось создать файл {name} в папке {folder}");
         try
         {
-            CopyTo(uri, sourcePath, ct);
+            CopyTo(uri, sourcePath, cancellationToken, report);
             return uri;
         }
         catch
         {
-            DocumentsContract.DeleteDocument(Resolver, uri);
+            try { DocumentsContract.DeleteDocument(Resolver, uri); } catch { /* Сохраняем исходную ошибку. */ }
             throw;
         }
     }
@@ -444,7 +482,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// В SAF нет «создать, если нет» — перебираем детей папки и ищем подпапку с нужным именем,
     /// иначе создаём (повторное CreateDocument создало бы «Имя (1)»).
     /// </summary>
-    private static AUri FindOrCreateDirectory(AUri tree, AUri parent, string name)
+    private static AUri FindOrCreateDirectory(AUri tree, AUri parent, string name, CancellationToken cancellationToken)
     {
         var children = DocumentsContract.BuildChildDocumentsUriUsingTree(tree, DocumentsContract.GetDocumentId(parent))!;
         using (var cursor = Resolver.Query(children,
@@ -453,6 +491,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         {
             while (cursor != null && cursor.MoveToNext())
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (cursor.GetString(1) == name && cursor.GetString(2) == DocumentsContract.Document.MimeTypeDir)
                 {
                     return DocumentsContract.BuildDocumentUriUsingTree(tree, cursor.GetString(0))!;
@@ -464,23 +503,26 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
                ?? throw new IOException($"Не удалось создать папку {name}");
     }
 
-    private static void CopyTo(AUri uri, string sourcePath, CancellationToken ct)
+    private static void CopyTo(AUri uri, string sourcePath, CancellationToken cancellationToken, Action<long> report)
     {
         using var output = Resolver.OpenOutputStream(uri, "w") ?? throw new IOException("Нет доступа на запись");
-        using var input = File.OpenRead(sourcePath);
-        CopyStream(input, output, ct);
+        CopyTo(output, sourcePath, cancellationToken, report);
     }
 
-    /// <summary>Копирование кусками с проверкой отмены: CBZ манги бывает в сотни мегабайт.</summary>
-    private static void CopyStream(System.IO.Stream input, System.IO.Stream output, CancellationToken ct)
+    private static void CopyTo(System.IO.Stream output, string sourcePath, CancellationToken cancellationToken, Action<long> report)
     {
+        using var input = File.OpenRead(sourcePath);
         var buffer = new byte[81920];
-        int read;
-        while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+        while (true)
         {
-            ct.ThrowIfCancellationRequested();
-            output.Write(buffer, 0, read);
+            cancellationToken.ThrowIfCancellationRequested();
+            var count = input.Read(buffer, 0, buffer.Length);
+            if (count == 0) break;
+            output.Write(buffer, 0, count);
+            report(count);
         }
+        output.Flush();
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     /// <summary>Выбрана ли своя папка и есть ли к ней ещё доступ (иначе тихо возвращаемся к «Загрузкам»).</summary>

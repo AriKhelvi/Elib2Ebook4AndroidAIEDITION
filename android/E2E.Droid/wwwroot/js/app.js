@@ -106,6 +106,8 @@
     });
 
     window.e2e = {
+        // Между двумя requestAnimationFrame браузер получает возможность отрисовать первый кадр.
+        afterFirstPaint: () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
         // 'system' | 'light' | 'dark' | 'amoled' | 'eink'
         getThemeMode: () => savedMode(),
         // Запоминает выбор и возвращает итоговую тему (без 'system')

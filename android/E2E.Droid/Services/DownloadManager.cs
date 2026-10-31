@@ -389,22 +389,44 @@ public sealed class DownloadManager(
                         f.Author = result.Author;
                         f.SourceUrl = url;
                         return f;
-                    }, ct);
+                    }, ct, new StorageProgressReporter(p =>
+                    {
+                        lock (_sync)
+                        {
+                            if (job.Cancelled || !ReferenceEquals(job, _job)) return;
+                            job.Status = $"Сохраняю: {p.CompletedFiles}/{p.TotalFiles} файлов, {p.CopiedBytes / 1024}/{p.TotalBytes / 1024} КБ";
+                        }
+                        NotifyChanged();
+                    }));
 
                     if (saved.Count == 0)
                     {
                         throw new InvalidOperationException("Ядро не создало ни одного файла");
                     }
 
-                    // Файлы уже в папке — запись о них нужна, даже если отмену нажали в последний миг:
-                    // иначе книга осталась бы в «Загрузках», но пропала из вкладки «Книги»
-                    var record = NewRecord(url, request);
-                    record.Files = saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
-                    FillRecord(record, result.Info);
-                    history.Add(record);
-                    lock (job.Saved) job.Saved.AddRange(saved);
-                    DebugLine(job, $"Сохранено за {stage.ElapsedMilliseconds} мс: {string.Join("; ", saved.Select(f => $"{f.Folder}/{f.Name} {f.Size} байт {f.Mime} → {f.Uri}"))}");
-                    Write(job, $"Готово: {result.Title} ({saved.Count} файл(ов))");
+                    var handedToHistory = false;
+                    try
+                    {
+                        // Файлы уже в папке — запись о них нужна, даже если отмену нажали в последний миг:
+                        // иначе книга осталась бы в «Загрузках», но пропала из вкладки «Книги»
+                        var record = NewRecord(url, request);
+                        record.Files = saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
+                        FillRecord(record, result.Info);
+                        handedToHistory = true;
+                        history.Add(record);
+                        lock (job.Saved) job.Saved.AddRange(saved);
+                        DebugLine(job, $"Сохранено за {stage.ElapsedMilliseconds} мс: {string.Join("; ", saved.Select(f => $"{f.Folder}/{f.Name} {f.Size} байт {f.Mime} → {f.Uri}"))}");
+                        Write(job, $"Готово: {result.Title} ({saved.Count} файл(ов))");
+                    }
+                    finally
+                    {
+                        // Ошибка подготовки записи не должна оставлять файлы без истории.
+                        // После передачи в Add удалять их нельзя: Changed может упасть уже после сохранения.
+                        if (!handedToHistory)
+                        {
+                            foreach (var file in saved) storage.Delete(file);
+                        }
+                    }
                 });
             }
             catch (OperationCanceledException) when (job.Cancelled)
@@ -773,6 +795,12 @@ public sealed class DownloadManager(
         {
             // временные файлы подчистятся при следующем запуске
         }
+    }
+
+    // Синхронный отчёт не оставляет колбэки, способные затереть статус завершённого задания.
+    private sealed class StorageProgressReporter(Action<StorageProgress> report) : IProgress<StorageProgress>
+    {
+        public void Report(StorageProgress value) => report(value);
     }
 
     private static string NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

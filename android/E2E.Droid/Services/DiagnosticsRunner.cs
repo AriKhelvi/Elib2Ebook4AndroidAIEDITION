@@ -367,10 +367,11 @@ public sealed class DiagnosticsRunner(
 
     private async Task StepStorageAsync(CancellationToken ct)
     {
-        var root = Path.Combine(FileSystem.CacheDirectory, "diagnostics");
+        var root = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "storage-" + Guid.NewGuid().ToString("N"));
         var probeDir = Path.Combine(root, "probe");
         var bigDir = Path.Combine(root, "big");
         var stamp = DateTime.Now.ToString("HHmmss", CultureInfo.InvariantCulture);
+        var cleanup = new List<SavedFile>();
         try
         {
             Directory.CreateDirectory(probeDir);
@@ -379,10 +380,24 @@ public sealed class DiagnosticsRunner(
             Info($"папка сохранения: {storage.DestinationLabel}");
 
             var sw = Stopwatch.StartNew();
-            var saved = await storage.SaveTreeAsync(probeDir, f => f, ct);
+            var expectedBytes = Directory.GetFiles(probeDir).Sum(path => new FileInfo(path).Length);
+            StorageProgress previous = null;
+            var progressValid = true;
+            var updates = 0;
+            var saved = await storage.SaveTreeAsync(probeDir, f => { cleanup.Add(f); return f; }, ct,
+                new InlineStorageProgress(p =>
+                {
+                    updates++;
+                    progressValid &= p.TotalFiles == 1 && p.TotalBytes == expectedBytes &&
+                                     p.CompletedFiles >= (previous?.CompletedFiles ?? 0) && p.CompletedFiles <= p.TotalFiles &&
+                                     p.CopiedBytes >= (previous?.CopiedBytes ?? 0) && p.CopiedBytes <= p.TotalBytes;
+                    previous = p;
+                }));
             Check(saved.Count == 1, saved.Count == 1
                 ? $"записан «{saved[0].Name}» ({saved[0].Size} байт, {saved[0].Mime}) за {sw.ElapsedMilliseconds} мс → {saved[0].Uri}"
                 : $"записано файлов: {saved.Count}, ожидался 1");
+            Check(progressValid && updates >= 3 && previous?.CompletedFiles == 1 && previous.CopiedBytes == expectedBytes,
+                $"прогресс сохранения: {updates} отчётов, {previous?.CompletedFiles}/1 файлов, {previous?.CopiedBytes}/{expectedBytes} байт; счётчики не убывают");
             foreach (var file in saved)
             {
                 Check(storage.Exists(file), "файл виден после записи");
@@ -408,36 +423,83 @@ public sealed class DiagnosticsRunner(
                 }
             }
 
-            // Отмена посреди копирования: 32 МБ не успевают скопироваться за 30 мс
+            // Сначала небольшой файл, затем большой: отменяем из отчёта о записи второго,
+            // чтобы проверить откат уже готового файла независимо от скорости устройства.
             Directory.CreateDirectory(bigDir);
-            await using (var big = File.Create(Path.Combine(bigDir, $"E2E-проверка-отмены-{stamp}.bin")))
+            var firstPath = Path.Combine(bigDir, $"0-E2E-проверка-отката-{stamp}.txt");
+            await File.WriteAllTextAsync(firstPath, "Этот файл должен исчезнуть при отмене следующего.", ct);
+            var firstBytes = new FileInfo(firstPath).Length;
+            var bigName = $"1-E2E-проверка-отмены-{stamp}.bin";
+            await using (var big = File.Create(Path.Combine(bigDir, bigName)))
             {
-                big.SetLength(32L * 1024 * 1024);
+                big.SetLength(2L * 1024 * 1024);
             }
 
-            using (var midway = new CancellationTokenSource(TimeSpan.FromMilliseconds(30)))
+            using (var midway = CancellationTokenSource.CreateLinkedTokenSource(ct))
             {
+                var completed = new List<SavedFile>();
+                var cancelledDuringCopy = false;
                 sw.Restart();
                 try
                 {
-                    var finished = await storage.SaveTreeAsync(bigDir, f => f, midway.Token);
-                    Skip($"32 МБ скопировались за {sw.ElapsedMilliseconds} мс раньше отмены — откат не проверен");
+                    var finished = await storage.SaveTreeAsync(bigDir, f =>
+                    {
+                        completed.Add(f);
+                        cleanup.Add(f);
+                        return f;
+                    }, midway.Token, new InlineStorageProgress(p =>
+                    {
+                        if (p.CompletedFiles == 1 && p.CopiedBytes > firstBytes && p.CopiedBytes < p.TotalBytes)
+                        {
+                            cancelledDuringCopy = true;
+                            midway.Cancel();
+                        }
+                    }));
+                    Fail($"ожидалась отмена посреди второго файла, но сохранение вернуло {finished.Count} файл(ов)");
                     foreach (var file in finished)
                     {
                         storage.Delete(file);
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancelledDuringCopy && !ct.IsCancellationRequested)
                 {
-                    Ok($"копирование 32 МБ прервано через {sw.ElapsedMilliseconds} мс (недописанный файл хранилище удаляет само)");
+                    Ok($"копирование второго файла прервано из отчёта о прогрессе через {sw.ElapsedMilliseconds} мс");
+                    Check(completed.Count == 1 && completed.All(f => !storage.Exists(f)),
+                        $"откат после отмены: первый файл удалён (полностью записано до отмены: {completed.Count})");
+                    Info($"Недописанный файл «{bigName}» тоже не должен оставаться в папке; его URI интерфейс хранилища не возвращает, отсутствие проверяется вручную.");
                 }
+            }
+
+            ct.ThrowIfCancellationRequested();
+            var expectedError = new InvalidOperationException("Пробная ошибка диагностики после копирования");
+            SavedFile beforeError = null;
+            try
+            {
+                await storage.SaveTreeAsync(probeDir, f =>
+                {
+                    beforeError = f;
+                    cleanup.Add(f);
+                    throw expectedError;
+                }, ct);
+                Fail("хранилище не передало ошибку подготовки сохранённого файла");
+            }
+            catch (InvalidOperationException ex) when (ReferenceEquals(ex, expectedError))
+            {
+                Check(beforeError != null && !storage.Exists(beforeError), "откат после ошибки: скопированный файл удалён");
             }
         }
         finally
         {
-            TryDelete(probeDir);
-            TryDelete(bigDir);
+            // Только файлы этого сценария; повторное удаление уже откатившихся файлов безвредно.
+            foreach (var file in cleanup) storage.Delete(file);
+            TryDelete(root);
         }
+    }
+
+    // Обычный Progress<T> откладывает колбэк: для отмены точно посреди копирования он не подходит.
+    private sealed class InlineStorageProgress(Action<StorageProgress> report) : IProgress<StorageProgress>
+    {
+        public void Report(StorageProgress value) => report(value);
     }
 
     private async Task StepSitesAsync(CancellationToken ct)
