@@ -13,7 +13,12 @@ public interface IBookStorage
     string DestinationLabel { get; }
 
     /// <summary>Копирует дерево файлов из рабочей папки задания в папку сохранения.</summary>
-    Task<IReadOnlyList<SavedFile>> SaveTreeAsync(string sourceDir, Func<SavedFile, SavedFile> decorate);
+    /// <param name="ct">
+    /// Отмена посреди сохранения: копирование обрывается, недописанный и уже сохранённые этим вызовом файлы
+    /// удаляются — в папке не остаётся частей книги, о которых не знает вкладка «Книги».
+    /// </param>
+    /// <exception cref="OperationCanceledException">Сохранение отменили (файлы уже убраны).</exception>
+    Task<IReadOnlyList<SavedFile>> SaveTreeAsync(string sourceDir, Func<SavedFile, SavedFile> decorate, CancellationToken ct);
 
     /// <summary>
     /// Разрешение на запись, если оно нужно (Android 7–9 пишут в «Загрузки» по пути). false — пользователь отказал.

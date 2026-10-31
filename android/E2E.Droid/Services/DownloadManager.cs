@@ -4,15 +4,17 @@
 // [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md.
 // ============================================================================
 //
-// Жизненный цикл одного «задания» (нажатие «Скачать»):
+// Жизненный цикл одного «задания» (нажатие «Скачать», объект Job):
 //
-//   StartAsync  → спросить разрешение на уведомления, запустить foreground-сервис, уйти в фон (Task.Run)
+//   StartAsync  → спросить разрешения, создать Job, удержать foreground-сервис, уйти в фон (Task.Run)
 //   RunAsync    → для каждой ссылки: BookPipeline в рабочую папку cache/jobs/<guid> → копия в «Загрузки»
 //                 (или выбранную папку) → запись в историю → удаление рабочей папки
-//   Finish      → остановить сервис, показать тост и (если приложение свёрнуто) уведомление «Книга готова»
+//   Finish      → отпустить сервис, показать тост и (если приложение свёрнуто) уведомление «Книга готова»
 //
-// Отмена не ждёт ядро: задание получает новый номер (_jobId), а «хвост» старого задания доработает
-// в фоне и будет проигнорирован (все его колбэки сверяют свой jobId с текущим).
+// Отмена не ждёт ядро: интерфейс освобождается сразу, а «хвост» задания дорабатывает в фоне вхолостую.
+// Он пишет только в свой Job (журнал, файлы, карточка) и видит Job.Cancelled — поэтому до следующего
+// задания ему не дотянуться. Запись в хранилище после отмены не начинается, а начатая — прерывается
+// (токен отмены) и откатывается; foreground-сервис держится, пока она не закончится (см. HoldService).
 
 using Elib2Ebook.Domain.Book;
 using Elib2Ebook.DomainServices.Configs;
@@ -79,13 +81,14 @@ public sealed class DownloadManager(
     /// <summary>Журнал ограничен, чтобы книга на тысячу глав не съела память.</summary>
     private const int MaxLogLines = 3000;
 
-    private readonly List<string> _log = [];
-    private readonly List<SavedFile> _saved = [];
-    private readonly List<string> _errors = [];
-    private CancellationTokenSource _cts;
+    /// <summary>
+    /// Защищает смену задания, State, Job.Cancelled и счётчик удержаний сервиса — всё, что должно
+    /// меняться согласованно между UI-потоком (StartAsync, Cancel) и фоновым (RunAsync).
+    /// </summary>
+    private readonly object _sync = new();
 
-    /// <summary>Номер текущего задания. Колбэки отменённых заданий видят «чужой» номер и ничего не делают.</summary>
-    private int _jobId;
+    /// <summary>Текущее (или последнее) задание. Интерфейс читает всё отсюда; пустое — до первого скачивания.</summary>
+    private volatile Job _job = new(new DownloadRequest());
 
     /// <summary>
     /// 1 — StartAsync уже идёт (ждёт разрешений). Защита от двойного старта: между проверкой IsRunning
@@ -93,9 +96,16 @@ public sealed class DownloadManager(
     /// </summary>
     private int _starting;
 
+    /// <summary>
+    /// Сколько причин держать foreground-сервис: идущее задание (одна, см. Job.HoldsService) плюс каждая
+    /// идущая запись в хранилище (см. WriteResultAsync). Меняется только под _sync.
+    /// </summary>
+    private int _serviceHolds;
+
     /// <summary>1 — обновление интерфейса уже запланировано (см. NotifyChanged).</summary>
     private int _changePending;
 
+    /// <summary>Когда последний раз обновляли текст в шторке. Только под _sync.</summary>
     private DateTime _lastNotificationUpdate;
 
     /// <summary>Интерфейс подписывается и перерисовывается. Может вызываться из фонового потока!</summary>
@@ -106,60 +116,31 @@ public sealed class DownloadManager(
     public bool IsRunning => State == DownloadState.Running;
 
     /// <summary>Последняя строка журнала — показывается в блоке прогресса, как на кнопке веб-версии.</summary>
-    public string Status { get; private set; }
+    public string Status => _job.Status;
 
     /// <summary>Карточка книги (название, автор, обложка) — появляется до того, как скачаются главы.</summary>
-    public BookPreview Preview { get; private set; }
+    public BookPreview Preview => _job.Preview;
 
     /// <summary>Номер текущей ссылки (с 1) при скачивании нескольких книг.</summary>
-    public int Current { get; private set; }
+    public int Current => _job.Current;
 
     /// <summary>
     /// Сколько глав текущей книги уже загружено — по строкам журнала «Загружаю главу …» (GetterBase ядра).
     /// Общего числа глав ядро не сообщает, поэтому полоса прогресса бегущая, а рядом — этот счётчик.
     /// </summary>
-    public int ChaptersLoaded => _chapters;
+    public int ChaptersLoaded => Volatile.Read(ref _job.Chapters);
 
-    private int _chapters;
-
-    public int Total { get; private set; }
+    public int Total => _job.Request.Urls.Count;
 
     // Коллекции читаются из UI-потока, а пишутся из фонового — поэтому отдаём копии под lock
 
-    public IReadOnlyList<string> Log
-    {
-        get
-        {
-            lock (_log)
-            {
-                return _log.ToList();
-            }
-        }
-    }
+    public IReadOnlyList<string> Log => Copy(_job.Log);
 
     /// <summary>Файлы, сохранённые в текущем/последнем задании (книги, обложки, доп. файлы).</summary>
-    public IReadOnlyList<SavedFile> Saved
-    {
-        get
-        {
-            lock (_saved)
-            {
-                return _saved.ToList();
-            }
-        }
-    }
+    public IReadOnlyList<SavedFile> Saved => Copy(_job.Saved);
 
     /// <summary>Короткие сообщения об ошибках по каждой не скачавшейся ссылке.</summary>
-    public IReadOnlyList<string> Errors
-    {
-        get
-        {
-            lock (_errors)
-            {
-                return _errors.ToList();
-            }
-        }
-    }
+    public IReadOnlyList<string> Errors => Copy(_job.Errors);
 
     /// <summary>
     /// Запускает задание. Вызывать из UI-потока (запрос разрешения показывает системный диалог).
@@ -199,22 +180,17 @@ public sealed class DownloadManager(
             // Android 13+: без разрешения не будет видно прогресса в шторке (сама загрузка всё равно пойдёт)
             await platform.RequestNotificationPermissionAsync();
 
-            var jobId = Interlocked.Increment(ref _jobId);
-            _cts = new CancellationTokenSource();
-            lock (_log) _log.Clear();
-            lock (_saved) _saved.Clear();
-            lock (_errors) _errors.Clear();
-            Preview = null;
-            Status = "Подготовка…";
-            Current = 0;
-            Total = request.Urls.Count;
-            State = DownloadState.Running;
-            Changed?.Invoke();
+            var job = new Job(request);
+            lock (_sync)
+            {
+                _job = job;
+                State = DownloadState.Running;
+                job.HoldsService = true;
+                HoldService(job.Status);
+            }
 
-            // Foreground-сервис не даёт Android убить процесс, пока приложение свёрнуто
-            platform.StartBackgroundWork(Status);
-            var ct = _cts.Token;
-            _ = Task.Run(() => RunAsync(jobId, request, ct));
+            Changed?.Invoke();
+            _ = Task.Run(() => RunAsync(job));
             return true;
         }
         finally
@@ -227,104 +203,148 @@ public sealed class DownloadManager(
     /// <summary>Отмена: интерфейс освобождается сразу, ядро дорабатывает «вхолостую» в фоне.</summary>
     public void Cancel()
     {
-        if (!IsRunning)
+        Job job;
+        lock (_sync)
         {
-            return;
+            if (!IsRunning)
+            {
+                return;
+            }
+
+            job = _job;
+            // До Cts.Cancel(): к моменту, когда хвост задания увидит отмену, флаг уже стоит,
+            // и все его записи в журнал, шторку и историю отбрасываются
+            job.Cancelled = true;
+            job.Status = "Отменено";
+            State = DownloadState.Cancelled;
+            ReleaseJobHold(job);
+
+            // Сервис ещё держит начатая запись в хранилище: она прервётся и откатится, тогда он и остановится
+            if (_serviceHolds > 0)
+            {
+                platform.UpdateBackgroundWork("Отменяю: прерываю сохранение…");
+            }
         }
 
+        AppendLog(job, "Скачивание отменено");
+
         // Ядро может ещё несколько секунд дожидаться повторов запросов — не ждём его,
-        // а отпускаем задание доработать в фоне; его результаты будут проигнорированы.
-        _cts?.Cancel();
-        Interlocked.Increment(ref _jobId);
-        AppendLog("Скачивание отменено");
-        Status = "Отменено";
-        State = DownloadState.Cancelled;
-        platform.StopBackgroundWork();
+        // а отпускаем задание доработать в фоне; его результаты будут проигнорированы
+        job.Cts.Cancel();
         Changed?.Invoke();
     }
 
     /// <summary>Убирает результаты прошлого скачивания с главного экрана.</summary>
     public void Dismiss()
     {
-        if (IsRunning)
+        lock (_sync)
         {
-            return;
+            if (IsRunning)
+            {
+                return;
+            }
+
+            State = DownloadState.Idle;
         }
 
-        State = DownloadState.Idle;
-        Preview = null;
         Changed?.Invoke();
     }
 
-    /// <summary>Фоновая часть задания: по очереди скачивает все ссылки.</summary>
-    private async Task RunAsync(int jobId, DownloadRequest request, CancellationToken ct)
+    /// <summary>Фоновая часть задания. Что бы ни случилось, заканчивается Finish — «вечного» скачивания не будет.</summary>
+    private async Task RunAsync(Job job)
     {
+        try
+        {
+            await DownloadAllAsync(job);
+        }
+        catch (Exception ex)
+        {
+            // Ошибки отдельных книг ловятся в DownloadAllAsync; сюда попадает только непредвиденное
+            if (!job.Cancelled)
+            {
+                lock (job.Errors) job.Errors.Add(ex.Message);
+                Write(job, $"Непредвиденная ошибка: {ex}");
+            }
+        }
+        finally
+        {
+            Finish(job);
+        }
+    }
+
+    /// <summary>По очереди скачивает все ссылки задания.</summary>
+    private async Task DownloadAllAsync(Job job)
+    {
+        var request = job.Request;
+        var ct = job.Cts.Token;
+
         // Рабочие папки — в кэше приложения: Android может их чистить сам, а мы удаляем их после каждой книги
         var jobsRoot = Path.Combine(FileSystem.CacheDirectory, "jobs");
 
-        for (var i = 0; i < request.Urls.Count && !ct.IsCancellationRequested; i++)
+        for (var i = 0; i < request.Urls.Count && !job.Cancelled; i++)
         {
             var url = request.Urls[i];
             var workDir = Path.Combine(jobsRoot, Guid.NewGuid().ToString("N"));
-            if (jobId == _jobId)
-            {
-                Current = i + 1;
-                Preview = null;
-                Interlocked.Exchange(ref _chapters, 0);
-            }
+            job.Current = i + 1;
+            job.Preview = null;
+            Interlocked.Exchange(ref job.Chapters, 0);
+
+            // Карточка именно этой книги — для записи о неудаче (в job.Preview её может сменить следующая)
+            BookPreview preview = null;
 
             try
             {
-                Write(jobId, $"Начинаю генерацию книги {url}");
+                Write(job, $"Начинаю генерацию книги {url}");
                 var options = BuildOptions(request, url, workDir);
-                var logger = new CallbackLogger(line => Write(jobId, line));
+                var logger = new CallbackLogger(line => Write(job, line));
 
-                var result = await BookPipeline.RunAsync(options, logger, preview =>
+                var result = await BookPipeline.RunAsync(options, logger, p =>
                 {
-                    if (jobId == _jobId)
-                    {
-                        Preview = preview;
-                        NotifyChanged();
-                    }
+                    preview = p;
+                    job.Preview = p;
+                    NotifyChanged();
                 }, ct);
 
-                if (jobId != _jobId)
-                {
-                    return; // задание отменили, пока ядро работало
-                }
+                // Отменили, пока ядро работало: сохранять уже нечего
+                ct.ThrowIfCancellationRequested();
 
-                // Копируем всё, что собрало ядро (книги, обложку, доп. файлы), в общую папку
-                Write(jobId, $"Сохраняю в {storage.DestinationLabel}");
-                var saved = await storage.SaveTreeAsync(result.OutputDir, f =>
+                Write(job, $"Сохраняю в {storage.DestinationLabel}");
+                await WriteResultAsync(job, async () =>
                 {
-                    f.BookTitle = result.Title;
-                    f.Author = result.Author;
-                    f.SourceUrl = url;
-                    return f;
+                    // Копируем всё, что собрало ядро (книги, обложку, доп. файлы), в общую папку.
+                    // Отмена посреди копирования откатывает файлы этой книги (см. IBookStorage.SaveTreeAsync)
+                    var saved = await storage.SaveTreeAsync(result.OutputDir, f =>
+                    {
+                        f.BookTitle = result.Title;
+                        f.Author = result.Author;
+                        f.SourceUrl = url;
+                        return f;
+                    }, ct);
+
+                    if (saved.Count == 0)
+                    {
+                        throw new InvalidOperationException("Ядро не создало ни одного файла");
+                    }
+
+                    // Файлы уже в папке — запись о них нужна, даже если отмену нажали в последний миг:
+                    // иначе книга осталась бы в «Загрузках», но пропала из вкладки «Книги»
+                    var record = NewRecord(url, request);
+                    record.Files = saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
+                    FillRecord(record, result.Info);
+                    history.Add(record);
+                    lock (job.Saved) job.Saved.AddRange(saved);
+                    Write(job, $"Готово: {result.Title} ({saved.Count} файл(ов))");
                 });
-
-                if (saved.Count == 0)
-                {
-                    throw new InvalidOperationException("Ядро не создало ни одного файла");
-                }
-
-                // Запись для вкладки «Книги»: сведения о книге и файлы из корня (книги и обложка, без доп. файлов)
-                var record = NewRecord(url, request);
-                record.Files = saved.Where(f => string.IsNullOrEmpty(f.Folder)).ToList();
-                FillRecord(record, result.Info);
-                history.Add(record);
-                lock (_saved) _saved.AddRange(saved);
-                Write(jobId, $"Готово: {result.Title} ({saved.Count} файл(ов))");
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (job.Cancelled)
             {
                 return;
             }
             catch (Exception ex)
             {
-                if (jobId != _jobId)
+                if (job.Cancelled)
                 {
-                    return;
+                    return; // после отмены ядро падает с чем угодно — это не ошибка книги
                 }
 
                 // Ошибка одной книги не останавливает остальные ссылки.
@@ -332,52 +352,94 @@ public sealed class DownloadManager(
                 var message = ex is TaskCanceledException
                     ? "Сервер не успевает ответить. Попробуйте увеличить таймаут в настройках"
                     : ex.Message;
-                lock (_errors) _errors.Add($"{url}: {message}");
+                lock (job.Errors) job.Errors.Add($"{url}: {message}");
                 // В журнал — полный текст исключения со стеком: пригодится для отчёта об ошибке
-                Write(jobId, $"Генерация книги {url} завершилась с ошибкой. {ex}");
+                Write(job, $"Генерация книги {url} завершилась с ошибкой. {ex}");
 
                 // Неудачная загрузка тоже попадает в «Книги» — с пометкой и кнопкой «Скачать заново»
-                var failed = NewRecord(url, request);
-                failed.Error = message;
-                FillRecord(failed, Preview);
-                history.Add(failed);
+                await WriteResultAsync(job, () =>
+                {
+                    var failed = NewRecord(url, request);
+                    failed.Error = message;
+                    FillRecord(failed, preview);
+                    history.Add(failed);
+                    return Task.CompletedTask;
+                });
             }
             finally
             {
                 TryDelete(workDir);
             }
         }
-
-        if (jobId != _jobId)
-        {
-            return;
-        }
-
-        Finish();
     }
 
-    /// <summary>Итог задания: статус, тост, уведомление.</summary>
-    private void Finish()
+    /// <summary>
+    /// Запись результата (файлы, история, миниатюра обложки). Не начинается, если задание уже отменено,
+    /// а начатая держит foreground-сервис до своего конца — даже если отмену нажмут посреди записи:
+    /// иначе Android мог бы убить свёрнутое приложение на середине файла.
+    /// </summary>
+    /// <returns>false — задание отменено, ничего не записано.</returns>
+    private async Task<bool> WriteResultAsync(Job job, Func<Task> write)
     {
-        var saved = Saved;
-        var errors = Errors;
-        var books = saved.Where(f => f.IsBook).ToList();
-        var title = books.FirstOrDefault()?.BookTitle ?? Preview?.Title;
+        lock (_sync)
+        {
+            if (job.Cancelled)
+            {
+                return false;
+            }
 
-        State = saved.Count > 0 ? DownloadState.Done : DownloadState.Failed;
-        Status = errors.Count == 0 ? "Готово" : "Завершено с ошибками";
-        platform.StopBackgroundWork();
+            // Задание не отменено — значит, его удержание ещё действует и сервис уже запущен: просто считаем
+            _serviceHolds++;
+        }
+
+        try
+        {
+            await write();
+            return true;
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                ReleaseService();
+            }
+        }
+    }
+
+    /// <summary>Итог задания: статус, тост, уведомление. Для отменённого — только отпускает сервис.</summary>
+    private void Finish(Job job)
+    {
+        var saved = Copy(job.Saved);
+        var errors = Copy(job.Errors);
+
+        lock (_sync)
+        {
+            ReleaseJobHold(job);
+            // Отменённое задание итогов не подводит: интерфейс уже показывает «Отменено» (или следующее задание)
+            if (job.Cancelled)
+            {
+                return;
+            }
+
+            State = saved.Count > 0 ? DownloadState.Done : DownloadState.Failed;
+            job.Status = errors.Count == 0 ? "Готово" : "Завершено с ошибками";
+        }
+
         Changed?.Invoke();
+
+        var books = saved.Where(f => f.IsBook).ToList();
+        var title = books.FirstOrDefault()?.BookTitle ?? job.Preview?.Title;
+        var total = job.Request.Urls.Count;
 
         string text;
         if (errors.Count == 0)
         {
-            text = Total > 1 ? $"Готово книг: {Total}" : $"Книга «{title}» сохранена";
+            text = total > 1 ? $"Готово книг: {total}" : $"Книга «{title}» сохранена";
             toasts.Show(text, ToastKind.Success);
         }
         else
         {
-            text = saved.Count > 0 ? $"Часть книг не скачалась: {errors.Count} из {Total}" : errors[0];
+            text = saved.Count > 0 ? $"Часть книг не скачалась: {errors.Count} из {total}" : errors[0];
             toasts.Show(text, ToastKind.Error, 10);
         }
 
@@ -385,6 +447,41 @@ public sealed class DownloadManager(
         if (!platform.IsInForeground)
         {
             platform.NotifyFinished(errors.Count == 0 ? "Книга готова" : "Скачивание завершилось с ошибкой", text);
+        }
+    }
+
+    /// <summary>
+    /// Ещё одна причина держать foreground-сервис (он не даёт Android убить процесс, пока приложение свёрнуто).
+    /// Первая запускает сервис, остальные только обновляют текст в шторке. Вызывать под _sync.
+    /// </summary>
+    private void HoldService(string text)
+    {
+        if (_serviceHolds++ == 0)
+        {
+            platform.StartBackgroundWork(text);
+        }
+        else
+        {
+            platform.UpdateBackgroundWork(text);
+        }
+    }
+
+    /// <summary>Последняя причина ушла — останавливаем сервис. Вызывать под _sync.</summary>
+    private void ReleaseService()
+    {
+        if (--_serviceHolds == 0)
+        {
+            platform.StopBackgroundWork();
+        }
+    }
+
+    /// <summary>Снимает удержание сервиса самим заданием (в Cancel или Finish — что раньше). Вызывать под _sync.</summary>
+    private void ReleaseJobHold(Job job)
+    {
+        if (job.HoldsService)
+        {
+            job.HoldsService = false;
+            ReleaseService();
         }
     }
 
@@ -477,40 +574,53 @@ public sealed class DownloadManager(
     }
 
     /// <summary>Строка журнала от ядра или от нас: в журнал, в статус и (не чаще раза в секунду) в шторку.</summary>
-    private void Write(int jobId, string line)
+    private void Write(Job job, string line)
     {
-        if (jobId != _jobId || string.IsNullOrWhiteSpace(line))
+        if (job.Cancelled || string.IsNullOrWhiteSpace(line))
         {
             return;
         }
 
-        AppendLog(line);
-        Status = line.Length > 300 ? line[..300] + "…" : line;
+        AppendLog(job, line);
+        job.Status = line.Length > 300 ? line[..300] + "…" : line;
         if (line.StartsWith("Загружаю главу", StringComparison.Ordinal))
         {
-            Interlocked.Increment(ref _chapters);
+            Interlocked.Increment(ref job.Chapters);
         }
 
-        // Обновлять уведомление чаще раза в секунду бессмысленно, а Android начинает такие обновления пропускать
-        if (DateTime.UtcNow - _lastNotificationUpdate > TimeSpan.FromSeconds(1))
+        lock (_sync)
         {
-            _lastNotificationUpdate = DateTime.UtcNow;
-            var prefix = Total > 1 ? $"[{Current}/{Total}] " : string.Empty;
-            platform.UpdateBackgroundWork(prefix + Status);
+            // Под _sync и с повторной проверкой: после Cancel хвост задания не перепишет текст в шторке.
+            // Обновлять уведомление чаще раза в секунду бессмысленно, а Android начинает такие обновления пропускать
+            if (!job.Cancelled && DateTime.UtcNow - _lastNotificationUpdate > TimeSpan.FromSeconds(1))
+            {
+                _lastNotificationUpdate = DateTime.UtcNow;
+                var total = job.Request.Urls.Count;
+                var prefix = total > 1 ? $"[{job.Current}/{total}] " : string.Empty;
+                platform.UpdateBackgroundWork(prefix + job.Status);
+            }
         }
 
         NotifyChanged();
     }
 
-    private void AppendLog(string line)
+    private static void AppendLog(Job job, string line)
     {
-        lock (_log)
+        lock (job.Log)
         {
-            _log.Add($"{DateTime.Now:HH:mm:ss} {line}");
-            if (_log.Count > MaxLogLines)
+            job.Log.Add($"{DateTime.Now:HH:mm:ss} {line}");
+            if (job.Log.Count > MaxLogLines)
             {
-                _log.RemoveRange(0, _log.Count - MaxLogLines);
+                job.Log.RemoveRange(0, job.Log.Count - MaxLogLines);
             }
+        }
+    }
+
+    private static IReadOnlyList<T> Copy<T>(List<T> list)
+    {
+        lock (list)
+        {
+            return list.ToList();
         }
     }
 
@@ -554,4 +664,34 @@ public sealed class DownloadManager(
     }
 
     private static string NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>
+    /// Одно задание (нажатие «Скачать»): запрос, отмена и всё, что видит интерфейс. Фоновая часть пишет
+    /// только сюда, поэтому «хвост» отменённого задания не может испортить журнал, файлы или карточку следующего.
+    /// </summary>
+    private sealed class Job(DownloadRequest request)
+    {
+        public DownloadRequest Request { get; } = request;
+
+        /// <summary>Ядро токен не принимает — BookPipeline по нему закрывает HttpClient; хранилище обрывает копирование.</summary>
+        public CancellationTokenSource Cts { get; } = new();
+
+        /// <summary>Задание отменено. Ставится только под DownloadManager._sync и раньше Cts.Cancel().</summary>
+        public volatile bool Cancelled;
+
+        /// <summary>Задание держит foreground-сервис (снимается в Cancel или Finish). Только под _sync.</summary>
+        public bool HoldsService;
+
+        public volatile string Status = "Подготовка…";
+        public volatile BookPreview Preview;
+        public volatile int Current;
+
+        /// <summary>Счётчик глав текущей книги (через Interlocked).</summary>
+        public int Chapters;
+
+        // Пишутся из фонового потока, читаются из UI — только под lock на сам список
+        public readonly List<string> Log = [];
+        public readonly List<SavedFile> Saved = [];
+        public readonly List<string> Errors = [];
+    }
 }

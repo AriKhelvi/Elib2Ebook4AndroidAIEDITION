@@ -24,6 +24,13 @@ GetterResolver.Configure(dlls);
 Console.WriteLine($"Сборок сайтов: {dlls.Count}, геттеров: {GetterResolver.GetterTypes.Count}");
 Check(GetterResolver.GetterTypes.Count >= dlls.Count, "каждая сборка сайта даёт хотя бы один геттер");
 
+// Список сайтов без карточки до скачивания задан именами классов — сверяем, что они есть в ядре
+var getterNames = GetterResolver.GetterTypes.Select(t => t.FullName).ToHashSet();
+foreach (var name in BookPipeline.NoPreviewGetters)
+{
+    Check(getterNames.Contains(name), $"без превью: {name}");
+}
+
 // Вкладка «Сайты»: README с GitHub, сверенный с доменами геттеров
 var sites = SupportedSites.Sites;
 var inReadme = sites.Count(s => s.InReadme);
