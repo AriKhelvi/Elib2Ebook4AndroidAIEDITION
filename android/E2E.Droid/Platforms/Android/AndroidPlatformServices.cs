@@ -38,13 +38,117 @@ public sealed class AndroidPlatformServices : IPlatformServices
 
     public bool SupportsDynamicColor => DynamicColors.IsSupported;
 
+    public bool IsBackgroundWorkRunning => DownloadService.IsRunning;
+
+    public bool IsIgnoringBatteryOptimizations
+    {
+        get
+        {
+            try
+            {
+                return Context.GetSystemService(Android.Content.Context.PowerService) is Android.OS.PowerManager power
+                       && power.IsIgnoringBatteryOptimizations(Context.PackageName);
+            }
+            catch
+            {
+                return true; // не узнать — не пристаём с вопросом
+            }
+        }
+    }
+
+    public async Task<bool> RequestIgnoreBatteryOptimizationsAsync()
+    {
+        if (IsIgnoringBatteryOptimizations)
+        {
+            return true;
+        }
+
+        // Прямой вопрос про это приложение (нужно разрешение REQUEST_IGNORE_BATTERY_OPTIMIZATIONS в манифесте)
+        var ask = new Android.Content.Intent(Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations,
+            Android.Net.Uri.Parse("package:" + Context.PackageName));
+        try
+        {
+            await MainThread.InvokeOnMainThreadAsync(() => ActivityResults.StartAsync(ask));
+        }
+        catch (Exception)
+        {
+            // Диалога нет (урезанная прошивка) — открываем список в настройках батареи, дальше пользователь сам
+            try
+            {
+                var list = new Android.Content.Intent(Android.Provider.Settings.ActionIgnoreBatteryOptimizationSettings);
+                list.AddFlags(Android.Content.ActivityFlags.NewTask);
+                Context.StartActivity(list);
+            }
+            catch
+            {
+                // и этого экрана нет — ничего не поделать
+            }
+        }
+
+        return IsIgnoringBatteryOptimizations;
+    }
+
+    public IReadOnlyList<KeyValuePair<string, string>> DescribeDevice()
+    {
+        var result = new List<KeyValuePair<string, string>>();
+
+        void Add(string key, Func<string> value)
+        {
+            try
+            {
+                result.Add(new(key, value() ?? "—"));
+            }
+            catch (Exception ex)
+            {
+                result.Add(new(key, $"не узнать: {ex.GetType().Name}: {ex.Message}"));
+            }
+        }
+
+        Add("Android", () => $"{Android.OS.Build.VERSION.Release} (API {(int)Android.OS.Build.VERSION.SdkInt}), " +
+                             $"патч безопасности {Android.OS.Build.VERSION.SecurityPatch}");
+        Add("Устройство", () => $"{Android.OS.Build.Manufacturer} {Android.OS.Build.Model} " +
+                                $"({Android.OS.Build.Brand}/{Android.OS.Build.Device}/{Android.OS.Build.Product})");
+        Add("Архитектуры", () => string.Join(", ", Android.OS.Build.SupportedAbis ?? []));
+        Add("Сборка системы", () => Android.OS.Build.Fingerprint);
+        Add("WebView", () => OperatingSystem.IsAndroidVersionAtLeast(26)
+            ? Android.Webkit.WebView.CurrentWebViewPackage is { } webView ? $"{webView.PackageName} {webView.VersionName}" : "не найден"
+            : "на Android 7 версию не узнать");
+        Add("Приложение", () => $"{AppVersion} (сборка {BuildNumber}), пакет {Context.PackageName}");
+        Add("Уведомления", () => NotificationManagerCompat.From(Context).AreNotificationsEnabled() ? "разрешены" : "ЗАПРЕЩЕНЫ");
+        Add("Ограничение батареи", () => Context.GetSystemService(Android.Content.Context.PowerService) is Android.OS.PowerManager power
+            ? power.IsIgnoringBatteryOptimizations(Context.PackageName) ? "приложение не ограничивается" : "приложение ограничивается (может мешать работе в фоне)"
+            : "—");
+        Add("Фоновый сервис", DownloadService.DescribeState);
+        Add("Свободно: личная папка", () => FreeSpace(FileSystem.AppDataDirectory));
+        Add("Свободно: кэш", () => FreeSpace(FileSystem.CacheDirectory));
+        Add("Память", () =>
+        {
+            var info = new Android.App.ActivityManager.MemoryInfo();
+            (Context.GetSystemService(Android.Content.Context.ActivityService) as Android.App.ActivityManager)?.GetMemoryInfo(info);
+            return $"доступно {info.AvailMem / 1048576} из {info.TotalMem / 1048576} МБ, мало памяти: {(info.LowMemory ? "да" : "нет")}";
+        });
+        Add("Экран", () =>
+        {
+            var metrics = Context.Resources!.DisplayMetrics!;
+            return $"{metrics.WidthPixels}×{metrics.HeightPixels}, плотность {metrics.Density:0.##}";
+        });
+
+        return result;
+
+        static string FreeSpace(string path)
+        {
+            var stat = new Android.OS.StatFs(path);
+            return $"{stat.AvailableBytes / 1048576} из {stat.TotalBytes / 1048576} МБ";
+        }
+    }
+
     public IReadOnlyDictionary<string, string> GetDynamicColorScheme(bool dark) => DynamicColors.GetScheme(Context, dark);
 
     /// <summary>
     /// Обложка уменьшается средствами Android: сначала читаются только размеры, затем картинка декодируется
     /// с прореживанием (inSampleSize) и масштабируется до 240 px по высоте — так не тратится память на огромные обложки.
     /// </summary>
-    public string SaveThumbnail(byte[] image, string name)
+    public string SaveThumbnail(byte[] image, string path)
     {
         const int targetHeight = 240;
         try
@@ -74,15 +178,33 @@ public sealed class AndroidPlatformServices : IPlatformServices
                 ? Android.Graphics.Bitmap.CreateScaledBitmap(decoded, Math.Max(1, (int)(decoded.Width * scale)), targetHeight, true)
                 : null;
 
-            var dir = Path.Combine(FileSystem.AppDataDirectory, "covers");
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, name + ".jpg");
-            using var stream = File.Create(path);
-            (scaled ?? decoded).Compress(Android.Graphics.Bitmap.CompressFormat.Jpeg!, 82, stream);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            bool written;
+            using (var stream = File.Create(path))
+            {
+                written = (scaled ?? decoded).Compress(Android.Graphics.Bitmap.CompressFormat.Jpeg!, 82, stream);
+            }
+
+            if (!written)
+            {
+                File.Delete(path);
+                return null;
+            }
+
             return path;
         }
         catch
         {
+            // Недописанный файл не оставляем: интерфейс показал бы битую картинку
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+                // нет файла — тем лучше
+            }
+
             return null; // обложка — не главное, запись о книге сохранится и без неё
         }
     }

@@ -15,6 +15,14 @@ using Elib2Ebook.DomainServices.Configs;
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 Console.OutputEncoding = Encoding.UTF8;
 
+// Проверка сертификатов — как в приложении (MauiProgram): ядро само принимает любой
+BookGetterConfig.ServerCertificateValidator = CertificatePolicy.Validate;
+var roots = CertificatePolicy.Roots;
+Check(roots.Count >= 20, $"встроенных корней: {roots.Count}");
+Check(roots.All(r => r.NotAfter > DateTime.Now.AddYears(1)), "встроенные корни действуют ещё минимум год");
+var bridges = CertificatePolicy.Bridges;
+Check(bridges.Count >= 3 && bridges.All(b => b.NotAfter > DateTime.Now.AddYears(1)), $"мостовых сертификатов Let's Encrypt: {bridges.Count}, действуют ещё минимум год");
+
 // Самопроверка разбора ссылок, которые прилетают через «Поделиться» и из поля ввода
 Check(SharedLinkInbox.ExtractUrls("Мастер Ветров — Author.Today\nhttps://author.today/work/212721").SequenceEqual(["https://author.today/work/212721"]), "ExtractUrls: заголовок + ссылка");
 Check(Formatting.ParseUrls("author.today/work/1\nhttps://litnet.com/ru/book/x-b1, мусор").Count == 2, "ParseUrls: без схемы и с запятой");
@@ -23,6 +31,13 @@ var dlls = Directory.GetFiles(AppContext.BaseDirectory, "Elib2Ebook.ExternalServ
 GetterResolver.Configure(dlls);
 Console.WriteLine($"Сборок сайтов: {dlls.Count}, геттеров: {GetterResolver.GetterTypes.Count}");
 Check(GetterResolver.GetterTypes.Count >= dlls.Count, "каждая сборка сайта даёт хотя бы один геттер");
+
+// Список сайтов без карточки до скачивания задан именами классов — сверяем, что они есть в ядре
+var getterNames = GetterResolver.GetterTypes.Select(t => t.FullName).ToHashSet();
+foreach (var name in BookPipeline.NoPreviewGetters)
+{
+    Check(getterNames.Contains(name), $"без превью: {name}");
+}
 
 // Вкладка «Сайты»: README с GitHub, сверенный с доменами геттеров
 var sites = SupportedSites.Sites;
@@ -65,7 +80,7 @@ var logger = new CallbackLogger(line =>
 var sw = System.Diagnostics.Stopwatch.StartNew();
 var result = await BookPipeline.RunAsync(options, logger, p => preview = p, CancellationToken.None);
 Console.WriteLine($"Готово за {sw.Elapsed.TotalSeconds:0.0} с, строк лога: {lines}");
-Console.WriteLine($"Превью: «{preview?.Title}» / {preview?.Author}, обложка: {(preview?.CoverDataUrl == null ? "нет" : preview.CoverDataUrl.Length + " симв.")}");
+Console.WriteLine($"Превью: «{preview?.Title}» / {preview?.Author}, обложка: {(preview?.Cover == null ? "нет" : $"{preview.Cover.Length} байт, {preview.CoverMime}")}");
 Console.WriteLine($"Книга: «{result.Title}» / {result.Author}");
 var bookInfo = result.Info;
 Console.WriteLine($"Для «Книг»: глав {bookInfo.Chapters}, последняя «{bookInfo.LastChapter}», серия «{bookInfo.SeriaName}» #{bookInfo.SeriaNumber} ({bookInfo.SeriaUrl}), " +

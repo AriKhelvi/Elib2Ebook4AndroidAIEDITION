@@ -73,6 +73,9 @@
         <!-- Тримминг (уменьшение размера) — только для сборок, помеченных как trimmable (фреймворк, MAUI).
              Код ядра не триммится: он рассчитан на рефлексию. -->
         <TrimMode>partial</TrimMode>
+        <!-- Тексты исключений .NET оставляем в APK: без этого Release-сборка показывает в ошибках и журнале служебные
+             ключи вместо сообщений («net_http_request_timedout, 20»). Найдено журналом диагностики; APK чуть больше. -->
+        <UseSystemResourceKeys>false</UseSystemResourceKeys>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -155,6 +158,12 @@
     <!-- README ядра вшивается в приложение: из раздела «Поддерживаемые сайты» строится вкладка «Сайты» -->
     <ItemGroup>
         <EmbeddedResource Include="$(E2ECoreDir)README.md" LogicalName="Elib2Ebook.README.md" Visible="false" />
+    </ItemGroup>
+
+    <!-- Публичные корни для проверки сертификатов на старых устройствах (см. Services/CertificatePolicy.cs) -->
+    <ItemGroup>
+        <EmbeddedResource Include="Resources\Certificates\trusted-roots.pem" LogicalName="E2E.Droid.trusted-roots.pem" />
+        <EmbeddedResource Include="Resources\Certificates\trusted-bridges.pem" LogicalName="E2E.Droid.trusted-bridges.pem" />
     </ItemGroup>
 
     <!-- Загрузчики сайтов находятся рефлексией, прямых ссылок на них в коде нет — без этих строк тримминг

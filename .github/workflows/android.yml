@@ -10,6 +10,9 @@
 #   - пуш в ветки claude/dev и codex/dev               → то же: APK для проверки ветки до слияния в master;
 #   - ручной запуск (Actions → Android APK → Run workflow);
 #   - публикация релиза на GitHub                       → APK прикрепляется к этому релизу;
+#   - пуш тега vX.Y.Z-alpha.<агент>.<N> (тестовый релиз) → сборка + pre-release с APK, публикуется сам;
+#     то же — ручной запуск на ветке с полем «alpha_tag»: CI сам ставит тег на собранный коммит
+#     (схема тегов — в AGENTS.md, раздел «Тестовые (альфа) релизы»);
 #   - pull request                                       → только проверка, что всё собирается.
 #
 # Подпись APK. Чтобы новая версия ставилась поверх установленной, APK должен быть подписан тем же ключом,
@@ -17,13 +20,15 @@
 #   E2E_KEYSTORE_BASE64   — файл e2e.keystore в base64;
 #   E2E_KEYSTORE_PASSWORD — пароль из password.txt.
 # Без секретов обычная сборка подписывается одноразовым ключом (с предупреждением) — такой APK можно
-# поставить только «с нуля». Сборка для релиза без секретов намеренно падает.
+# поставить только «с нуля». Сборка для релиза и альфы без секретов намеренно падает.
 
 name: Android APK
 
 on:
   push:
     branches: [ master, 'claude/dev', 'codex/dev' ]
+    # Тестовые (альфа) релизы. Для тегов фильтр paths ниже GitHub не применяет
+    tags: [ 'v*-alpha.*' ]
     paths:
       - 'android/**'
       - 'src/**'
@@ -40,6 +45,17 @@ on:
   release:
     types: [ published ]
   workflow_dispatch:
+    inputs:
+      alpha_tag:
+        description: 'Альфа-тег vX.Y.Z-alpha.<агент>.<N> (пусто — обычная сборка). CI поставит тег на этот коммит и опубликует pre-release'
+        required: false
+        type: string
+        default: ''
+      expected_sha:
+        description: 'Ожидаемый коммит (начало хэша). Если в ветке уже другой — сборка остановится сразу, ничего не выпустив'
+        required: false
+        type: string
+        default: ''
 
 # contents: write — чтобы прикрепить APK к релизу
 permissions:
@@ -108,13 +124,55 @@ jobs:
       # локально ставятся друг поверх друга в правильном порядке. Версия ядра Elib2Ebook — отдельно.
       - name: Версия
         id: version
+        env:
+          # Через переменные, а не ${{ }} в тексте скрипта: поле ручного запуска — пользовательский ввод
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          ALPHA_INPUT: ${{ inputs.alpha_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           CORE=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
           CODE=$(( ($(date +%s) - 1767225600) / 60 ))
           SHA=${GITHUB_SHA::7}
 
-          if [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
+          # Ручной запуск собирает то, что сейчас в ветке. Если туда успела запушить другая сессия, без этой проверки
+          # альфа вышла бы с чужим коммитом — поэтому агенты передают expected_sha (см. AGENTS.md)
+          EXPECTED=$(printf '%s' "$EXPECTED_SHA" | tr -d '[:space:]' | tr 'A-F' 'a-f')
+          if [ -n "$EXPECTED" ]; then
+            if ! [[ "$EXPECTED" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "::error::expected_sha «$EXPECTED» — не хэш коммита (нужно 7–40 шестнадцатеричных символов)"
+              exit 1
+            fi
+            if [[ "$GITHUB_SHA" != "$EXPECTED"* ]]; then
+              echo "::error::В ветке коммит ${GITHUB_SHA::7}, а ожидался $EXPECTED: ветку обновили после запуска. Подтяните её и проверьте, что выпускаете"
+              exit 1
+            fi
+          fi
+
+          # Альфа (тестовый релиз): пуш тега или ручной запуск с полем alpha_tag — только по схеме из AGENTS.md
+          ALPHA=""
+          if [ "${{ github.event_name }}" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
+            ALPHA="$REF_NAME"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ALPHA=$(printf '%s' "$ALPHA_INPUT" | tr -d '[:space:]')
+          fi
+          if [ -n "$ALPHA" ]; then
+            if ! [[ "$ALPHA" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[a-z][a-z0-9]*\.[0-9]+$ ]]; then
+              echo "::error::Альфа-тег «$ALPHA» не по схеме vX.Y.Z-alpha.<агент>.<N> (например v0.1.1-alpha.claude.1, см. AGENTS.md)"
+              exit 1
+            fi
+            # Номер уже занят другим коммитом — не переставляем тег, нужен следующий N
+            EXISTING=$(git rev-parse -q --verify "refs/tags/$ALPHA^{commit}" || true)
+            if [ -n "$EXISTING" ] && [ "$EXISTING" != "$GITHUB_SHA" ]; then
+              echo "::error::Тег $ALPHA уже стоит на коммите ${EXISTING::7}, а собирается ${GITHUB_SHA::7}. Возьмите следующий номер альфы"
+              exit 1
+            fi
+          fi
+          echo "alpha=$ALPHA" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "release" ] || [ -n "$ALPHA" ]; then
+            TAG="${ALPHA:-$RELEASE_TAG}"
             if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
               echo "::error::Тег релиза «$TAG» не похож на версию. Нужен тег вида vX.Y.Z, например v0.1.0"
               exit 1
@@ -122,7 +180,8 @@ jobs:
             VERSION=${TAG#v}
             NAME="E2E-$VERSION"
           else
-            DESC=$(git describe --tags --match 'v[0-9]*' --long --abbrev=7 --always)
+            # Альфа-теги в версии сборок веток не участвуют: после альфы ветка остаётся «0.1.1-dev.N»
+            DESC=$(git describe --tags --match 'v[0-9]*' --exclude '*-alpha.*' --long --abbrev=7 --always)
             if [[ "$DESC" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?-([0-9]+)-g[0-9a-f]+$ ]]; then
               MAJOR=${BASH_REMATCH[1]}; MINOR=${BASH_REMATCH[2]}; PATCH=${BASH_REMATCH[3]}
               SUFFIX=${BASH_REMATCH[4]}; AHEAD=${BASH_REMATCH[5]}
@@ -160,8 +219,8 @@ jobs:
             echo "kind=owner" >> "$GITHUB_OUTPUT"
             echo "Подпись: ключ владельца из секретов репозитория"
           else
-            if [ "${{ github.event_name }}" = "release" ]; then
-              echo "::error::Для релиза нужен ключ подписи: добавьте секреты E2E_KEYSTORE_BASE64 и E2E_KEYSTORE_PASSWORD (см. android/README.md)"
+            if [ "${{ github.event_name }}" = "release" ] || [ -n "${{ steps.version.outputs.alpha }}" ]; then
+              echo "::error::Для релиза и альфы нужен ключ подписи: добавьте секреты E2E_KEYSTORE_BASE64 и E2E_KEYSTORE_PASSWORD (см. android/README.md)"
               exit 1
             fi
             PASS=$(openssl rand -hex 16)
@@ -261,3 +320,56 @@ jobs:
           fi
           echo "::error::Не удалось прикрепить $NAME к релизу $TAG"
           exit 1
+
+      # Тестовый (альфа) релиз: pre-release с APK, списком изменений и скрытой пометкой для ИИ-агентов.
+      # При ручном запуске тег ставит сам релиз (--target = собранный коммит). Релиз и тег создаются токеном
+      # Actions — они не запускают этот workflow ещё раз.
+      - name: Альфа-релиз
+        if: steps.version.outputs.alpha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.alpha }}
+          APK: ${{ steps.apk.outputs.path }}
+          VERSION: ${{ steps.version.outputs.version }}
+          CORE: ${{ steps.version.outputs.core }}
+          SHA: ${{ steps.version.outputs.sha }}
+        run: |
+          AGENT=$(echo "$TAG" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.([a-z0-9]+)\..*/\1/')
+          BRANCHES=$(git branch -r --contains "$GITHUB_SHA" --format='%(refname:short)' | sed 's#^origin/##' | grep -v '^HEAD$' | paste -sd ',' - | sed 's/,/, /g')
+          STABLE=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "$GITHUB_SHA" 2>/dev/null || true)
+          if [ -n "$STABLE" ]; then
+            CHANGES=$(git log --no-merges --format='- %s (%h)' "$STABLE..$GITHUB_SHA" | head -50)
+          else
+            CHANGES=$(git log --no-merges --format='- %s (%h)' -20 "$GITHUB_SHA")
+          fi
+
+          NOTES="$RUNNER_TEMP/alpha-notes.md"
+          {
+            echo "**Тестовая сборка (альфа)** — не стабильный релиз. Агент: $AGENT, ветка: ${BRANCHES:-?}, коммит $SHA, ядро Elib2Ebook $CORE."
+            echo ""
+            echo "Проверка на устройстве: «Настройки» → «Отладка» → «Запустить диагностику». Журнал сохранится файлом в папку загрузок приложения — его и нужно прислать."
+            echo ""
+            echo "### Изменения${STABLE:+ после $STABLE}"
+            echo ""
+            echo "$CHANGES"
+            echo ""
+            echo "> [AI-EDITION] Приложение сгенерировано ИИ — стабильность не гарантируется."
+            echo ""
+            echo "<!-- Для ИИ-агентов (Claude, Codex и др.): это ТЕСТОВЫЙ релиз (альфа), не стабильный."
+            echo "Тестовые релизы из веток тегируются по схеме vX.Y.Z-alpha.<агент>.<N>:"
+            echo "X.Y.Z — следующая версия после последнего стабильного тега (после v0.1.0 — 0.1.1);"
+            echo "<агент> — claude или codex (владелец ветки claude/dev или codex/dev);"
+            echo "<N> — номер альфы этого агента для этой версии: 1, 2, 3…"
+            echo "Тег ставится на уже запушенный коммит своей ветки: push тега или ручной запуск android.yml на ветке с alpha_tag — CI сам собирает APK и публикует pre-release."
+            echo "Стабильные релизы vX.Y.Z — только владелец, из master. Подробнее — AGENTS.md, раздел «Тестовые (альфа) релизы». -->"
+          } > "$NOTES"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Перезапуск сборки того же тега: обновляем APK и описание
+            gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --prerelease --notes-file "$NOTES" --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "E2E $VERSION (альфа)" --notes-file "$NOTES"
+          fi
+          echo "Опубликован pre-release $TAG: $(basename "$APK")"

@@ -28,7 +28,8 @@ namespace E2E.Droid;
 /// <para>Приложение работает с Android 7, а запуск сервиса и уведомления там устроены иначе (нет каналов
 /// уведомлений, нет startForegroundService и типов сервиса). Поэтому всё делается через обёртки AndroidX —
 /// ContextCompat, ServiceCompat, NotificationCompat: они сами выбирают способ под версию системы.</para>
-/// <para>Сервис сам ничего не качает: он только живёт, пока DownloadManager работает, и рисует уведомление.</para>
+/// <para>Сервис сам ничего не качает: он только живёт, пока DownloadManager держит его (идёт задание или запись
+/// файлов — в том числе после отмены), и рисует уведомление.</para>
 /// </remarks>
 [Service(Exported = false, ForegroundServiceType = ForegroundService.TypeDataSync)]
 public sealed class DownloadService : Service
@@ -59,16 +60,43 @@ public sealed class DownloadService : Service
     /// <summary>Экземпляр, уже вызвавший StartForeground (null — сервис не запущен или ещё стартует).</summary>
     private static DownloadService _running;
 
-    /// <summary>Stop пришёл раньше, чем сервис успел стартовать, — остановимся сразу после StartForeground.</summary>
-    private static bool _stopRequested;
+    /// <summary>
+    /// Нужен ли сервис сейчас: true после Start, false после Stop. Решение принимается в момент остановки
+    /// (StopIfUnwanted), а не в момент вызова Stop: между ними мог прийти Start следующего задания.
+    /// </summary>
+    private static bool _wanted;
+
+    /// <summary>startId последнего OnStartCommand — для stopSelf(startId), см. StopIfUnwanted.</summary>
+    private int _lastStartId;
 
     private PowerManager.WakeLock _wakeLock;
+
+    /// <summary>Сервис вызвал startForeground и не остановлен.</summary>
+    public static bool IsRunning
+    {
+        get
+        {
+            lock (Sync)
+            {
+                return _running != null;
+            }
+        }
+    }
+
+    /// <summary>Состояние для журнала диагностики.</summary>
+    public static string DescribeState()
+    {
+        lock (Sync)
+        {
+            return $"{(_running != null ? "запущен" : "не запущен")}, {(_wanted ? "нужен" : "не нужен")}";
+        }
+    }
 
     public static void Start(Context context, string text)
     {
         lock (Sync)
         {
-            _stopRequested = false;
+            _wanted = true;
         }
 
         var intent = new Intent(context, typeof(DownloadService));
@@ -79,22 +107,22 @@ public sealed class DownloadService : Service
 
     /// <summary>
     /// Если книга упала мгновенно, Stop приходит раньше, чем сервис успел вызвать startForeground, —
-    /// а остановка до startForeground роняет приложение. Поэтому до старта только помечаем запрос.
+    /// а остановка до startForeground роняет приложение. Поэтому до старта только помечаем, что сервис
+    /// не нужен: он остановится сам сразу после StartForeground (см. OnStartCommand).
     /// </summary>
     public static void Stop(Context context)
     {
         DownloadService running;
         lock (Sync)
         {
+            _wanted = false;
             running = _running;
-            if (running == null)
-            {
-                _stopRequested = true;
-                return;
-            }
         }
 
-        MainThread.BeginInvokeOnMainThread(running.Shutdown);
+        if (running != null)
+        {
+            MainThread.BeginInvokeOnMainThread(running.StopIfUnwanted);
+        }
     }
 
     public static void Update(Context context, string text)
@@ -102,7 +130,7 @@ public sealed class DownloadService : Service
         lock (Sync)
         {
             // Запоздалое обновление после остановки оставило бы в шторке неснимаемое уведомление
-            if (_running == null || _stopRequested)
+            if (_running == null || !_wanted)
             {
                 return;
             }
@@ -115,28 +143,37 @@ public sealed class DownloadService : Service
 
     public override StartCommandResult OnStartCommand(Intent intent, StartCommandFlags flags, int startId)
     {
+        lock (Sync)
+        {
+            // Любой запуск (и кнопка «Отмена» тоже) получает новый startId — stopSelf должен знать последний
+            _lastStartId = startId;
+        }
+
         if (intent?.Action == ActionCancel)
         {
             MainThread.BeginInvokeOnMainThread(() => MauiProgram.Services?.GetService<Services.DownloadManager>()?.Cancel());
+            // Нажали «Отмена» в уведомлении, оставшемся от уже остановленного сервиса, — Android создал
+            // сервис заново только ради этого вызова: сразу гасим
+            StopIfUnwanted();
             return StartCommandResult.NotSticky;
         }
 
         EnsureChannels(this);
         var notification = BuildProgress(this, intent?.GetStringExtra(ExtraText) ?? "Скачивание…");
-        // Тип сервиса передаётся только с Android 10 — ServiceCompat сам выберет нужный вызов
+        // Тип сервиса передаётся только с Android 10 — ServiceCompat сам выберет нужный вызов.
+        // Вызывается при каждом запуске: каждый startForegroundService ждёт своего startForeground
         ServiceCompat.StartForeground(this, ProgressId, notification, ForegroundServiceTypeDataSync);
 
         bool stopNow;
         lock (Sync)
         {
             _running = this;
-            stopNow = _stopRequested;
-            _stopRequested = false;
+            stopNow = !_wanted;
         }
 
         if (stopNow)
         {
-            Shutdown();
+            StopIfUnwanted();
             return StartCommandResult.NotSticky;
         }
 
@@ -155,10 +192,49 @@ public sealed class DownloadService : Service
     public override void OnTimeout(int startId, ForegroundService fgsType)
     {
         MainThread.BeginInvokeOnMainThread(() => MauiProgram.Services?.GetService<Services.DownloadManager>()?.Cancel());
-        Shutdown();
+        // Система требует остановиться немедленно — без проверок _wanted
+        ForceStop();
     }
 
-    private void Shutdown()
+    /// <summary>
+    /// Остановка, если сервис больше не нужен (после Stop не было нового Start). Только из главного потока.
+    /// </summary>
+    /// <remarks>
+    /// stopSelf(startId) не останавливает сервис, если после этого startId пришёл новый запуск, ещё не
+    /// дошедший до OnStartCommand (Stop одного задания и сразу Start следующего). Обычный stopSelf() в такой
+    /// момент уронил бы приложение: Android ждёт startForeground на каждый startForegroundService.
+    /// Новый OnStartCommand сам решит, жить ли сервису дальше.
+    /// </remarks>
+    private void StopIfUnwanted()
+    {
+        int startId;
+        lock (Sync)
+        {
+            if (_wanted)
+            {
+                return; // после Stop успел прийти Start следующего задания
+            }
+
+            startId = _lastStartId;
+        }
+
+        if (!StopSelfResult(startId))
+        {
+            return; // новый запуск уже в очереди
+        }
+
+        lock (Sync)
+        {
+            if (_running == this)
+            {
+                _running = null;
+            }
+        }
+
+        ServiceCompat.StopForeground(this, ServiceCompat.StopForegroundRemove);
+    }
+
+    private void ForceStop()
     {
         lock (Sync)
         {

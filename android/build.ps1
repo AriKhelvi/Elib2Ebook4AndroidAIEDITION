@@ -78,7 +78,8 @@ $coreVersion = ($props.Project.PropertyGroup | Where-Object { $_.Version } | Sel
 #   тегов нет                   → 0.0.0-dev.<число коммитов>
 #   есть незакоммиченные правки → в конце добавляется «local»
 # --always: без тегов git печатает просто хэш, а не ошибку (ошибка в stderr роняет скрипт в PowerShell 5.1)
-$describe = (git -C $repo describe --tags --match 'v[0-9]*' --long --abbrev=7 --always).Trim()
+# Альфа-теги (vX.Y.Z-alpha.<агент>.<N>) в версии локальных сборок не участвуют — как в CI (android.yml)
+$describe = (git -C $repo describe --tags --match 'v[0-9]*' --exclude '*-alpha.*' --long --abbrev=7 --always).Trim()
 if ($describe -match '^v(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?-(\d+)-g[0-9a-f]+$') {
     $ahead = [int]$Matches[5]
     $suffix = $Matches[4]

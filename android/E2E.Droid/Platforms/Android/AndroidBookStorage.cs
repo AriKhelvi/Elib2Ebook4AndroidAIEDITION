@@ -138,7 +138,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
                 }
                 throw;
             }
-        });
+        }, cancellationToken);
     }
 
     /// <summary>

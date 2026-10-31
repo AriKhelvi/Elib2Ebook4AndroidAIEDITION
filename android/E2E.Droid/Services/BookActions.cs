@@ -30,9 +30,7 @@ public sealed class BookActions(
         var credential = await credentials.GetAsync(CredentialStore.NormalizeHost(record.Url));
         var formats = record.Formats.Where(FormatSupport.All.Contains).ToList();
 
-        // Главный экран покажет, что качаем
-        form.Urls = record.Url;
-        await downloads.StartAsync(new DownloadRequest
+        var started = await downloads.StartAsync(new DownloadRequest
         {
             Urls = [record.Url],
             Formats = formats.Count > 0 ? formats : [FormatSupport.ForUrl(record.Url, settings.TextFormat, settings.AutoFormat)],
@@ -41,7 +39,14 @@ public sealed class BookActions(
             Password = credential?.Password
         });
 
-        return downloads.IsRunning;
+        // Главный экран покажет, что качаем. Только если запустили именно мы: при двойном нажатии
+        // второй вызов не должен подменять ссылку в поле
+        if (started)
+        {
+            form.Urls = record.Url;
+        }
+
+        return started;
     }
 
     /// <summary>«Поделиться» всеми файлами книги, которые ещё на месте.</summary>
@@ -57,14 +62,15 @@ public sealed class BookActions(
         storage.Share(files);
     }
 
-    /// <summary>Миниатюра обложки как data:-URL (встроенный браузер не читает файлы из личной папки приложения).</summary>
-    public static string CoverDataUrl(BookRecord record)
+    /// <summary>
+    /// Адрес миниатюры обложки для &lt;img src&gt; (/_covers/…): файл из личной папки приложения встроенному
+    /// браузеру отдаёт AppBlazorWebView — без чтения файла в base64. null — миниатюры нет.
+    /// </summary>
+    public static string CoverUrl(BookRecord record)
     {
         try
         {
-            return !string.IsNullOrEmpty(record.CoverPath) && File.Exists(record.CoverPath)
-                ? "data:image/jpeg;base64," + Convert.ToBase64String(File.ReadAllBytes(record.CoverPath))
-                : null;
+            return CoverThumbnails.UrlFor(record.CoverPath);
         }
         catch
         {
