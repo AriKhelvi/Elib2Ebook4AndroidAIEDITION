@@ -81,6 +81,9 @@ public sealed class DownloadManager(
     /// <summary>Журнал ограничен, чтобы книга на тысячу глав не съела память.</summary>
     private const int MaxLogLines = 3000;
 
+    /// <summary>С «Подробным журналом» строк куда больше (каждое TLS-соединение) — и предел выше.</summary>
+    private const int MaxDebugLogLines = 20000;
+
     /// <summary>
     /// Защищает смену задания, State, Job.Cancelled и счётчик удержаний сервиса — всё, что должно
     /// меняться согласованно между UI-потоком (StartAsync, Cancel) и фоновым (RunAsync).
@@ -183,7 +186,7 @@ public sealed class DownloadManager(
             // Android 13+: без разрешения не будет видно прогресса в шторке (сама загрузка всё равно пойдёт)
             await platform.RequestNotificationPermissionAsync();
 
-            var job = new Job(request);
+            var job = new Job(request) { Debug = settings.DebugLog };
             lock (_sync)
             {
                 _job = job;
@@ -237,6 +240,36 @@ public sealed class DownloadManager(
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// Держать foreground-сервис, пока не освободят результат (Dispose), — для долгой работы не из очереди
+    /// (диагностика в Настройках → Отладка). Считается вместе с удержаниями заданий, поэтому не мешает скачиванию.
+    /// </summary>
+    public IDisposable KeepServiceAlive(string text)
+    {
+        lock (_sync)
+        {
+            HoldService(text);
+        }
+
+        return new ServiceHold(this);
+    }
+
+    private sealed class ServiceHold(DownloadManager owner) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                lock (owner._sync)
+                {
+                    owner.ReleaseService();
+                }
+            }
+        }
+    }
+
     /// <summary>Убирает результаты прошлого скачивания с главного экрана.</summary>
     public void Dismiss()
     {
@@ -256,6 +289,23 @@ public sealed class DownloadManager(
     /// <summary>Фоновая часть задания. Что бы ни случилось, заканчивается Finish — «вечного» скачивания не будет.</summary>
     private async Task RunAsync(Job job)
     {
+        // «Подробный журнал»: каждая проверка сертификата — строкой в журнал этого задания
+        Action<string> tlsTrace = line => DebugLine(job, "TLS " + line);
+        if (job.Debug)
+        {
+            CertificatePolicy.Traced += tlsTrace;
+            DebugLine(job, $"E2E {platform.AppVersion} (сборка {platform.BuildNumber}), ядро {BuildInfo.CoreVersion}, коммит {BuildInfo.Commit}");
+            foreach (var (key, value) in platform.DescribeDevice())
+            {
+                DebugLine(job, $"{key}: {value}");
+            }
+
+            foreach (var line in DiagnosticsRunner.DescribeSettings(settings, storage))
+            {
+                DebugLine(job, line);
+            }
+        }
+
         try
         {
             await DownloadAllAsync(job);
@@ -271,6 +321,7 @@ public sealed class DownloadManager(
         }
         finally
         {
+            CertificatePolicy.Traced -= tlsTrace;
             Finish(job);
         }
     }
@@ -303,12 +354,19 @@ public sealed class DownloadManager(
                 Write(job, $"Начинаю генерацию книги {url}");
                 var options = BuildOptions(request, url, workDir);
                 var logger = new CallbackLogger(line => Write(job, line));
+                DebugLine(job, $"Параметры ядра: формат {string.Join(",", options.Format)}, главы {options.Start?.ToString() ?? "-"}..{options.End?.ToString() ?? "-"}" +
+                               $" ({options.StartName ?? "-"}..{options.EndName ?? "-"}), без картинок {options.NoImage}, обложка {options.Cover}, " +
+                               $"доп. файлы {options.Additional} [{string.Join(",", options.AdditionalTypes ?? [])}], таймаут {options.Timeout} с, " +
+                               $"пауза {options.Delay} с, прокси {DiagnosticsRunner.MaskProxy(options.Proxy)}, логин {(options.Login != null ? "задан" : "нет")}");
+                var stage = System.Diagnostics.Stopwatch.StartNew();
 
                 var result = await BookPipeline.RunAsync(options, logger, p =>
                 {
                     preview = p;
                     if (!job.Cancelled)
                     {
+                        DebugLine(job, $"Карточка через {stage.ElapsedMilliseconds} мс: «{p.Title}» / {p.Author}, серия «{p.Seria}», " +
+                                       $"обложка {(p.Cover == null ? "нет" : $"{p.Cover.Length} байт {p.CoverMime}")}");
                         SetPreview(job, p);
                         NotifyChanged();
                     }
@@ -316,6 +374,9 @@ public sealed class DownloadManager(
 
                 // Отменили, пока ядро работало: сохранять уже нечего
                 ct.ThrowIfCancellationRequested();
+                DebugLine(job, $"Ядро закончило за {stage.ElapsedMilliseconds} мс: глав {result.Info.Chapters}, последняя «{result.Info.LastChapter}», " +
+                               $"файлов {result.Files.Count}: {string.Join("; ", result.Files.Select(f => $"{Path.GetRelativePath(result.OutputDir, f)} {new FileInfo(f).Length} байт"))}");
+                stage.Restart();
 
                 Write(job, $"Сохраняю в {storage.DestinationLabel}");
                 await WriteResultAsync(job, async () =>
@@ -342,6 +403,7 @@ public sealed class DownloadManager(
                     FillRecord(record, result.Info);
                     history.Add(record);
                     lock (job.Saved) job.Saved.AddRange(saved);
+                    DebugLine(job, $"Сохранено за {stage.ElapsedMilliseconds} мс: {string.Join("; ", saved.Select(f => $"{f.Folder}/{f.Name} {f.Size} байт {f.Mime} → {f.Uri}"))}");
                     Write(job, $"Готово: {result.Title} ({saved.Count} файл(ов))");
                 });
             }
@@ -625,14 +687,27 @@ public sealed class DownloadManager(
         NotifyChanged();
     }
 
+    /// <summary>Строка «Подробного журнала»: только в журнал (статус и шторку не трогает), только если он включён.</summary>
+    private void DebugLine(Job job, string line)
+    {
+        if (!job.Debug || job.Cancelled)
+        {
+            return;
+        }
+
+        AppendLog(job, "[отладка] " + line);
+        NotifyChanged();
+    }
+
     private static void AppendLog(Job job, string line)
     {
         lock (job.Log)
         {
             job.Log.Add($"{DateTime.Now:HH:mm:ss} {line}");
-            if (job.Log.Count > MaxLogLines)
+            var max = job.Debug ? MaxDebugLogLines : MaxLogLines;
+            if (job.Log.Count > max)
             {
-                job.Log.RemoveRange(0, job.Log.Count - MaxLogLines);
+                job.Log.RemoveRange(0, job.Log.Count - max);
             }
         }
     }
@@ -670,6 +745,7 @@ public sealed class DownloadManager(
     {
         TryDelete(Path.Combine(FileSystem.CacheDirectory, "jobs"));
         TryDelete(CoverThumbnails.PreviewsDir);
+        TryDelete(Path.Combine(FileSystem.CacheDirectory, "diagnostics"));
     }
 
     private static void TryDeleteFile(string path)
@@ -726,6 +802,9 @@ public sealed class DownloadManager(
 
         /// <summary>Задание держит foreground-сервис (снимается в Cancel или Finish). Только под _sync.</summary>
         public bool HoldsService;
+
+        /// <summary>«Подробный журнал» включён на момент запуска (см. AppSettings.DebugLog).</summary>
+        public bool Debug { get; init; }
 
         public volatile string Status = "Подготовка…";
         public volatile BookPreview Preview;

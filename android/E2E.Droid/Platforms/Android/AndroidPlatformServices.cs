@@ -38,6 +38,62 @@ public sealed class AndroidPlatformServices : IPlatformServices
 
     public bool SupportsDynamicColor => DynamicColors.IsSupported;
 
+    public bool IsBackgroundWorkRunning => DownloadService.IsRunning;
+
+    public IReadOnlyList<KeyValuePair<string, string>> DescribeDevice()
+    {
+        var result = new List<KeyValuePair<string, string>>();
+
+        void Add(string key, Func<string> value)
+        {
+            try
+            {
+                result.Add(new(key, value() ?? "—"));
+            }
+            catch (Exception ex)
+            {
+                result.Add(new(key, $"не узнать: {ex.GetType().Name}: {ex.Message}"));
+            }
+        }
+
+        Add("Android", () => $"{Android.OS.Build.VERSION.Release} (API {(int)Android.OS.Build.VERSION.SdkInt}), " +
+                             $"патч безопасности {Android.OS.Build.VERSION.SecurityPatch}");
+        Add("Устройство", () => $"{Android.OS.Build.Manufacturer} {Android.OS.Build.Model} " +
+                                $"({Android.OS.Build.Brand}/{Android.OS.Build.Device}/{Android.OS.Build.Product})");
+        Add("Архитектуры", () => string.Join(", ", Android.OS.Build.SupportedAbis ?? []));
+        Add("Сборка системы", () => Android.OS.Build.Fingerprint);
+        Add("WebView", () => OperatingSystem.IsAndroidVersionAtLeast(26)
+            ? Android.Webkit.WebView.CurrentWebViewPackage is { } webView ? $"{webView.PackageName} {webView.VersionName}" : "не найден"
+            : "на Android 7 версию не узнать");
+        Add("Приложение", () => $"{AppVersion} (сборка {BuildNumber}), пакет {Context.PackageName}");
+        Add("Уведомления", () => NotificationManagerCompat.From(Context).AreNotificationsEnabled() ? "разрешены" : "ЗАПРЕЩЕНЫ");
+        Add("Ограничение батареи", () => Context.GetSystemService(Android.Content.Context.PowerService) is Android.OS.PowerManager power
+            ? power.IsIgnoringBatteryOptimizations(Context.PackageName) ? "приложение не ограничивается" : "приложение ограничивается (может мешать работе в фоне)"
+            : "—");
+        Add("Фоновый сервис", DownloadService.DescribeState);
+        Add("Свободно: личная папка", () => FreeSpace(FileSystem.AppDataDirectory));
+        Add("Свободно: кэш", () => FreeSpace(FileSystem.CacheDirectory));
+        Add("Память", () =>
+        {
+            var info = new Android.App.ActivityManager.MemoryInfo();
+            (Context.GetSystemService(Android.Content.Context.ActivityService) as Android.App.ActivityManager)?.GetMemoryInfo(info);
+            return $"доступно {info.AvailMem / 1048576} из {info.TotalMem / 1048576} МБ, мало памяти: {(info.LowMemory ? "да" : "нет")}";
+        });
+        Add("Экран", () =>
+        {
+            var metrics = Context.Resources!.DisplayMetrics!;
+            return $"{metrics.WidthPixels}×{metrics.HeightPixels}, плотность {metrics.Density:0.##}";
+        });
+
+        return result;
+
+        static string FreeSpace(string path)
+        {
+            var stat = new Android.OS.StatFs(path);
+            return $"{stat.AvailableBytes / 1048576} из {stat.TotalBytes / 1048576} МБ";
+        }
+    }
+
     public IReadOnlyDictionary<string, string> GetDynamicColorScheme(bool dark) => DynamicColors.GetScheme(Context, dark);
 
     /// <summary>

@@ -49,23 +49,53 @@ public static class CertificatePolicy
     /// <summary>Встроенные корни (для самопроверки в CoreSmoke).</summary>
     public static IReadOnlyList<X509Certificate2> Roots => BundledRoots.Value.ToList();
 
+    /// <summary>
+    /// Каждая проверка сертификата одной строкой: сайт, что сказала система, решение, цепочка. Для подробного журнала
+    /// (Настройки → Отладка) и диагностики. Вызывается из потоков HttpClient; без подписчиков строка не собирается.
+    /// </summary>
+    public static event Action<string> Traced;
+
     /// <summary>Колбэк для BookGetterConfig.ServerCertificateValidator.</summary>
     public static bool Validate(HttpRequestMessage request, X509Certificate2 certificate, X509Chain chain, SslPolicyErrors errors)
     {
-        if (errors == SslPolicyErrors.None || AllowInsecure())
-        {
-            return true;
-        }
-
         var host = ExpectedHost(request);
-        var reason = Check(host, certificate, chain, errors);
-        if (reason == null)
+        string reason = null;
+        bool accepted;
+        if (errors == SslPolicyErrors.None)
         {
-            return true;
+            accepted = true;
+        }
+        else if (AllowInsecure())
+        {
+            accepted = true;
+            reason = "принят без проверки: включено «Не проверять сертификаты»";
+        }
+        else
+        {
+            reason = Check(host, certificate, chain, errors);
+            accepted = reason == null;
+            if (accepted)
+            {
+                reason = errors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors)
+                    ? "цепочка достроена встроенными корнями"
+                    : "имя сверено с заголовком Host";
+            }
+            else
+            {
+                _lastRejection = $"{host}: {reason}";
+            }
         }
 
-        _lastRejection = $"{host}: {reason}";
-        return false;
+        var traced = Traced;
+        if (traced != null)
+        {
+            var address = request?.RequestUri?.IdnHost;
+            traced($"{host}{(address != null && address != host ? $" (соединение с {address})" : "")}: " +
+                   $"система — {DescribeErrors(errors, chain)}; {(accepted ? "принят" : "ОТКАЗ")}" +
+                   $"{(reason != null ? $" ({reason})" : "")}; цепочка: {DescribeChain(certificate, chain)}");
+        }
+
+        return accepted;
     }
 
     /// <summary>Разбор ошибок системной проверки.</summary>
@@ -93,8 +123,35 @@ public static class CertificatePolicy
         return null;
     }
 
+    /// <summary>Что сказала системная проверка: «без ошибок» или флаги и статусы цепочки.</summary>
+    public static string DescribeErrors(SslPolicyErrors errors, X509Chain chain)
+    {
+        if (errors == SslPolicyErrors.None)
+        {
+            return "без ошибок";
+        }
+
+        var statuses = chain?.ChainStatus.Select(s => s.Status.ToString()).Distinct().ToList() ?? [];
+        return statuses.Count == 0 ? errors.ToString() : $"{errors} [{string.Join(", ", statuses)}]";
+    }
+
+    /// <summary>Цепочка, как её построила система: «сайт ← промежуточный ← корень», плюс сколько сертификатов прислал сайт.</summary>
+    public static string DescribeChain(X509Certificate2 certificate, X509Chain chain)
+    {
+        if (certificate == null)
+        {
+            return "нет сертификата";
+        }
+
+        IEnumerable<string> names = chain?.ChainElements.Count > 0
+            ? chain.ChainElements.Cast<X509ChainElement>().Select(e => e.Certificate.GetNameInfo(X509NameType.SimpleName, false))
+            : [certificate.GetNameInfo(X509NameType.SimpleName, false)];
+        var sent = chain?.ChainPolicy.ExtraStore.Count ?? 0;
+        return $"{string.Join(" ← ", names)} (сайт прислал {sent}, действует до {certificate.NotAfter:yyyy-MM-dd})";
+    }
+
     /// <summary>Имя сайта, к которому запрос: заголовок Host (без порта), иначе адрес запроса.</summary>
-    private static string ExpectedHost(HttpRequestMessage request)
+    public static string ExpectedHost(HttpRequestMessage request)
     {
         var header = request?.Headers.Host;
         if (string.IsNullOrEmpty(header))

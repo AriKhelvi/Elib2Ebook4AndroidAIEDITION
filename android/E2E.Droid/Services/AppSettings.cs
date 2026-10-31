@@ -82,6 +82,23 @@ public sealed class AppSettings
         set => Set(nameof(AllowInsecureTls), value);
     }
 
+    /// <summary>
+    /// «Подробный журнал» (Настройки → Отладка): в журнал скачивания добавляются проверки сертификатов, время этапов,
+    /// параметры ядра (без пароля) и сохранённые файлы; журнал хранит больше строк.
+    /// </summary>
+    public bool DebugLog
+    {
+        get => P.Get(nameof(DebugLog), false);
+        set => Set(nameof(DebugLog), value);
+    }
+
+    /// <summary>Книга для пробного скачивания в диагностике (качаются 2 главы); пусто — DiagnosticsRunner.DefaultTestUrl.</summary>
+    public string DebugTestUrl
+    {
+        get => P.Get(nameof(DebugTestUrl), string.Empty);
+        set => Set(nameof(DebugTestUrl), value?.Trim() ?? string.Empty);
+    }
+
     /// <summary>Шаблон имени файла (--book-name-pattern), например «{Author.Name} - {Book.Title}».</summary>
     public string BookNamePattern
     {

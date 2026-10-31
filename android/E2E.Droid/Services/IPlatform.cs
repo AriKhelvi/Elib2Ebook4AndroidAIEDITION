@@ -73,8 +73,17 @@ public interface IPlatformServices
     /// <returns>Путь к файлу (тот же path) или null, если картинку не удалось прочитать.</returns>
     string SaveThumbnail(byte[] image, string path);
 
-    /// <summary>Версия приложения (versionName): 0.2.0 или 0.2.1-dev.5.</summary>
+    /// <summary>Версия приложения (versionName): 0.2.0, 0.2.1-dev.5 или 0.2.1-alpha.claude.1.</summary>
     string AppVersion { get; }
+
+    /// <summary>
+    /// Сведения об устройстве для журнала диагностики: Android, модель, WebView, разрешения, ограничения батареи,
+    /// свободное место, память. Каждое значение получено отдельно: ошибка одного не мешает остальным.
+    /// </summary>
+    IReadOnlyList<KeyValuePair<string, string>> DescribeDevice();
+
+    /// <summary>Работает ли сейчас foreground-сервис (вызвал startForeground и не остановлен).</summary>
+    bool IsBackgroundWorkRunning { get; }
 
     /// <summary>Номер сборки (versionCode).</summary>
     string BuildNumber { get; }

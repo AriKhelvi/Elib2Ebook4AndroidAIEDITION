@@ -2,7 +2,10 @@
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @page "/settings"
 @using System.Reflection
+@implements IDisposable
 @inject AppSettings Settings
+@inject DiagnosticsRunner Diagnostics
+@inject DownloadManager Downloads
 @inject IBookStorage Storage
 @inject CredentialStore Credentials
 @inject IPlatformServices Platform
@@ -268,6 +271,79 @@
         </div>
     </section>
 
+    @* Отладка: свёрнута, пока не нужна. Диагностика идёт в фоне и сохраняет журнал файлом — его присылают разработчикам *@
+    <section class="section">
+        <div class="card list">
+            <button type="button" class="list-item two-line" aria-expanded="@(_showDebug ? "true" : "false")" @onclick="() => _showDebug = !_showDebug">
+                <span class="list-item-leading"><Icon Name="bug" /></span>
+                <span class="list-item-text">
+                    <span class="list-item-headline">Отладка</span>
+                    <span class="list-item-supporting">Диагностика и подробный журнал — чтобы отправить разработчикам</span>
+                </span>
+                <Icon Name="chevron" Class="@($"chevron {(_showDebug ? "open" : "")}")" />
+            </button>
+            @if (_showDebug)
+            {
+                <div class="expand-body">
+                    <label class="list-item two-line">
+                        <span class="list-item-text">
+                            <span class="list-item-headline">Подробный журнал</span>
+                            <span class="list-item-supporting">В журнал скачивания — проверки сертификатов, время этапов, параметры (без пароля) и сохранённые файлы</span>
+                        </span>
+                        <input type="checkbox" role="switch" class="switch" checked="@Settings.DebugLog" @onchange="e => Settings.DebugLog = (bool)e.Value!" />
+                    </label>
+
+                    <hr class="divider" />
+
+                    <h3 class="section-label">Диагностика</h3>
+                    <p class="supporting-text flush">
+                        Проверит устройство, сертификаты всех сайтов, обход блокировок по IP, сохранение файлов и скачает @DiagnosticsTestChapters главы пробной книги.
+                        Идёт в фоне — приложение можно свернуть. Журнал сохранится в «@Storage.DestinationLabel».
+                    </p>
+                    <div class="text-field">
+                        <label class="text-field-label" for="debug-url">Пробная книга</label>
+                        <input id="debug-url" class="text-field-input" placeholder="@DiagnosticsRunner.DefaultTestUrl" autocapitalize="off" spellcheck="false" inputmode="url"
+                               disabled="@Diagnostics.IsRunning" @bind="_debugUrl" @bind:after="() => Settings.DebugTestUrl = _debugUrl" />
+                    </div>
+
+                    @if (Diagnostics.IsRunning)
+                    {
+                        <p class="progress-status"><span class="spinner"></span> @Diagnostics.Status</p>
+                        <button type="button" class="btn btn-outlined btn-block" @onclick="Diagnostics.Cancel">Остановить</button>
+                    }
+                    else
+                    {
+                        <button type="button" class="btn btn-filled btn-block" @onclick="Diagnostics.StartAsync">
+                            <Icon Name="bug" Size="18" />Запустить диагностику
+                        </button>
+                    }
+
+                    @if (!Diagnostics.IsRunning && Diagnostics.Summary != null)
+                    {
+                        <p class="supporting-text">@Diagnostics.Summary@(Diagnostics.Result != null ? $". Файл: {Diagnostics.Result.Name}" : "")</p>
+                        <div class="card-actions compact">
+                            @if (Diagnostics.Result != null)
+                            {
+                                <button type="button" class="btn btn-tonal" @onclick="() => Storage.Share([Diagnostics.Result])"><Icon Name="share" Size="18" />Поделиться журналом</button>
+                            }
+                            <button type="button" class="btn btn-text" @onclick="CopyDiagnostics"><Icon Name="copy" Size="18" />Скопировать</button>
+                        </div>
+                    }
+
+                    <hr class="divider" />
+
+                    <button type="button" class="list-item two-line" disabled="@(Downloads.Log.Count == 0)" @onclick="SaveDownloadLog">
+                        <span class="list-item-leading"><Icon Name="log" /></span>
+                        <span class="list-item-text">
+                            <span class="list-item-headline">Сохранить журнал последнего скачивания</span>
+                            <span class="list-item-supporting">@(Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</span>
+                        </span>
+                    </button>
+                </div>
+            }
+        </div>
+    </section>
+
     <section class="section">
         <h2 class="section-title">О приложении</h2>
         <div class="card list">
@@ -275,6 +351,11 @@
                 <span class="list-item-leading"><Icon Name="info" /></span>
                 <span class="list-item-text">
                     <span class="list-item-headline">E2E для Android @Platform.AppVersion</span>
+                    @if (BuildInfo.IsAlpha(Platform.AppVersion))
+                    {
+                        @* Неприметная пометка: тестовый релиз (альфа), см. AGENTS.md, «Тестовые (альфа) релизы» *@
+                        <span class="list-item-supporting">Тестовая сборка (альфа) — для проверки, не для каждодневного чтения</span>
+                    }
                     <span class="list-item-supporting">Сборка @Platform.BuildNumber@(string.IsNullOrEmpty(_commit) ? "" : $" · коммит {_commit}")</span>
                 </span>
             </div>
@@ -330,6 +411,10 @@
         ("socks5", "SOCKS5")
     ];
 
+    private const int DiagnosticsTestChapters = 2;
+
+    private bool _showDebug;
+    private string _debugUrl;
     private string _pattern;
     private int _timeout;
     private int _delay;
@@ -350,6 +435,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        Diagnostics.Changed += OnDiagnosticsChanged;
+        _debugUrl = Settings.DebugTestUrl;
+        // Диагностика идёт или уже отработала — раскрываем блок сразу, чтобы был виден её ход или итог
+        _showDebug = Diagnostics.IsRunning || Diagnostics.Summary != null;
         _pattern = Settings.BookNamePattern;
         _timeout = Settings.Timeout;
         _delay = Settings.Delay;
@@ -573,4 +662,34 @@
         await LoadCredentials();
         Toasts.Show($"Вход для {host} удалён", ToastKind.Info, 3);
     }
+
+    private void OnDiagnosticsChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task CopyDiagnostics()
+    {
+        await Clipboard.Default.SetTextAsync(string.Join('\n', Diagnostics.Log));
+        Toasts.Show("Журнал диагностики скопирован", ToastKind.Success, 3);
+    }
+
+    private async Task SaveDownloadLog()
+    {
+        try
+        {
+            var file = await Diagnostics.SaveDownloadLogAsync();
+            if (file == null)
+            {
+                Toasts.Show("Журнал не сохранился", ToastKind.Error);
+                return;
+            }
+
+            Toasts.Show($"Сохранено: {file.Name}", ToastKind.Success, 4);
+            Storage.Share([file]);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show($"Журнал не сохранился: {ex.Message}", ToastKind.Error, 8);
+        }
+    }
+
+    public void Dispose() => Diagnostics.Changed -= OnDiagnosticsChanged;
 }

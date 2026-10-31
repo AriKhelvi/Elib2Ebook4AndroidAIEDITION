@@ -71,6 +71,27 @@ public sealed class DownloadService : Service
 
     private PowerManager.WakeLock _wakeLock;
 
+    /// <summary>Сервис вызвал startForeground и не остановлен.</summary>
+    public static bool IsRunning
+    {
+        get
+        {
+            lock (Sync)
+            {
+                return _running != null;
+            }
+        }
+    }
+
+    /// <summary>Состояние для журнала диагностики.</summary>
+    public static string DescribeState()
+    {
+        lock (Sync)
+        {
+            return $"{(_running != null ? "запущен" : "не запущен")}, {(_wanted ? "нужен" : "не нужен")}";
+        }
+    }
+
     public static void Start(Context context, string text)
     {
         lock (Sync)

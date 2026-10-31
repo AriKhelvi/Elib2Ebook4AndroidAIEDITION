@@ -37,6 +37,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<IPlatformServices, AndroidPlatformServices>();
         builder.Services.AddSingleton<DownloadManager>();
         builder.Services.AddSingleton<BookActions>();
+        builder.Services.AddSingleton<DiagnosticsRunner>();
 
         var app = builder.Build();
         Services = app.Services;
