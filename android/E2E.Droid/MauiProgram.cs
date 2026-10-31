@@ -12,6 +12,7 @@ namespace E2E.Droid;
 public static class MauiProgram
 {
     public static IServiceProvider Services { get; private set; }
+    private static int _cacheWarmupStarted;
 
     public static MauiApp CreateMauiApp()
     {
@@ -43,13 +44,18 @@ public static class MauiProgram
         var app = builder.Build();
         Services = app.Services;
 
-        // Подчищаем рабочие папки прошлых запусков и заранее грузим сборки сайтов (~60 dll)
-        Task.Run(() =>
-        {
-            DownloadManager.CleanupLeftovers();
-            _ = GetterResolver.GetterTypes;
-        });
+        // Очистку старых рабочих папок запускаем сразу; прогрев сборок дождётся первого кадра интерфейса.
+        _ = Task.Run(DownloadManager.CleanupLeftovers);
 
         return app;
+    }
+
+    /// <summary>Вызывается из Blazor после первого отображённого кадра; один раз за жизнь приложения.</summary>
+    internal static void WarmUpAfterFirstRender()
+    {
+        if (Interlocked.Exchange(ref _cacheWarmupStarted, 1) == 0)
+        {
+            _ = Task.Run(() => { _ = GetterResolver.GetterTypes; });
+        }
     }
 }

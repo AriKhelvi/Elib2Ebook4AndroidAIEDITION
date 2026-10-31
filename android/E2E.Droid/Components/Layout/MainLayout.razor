@@ -126,6 +126,10 @@
                 : null;
             await Js.InvokeVoidAsync("e2e.setDynamicPalette", palette);
             StateHasChanged();
+
+            // OnAfterRender означает готовый DOM, но WebView мог ещё не показать его на экране.
+            await Js.InvokeVoidAsync("e2e.afterFirstPaint");
+            MauiProgram.WarmUpAfterFirstRender();
         }
     }
 
