@@ -17,24 +17,35 @@ internal static class ActivityResults
     private static int _nextCode = 4200;
 
     /// <returns>Intent с результатом или null, если пользователь отменил.</returns>
-    public static Task<Intent> StartAsync(Intent intent)
+    public static async Task<Intent> StartAsync(Intent intent, TimeSpan? timeout = null)
     {
-        var activity = Platform.CurrentActivity ?? throw new InvalidOperationException("Нет активного окна");
         var code = Interlocked.Increment(ref _nextCode) & 0xFFFF;
         var tcs = new TaskCompletionSource<Intent>(TaskCreationOptions.RunContinuationsAsynchronously);
-        Pending[code] = tcs;
-        try
+        if (!Pending.TryAdd(code, tcs))
         {
-            activity.StartActivityForResult(intent, code);
-        }
-        catch
-        {
-            // Например, ActivityNotFoundException: системного диалога на устройстве нет
-            Pending.TryRemove(code, out _);
-            throw;
+            throw new InvalidOperationException("Предыдущий системный диалог ещё не завершён. Повторите выбор папки");
         }
 
-        return tcs.Task;
+        try
+        {
+            await MainThread.InvokeOnMainThreadAsync(() =>
+            {
+                var activity = Platform.CurrentActivity ?? throw new InvalidOperationException("Нет активного окна");
+                activity.StartActivityForResult(intent, code);
+            });
+
+            return await tcs.Task.WaitAsync(timeout ?? TimeSpan.FromMinutes(2));
+        }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException("Системный выбор папки не ответил за две минуты. Закройте диалог и повторите выбор");
+        }
+        finally
+        {
+            // Освобождаем ожидание и при ошибке запуска, и при потерянном ответе Android.
+            // Поздний результат истёкшего запроса Handle просто проигнорирует.
+            Pending.TryRemove(code, out _);
+        }
     }
 
     public static void Handle(int requestCode, Result resultCode, Intent data)

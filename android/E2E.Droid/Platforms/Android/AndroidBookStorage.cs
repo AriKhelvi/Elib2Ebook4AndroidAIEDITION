@@ -183,8 +183,24 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
             return false; // пользователь нажал «Назад»
         }
 
-        // Без TakePersistableUriPermission доступ пропал бы после перезапуска приложения
-        Resolver.TakePersistableUriPermission(uri, TreeFlags);
+        // Провайдер может вернуть меньше прав, чем мы запросили. Не берём права, которых он не выдал.
+        var grantedFlags = data.Flags & TreeFlags;
+        if ((grantedFlags & ActivityFlags.GrantWriteUriPermission) == 0)
+        {
+            throw new InvalidOperationException("Выбранная папка не разрешает запись. Выберите другую папку");
+        }
+
+        // Без TakePersistableUriPermission доступ пропал бы после перезапуска приложения.
+        // Старую папку сохраняем, пока постоянное разрешение на новую не получено.
+        try
+        {
+            Resolver.TakePersistableUriPermission(uri, grantedFlags);
+        }
+        catch (Java.Lang.SecurityException)
+        {
+            throw new InvalidOperationException(
+                "Не удалось сохранить доступ к выбранной папке. Выберите её повторно или укажите другую папку");
+        }
         // Права на старую папку больше не нужны — отпускаем (у Android есть лимит на число таких прав)
         ReleaseTree(except: uri);
 
