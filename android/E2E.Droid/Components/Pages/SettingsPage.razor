@@ -126,6 +126,31 @@
 
             <hr class="divider" />
 
+            @* Ограничение батареи: загрузку держит foreground-сервис, но на части прошивок Android всё равно
+               придерживает сеть свёрнутого приложения. Найдено журналом диагностики («приложение ограничивается») *@
+            @if (_backgroundAllowed)
+            {
+                <div class="list-item two-line">
+                    <span class="list-item-text">
+                        <span class="list-item-headline">Работа в фоне</span>
+                        <span class="list-item-supporting">Не ограничивается — загрузки идут и в свёрнутом приложении</span>
+                    </span>
+                    <Icon Name="check" />
+                </div>
+            }
+            else
+            {
+                <button type="button" class="list-item two-line" @onclick="AllowBackground">
+                    <span class="list-item-text">
+                        <span class="list-item-headline">Работа в фоне ограничена</span>
+                        <span class="list-item-supporting">Android экономит батарею за счёт приложения: длинная загрузка в свёрнутом виде может замедлиться. Нажмите, чтобы снять ограничение</span>
+                    </span>
+                    <Icon Name="chevron" Class="chevron right" />
+                </button>
+            }
+
+            <hr class="divider" />
+
             <div class="card-body">
                 <h3 class="setting-title">Пропустить диалог скачивания</h3>
                 <div class="segmented" role="radiogroup" aria-label="Пропустить диалог скачивания">
@@ -414,6 +439,9 @@
     private const int DiagnosticsTestChapters = 2;
 
     private bool _showDebug;
+
+    /// <summary>Android не ограничивает приложение в фоне (см. «Работа в фоне» в разделе «Скачивание»).</summary>
+    private bool _backgroundAllowed = true;
     private string _debugUrl;
     private string _pattern;
     private int _timeout;
@@ -436,6 +464,7 @@
     protected override async Task OnInitializedAsync()
     {
         Diagnostics.Changed += OnDiagnosticsChanged;
+        _backgroundAllowed = Platform.IsIgnoringBatteryOptimizations;
         _debugUrl = Settings.DebugTestUrl;
         // Диагностика идёт или уже отработала — раскрываем блок сразу, чтобы был виден её ход или итог
         _showDebug = Diagnostics.IsRunning || Diagnostics.Summary != null;
@@ -665,9 +694,16 @@
 
     private void OnDiagnosticsChanged() => InvokeAsync(StateHasChanged);
 
+    private async Task AllowBackground()
+    {
+        _backgroundAllowed = await Platform.RequestIgnoreBatteryOptimizationsAsync();
+        Toasts.Show(_backgroundAllowed ? "Ограничение работы в фоне снято" : "Ограничение осталось — его можно снять в настройках батареи Android",
+            _backgroundAllowed ? ToastKind.Success : ToastKind.Info, 5);
+    }
+
     private async Task CopyDiagnostics()
     {
-        await Clipboard.Default.SetTextAsync(string.Join('\n', Diagnostics.Log));
+        await Clipboard.Default.SetTextAsync(string.Join('\n', Diagnostics.ReportLines));
         Toasts.Show("Журнал диагностики скопирован", ToastKind.Success, 3);
     }
 

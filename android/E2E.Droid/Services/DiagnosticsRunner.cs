@@ -93,6 +93,42 @@ public sealed class DiagnosticsRunner(
         }
     }
 
+    /// <summary>
+    /// Журнал для отправки: шапка, затем краткий итог со всеми проблемами (чтобы и обрезанная вставка в чат была
+    /// полезной), затем всё подряд. Так он сохраняется в файл и копируется.
+    /// </summary>
+    public IReadOnlyList<string> ReportLines
+    {
+        get
+        {
+            var log = Log;
+            var head = log.TakeWhile(l => l.StartsWith('#')).ToList();
+            var problems = log
+                .Where(l => l.Contains("[FAIL]", StringComparison.Ordinal) || l.Contains("[skip]", StringComparison.Ordinal))
+                .Select(l => "#   " + FirstLine(StripTime(l)))
+                .ToList();
+
+            var result = new List<string>(head);
+            if (Summary != null)
+            {
+                result.Add($"# Кратко: {Summary}");
+            }
+
+            result.Add(problems.Count == 0 ? "# Проблем нет" : $"# Проблемы ({problems.Count}):");
+            result.AddRange(problems);
+            result.AddRange(log.Skip(head.Count));
+            return result;
+
+            static string StripTime(string line) => line.Length > 13 && line[2] == ':' && line[5] == ':' && line[8] == '.' ? line[13..] : line;
+
+            static string FirstLine(string line)
+            {
+                var end = line.IndexOf('\n');
+                return end < 0 ? line : line[..end].TrimEnd('\r') + " …";
+            }
+        }
+    }
+
     /// <summary>Запуск из UI-потока (может спросить разрешения). Повторное нажатие, пока идёт, ничего не делает.</summary>
     public async Task StartAsync()
     {
@@ -214,7 +250,7 @@ public sealed class DiagnosticsRunner(
         Changed?.Invoke();
         try
         {
-            Result = await SaveTextAsync($"E2E-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.txt", Log);
+            Result = await SaveTextAsync($"E2E-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.txt", ReportLines);
         }
         catch (Exception ex)
         {
@@ -411,6 +447,16 @@ public sealed class DiagnosticsRunner(
             try
             {
                 var result = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, ProbeTimeout, ct);
+                // Не ответил за 20 с — пробуем ещё раз с таймаутом из настроек (до 120 с): так качает само приложение.
+                // Отличает медленный сайт от недоступного
+                var longTimeout = TimeSpan.FromSeconds(Math.Min(settings.Timeout, 120));
+                if (result.TimedOut && longTimeout > ProbeTimeout)
+                {
+                    var first = result.Outcome;
+                    result = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, longTimeout, ct);
+                    result.Lines.Insert(1, $"      Повтор с таймаутом {longTimeout.TotalSeconds:0} с (из настроек); первая попытка: {first}");
+                }
+
                 Report(result);
                 return result;
             }

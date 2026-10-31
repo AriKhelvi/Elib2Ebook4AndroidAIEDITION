@@ -73,6 +73,9 @@
         <!-- Тримминг (уменьшение размера) — только для сборок, помеченных как trimmable (фреймворк, MAUI).
              Код ядра не триммится: он рассчитан на рефлексию. -->
         <TrimMode>partial</TrimMode>
+        <!-- Тексты исключений .NET оставляем в APK: без этого Release-сборка показывает в ошибках и журнале служебные
+             ключи вместо сообщений («net_http_request_timedout, 20»). Найдено журналом диагностики; APK чуть больше. -->
+        <UseSystemResourceKeys>false</UseSystemResourceKeys>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Release'">

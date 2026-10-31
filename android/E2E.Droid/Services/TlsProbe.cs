@@ -30,6 +30,12 @@ public sealed class TlsProbeResult
     /// <summary>Каким путём принят, если система была против (из CertificatePolicy.Check).</summary>
     public string AcceptedHow { get; internal set; }
 
+    /// <summary>Не открылся по таймауту (а не по ошибке соединения или сертификата).</summary>
+    public bool TimedOut { get; internal set; }
+
+    /// <summary>Итог отдельной проверки TCP-соединения, если до TLS не дошло (без прокси); иначе null.</summary>
+    public string TcpCheck { get; internal set; }
+
     public SslPolicyErrors SystemErrors { get; internal set; }
 
     /// <summary>Итог одной строкой: «HTTP 200 …» или причина неудачи.</summary>
@@ -136,9 +142,19 @@ public static class TlsProbe
         catch (Exception ex)
         {
             result.TlsRejected = result.TlsSeen && verdict != null;
+            // Отмены снаружи не было (её пробросили выше) — значит, сработал таймаут HttpClient
+            result.TimedOut = ex is TaskCanceledException;
             result.Outcome = result.TlsRejected
                 ? $"ОТКАЗ ПО СЕРТИФИКАТУ: {verdict}"
-                : $"не открылся за {sw.ElapsedMilliseconds} мс: {Describe(ex)}";
+                : result.TimedOut && result.TlsSeen
+                    ? $"TLS прошёл, но сервер не ответил за {sw.ElapsedMilliseconds / 1000} с — перегружен или очень медленный"
+                    : $"не открылся за {sw.ElapsedMilliseconds} мс: {Describe(ex)}";
+
+            // До TLS не дошло: проверяем голое TCP-соединение — сайт недоступен или соединение есть, а дальше тишина
+            if (!result.TlsSeen && string.IsNullOrWhiteSpace(proxy))
+            {
+                result.TcpCheck = await CheckTcpAsync(url, ct);
+            }
         }
 
         result.ChainCompleted = result.Ok && result.SystemErrors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors);
@@ -146,6 +162,11 @@ public static class TlsProbe
         if (dns != null)
         {
             result.Lines.Add($"      DNS: {dns}");
+        }
+
+        if (result.TcpCheck != null)
+        {
+            result.Lines.Add($"      TCP: {result.TcpCheck}");
         }
 
         result.Lines.Add(result.TlsSeen
@@ -170,6 +191,32 @@ public static class TlsProbe
         // Цепочку не строим: на Android нельзя X509Chain с пустым набором своих корней. Система бы ответила
         // ChainErrors — ровно это и отдаём политике: пусть попробует мосты и встроенные корни
         return CertificatePolicy.Check(host, forged, null, SslPolicyErrors.RemoteCertificateChainErrors);
+    }
+
+    /// <summary>
+    /// Голое TCP-соединение с портом сайта (10 с). Соединение есть, а TLS и ответа нет — похоже на блокировку по
+    /// содержимому (DPI) или зависший сервер; соединения нет — сайт выключен или адрес заблокирован целиком.
+    /// </summary>
+    private static async Task<string> CheckTcpAsync(Uri url, CancellationToken ct)
+    {
+        var port = url.IsDefaultPort ? 443 : url.Port;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            using var tcp = new System.Net.Sockets.TcpClient();
+            await tcp.ConnectAsync(url.IdnHost, port, timeout.Token);
+            return $"соединение с портом {port} есть ({sw.ElapsedMilliseconds} мс), но TLS и ответа нет — похоже на блокировку или зависший сервер";
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return $"соединение с портом {port} не устанавливается за 10 с — сайт недоступен из этой сети";
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            return $"соединения с портом {port} нет: {Describe(ex)}";
+        }
     }
 
     /// <summary>Исключение со всеми вложенными: тип и сообщение каждого.</summary>

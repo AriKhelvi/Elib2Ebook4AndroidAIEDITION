@@ -40,6 +40,54 @@ public sealed class AndroidPlatformServices : IPlatformServices
 
     public bool IsBackgroundWorkRunning => DownloadService.IsRunning;
 
+    public bool IsIgnoringBatteryOptimizations
+    {
+        get
+        {
+            try
+            {
+                return Context.GetSystemService(Android.Content.Context.PowerService) is Android.OS.PowerManager power
+                       && power.IsIgnoringBatteryOptimizations(Context.PackageName);
+            }
+            catch
+            {
+                return true; // не узнать — не пристаём с вопросом
+            }
+        }
+    }
+
+    public async Task<bool> RequestIgnoreBatteryOptimizationsAsync()
+    {
+        if (IsIgnoringBatteryOptimizations)
+        {
+            return true;
+        }
+
+        // Прямой вопрос про это приложение (нужно разрешение REQUEST_IGNORE_BATTERY_OPTIMIZATIONS в манифесте)
+        var ask = new Android.Content.Intent(Android.Provider.Settings.ActionRequestIgnoreBatteryOptimizations,
+            Android.Net.Uri.Parse("package:" + Context.PackageName));
+        try
+        {
+            await MainThread.InvokeOnMainThreadAsync(() => ActivityResults.StartAsync(ask));
+        }
+        catch (Exception)
+        {
+            // Диалога нет (урезанная прошивка) — открываем список в настройках батареи, дальше пользователь сам
+            try
+            {
+                var list = new Android.Content.Intent(Android.Provider.Settings.ActionIgnoreBatteryOptimizationSettings);
+                list.AddFlags(Android.Content.ActivityFlags.NewTask);
+                Context.StartActivity(list);
+            }
+            catch
+            {
+                // и этого экрана нет — ничего не поделать
+            }
+        }
+
+        return IsIgnoringBatteryOptimizations;
+    }
+
     public IReadOnlyList<KeyValuePair<string, string>> DescribeDevice()
     {
         var result = new List<KeyValuePair<string, string>>();

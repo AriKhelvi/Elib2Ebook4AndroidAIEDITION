@@ -135,19 +135,19 @@ public static class CertificatePolicy
         if (errors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors))
         {
             var sent = SentCertificates(certificate, chain);
-            if (TryChainWithSystemAndBridges(certificate, sent) == null)
+            if (TryChainWithSystemAndBridges(certificate, sent, out var built) == null)
             {
-                how = "цепочка достроена мостовыми сертификатами Let's Encrypt";
+                how = $"цепочка достроена мостовыми сертификатами Let's Encrypt: {built}";
                 return null;
             }
 
-            var reason = TryChainWithBundledRoots(certificate, sent);
+            var reason = TryChainWithBundledRoots(certificate, sent, out built);
             if (reason != null)
             {
                 return reason;
             }
 
-            how = "цепочка достроена встроенными корнями";
+            how = $"цепочка достроена встроенными корнями: {built}";
         }
 
         return null;
@@ -207,7 +207,12 @@ public static class CertificatePolicy
     /// <param name="sent">Промежуточные, которые прислал сайт (и которые система уже нашла).</param>
     /// <returns>null — цепочка доверенная; иначе — причина отказа.</returns>
     public static string TryChainWithSystemAndBridges(X509Certificate2 certificate, X509Certificate2Collection sent)
+        => TryChainWithSystemAndBridges(certificate, sent, out _);
+
+    /// <param name="built">Построенная цепочка «сайт ← … ← корень» (если построилась).</param>
+    public static string TryChainWithSystemAndBridges(X509Certificate2 certificate, X509Certificate2Collection sent, out string built)
     {
+        built = null;
         try
         {
             using var chain = new X509Chain();
@@ -219,7 +224,13 @@ public static class CertificatePolicy
             policy.ApplicationPolicy.Add(new Oid(ServerAuthOid));
             policy.ExtraStore.AddRange(sent);
             policy.ExtraStore.AddRange(BundledBridges.Value);
-            return chain.Build(certificate) ? null : Describe(chain.ChainStatus);
+            if (!chain.Build(certificate))
+            {
+                return Describe(chain.ChainStatus);
+            }
+
+            built = string.Join(" ← ", chain.ChainElements.Cast<X509ChainElement>().Select(e => e.Certificate.GetNameInfo(X509NameType.SimpleName, false)));
+            return null;
         }
         catch (Exception ex)
         {
@@ -233,7 +244,12 @@ public static class CertificatePolicy
     /// </summary>
     /// <returns>null — цепочка доверенная; иначе — причина отказа.</returns>
     public static string TryChainWithBundledRoots(X509Certificate2 certificate, X509Certificate2Collection sent)
+        => TryChainWithBundledRoots(certificate, sent, out _);
+
+    /// <param name="built">Построенная цепочка «сайт ← … ← корень» (если построилась).</param>
+    public static string TryChainWithBundledRoots(X509Certificate2 certificate, X509Certificate2Collection sent, out string built)
     {
+        built = null;
         try
         {
             using var chain = new X509Chain();
@@ -245,7 +261,13 @@ public static class CertificatePolicy
             policy.ApplicationPolicy.Add(new Oid(ServerAuthOid));
             policy.ExtraStore.AddRange(sent);
             policy.ExtraStore.AddRange(BundledBridges.Value);
-            return chain.Build(certificate) ? null : Describe(chain.ChainStatus);
+            if (!chain.Build(certificate))
+            {
+                return Describe(chain.ChainStatus);
+            }
+
+            built = string.Join(" ← ", chain.ChainElements.Cast<X509ChainElement>().Select(e => e.Certificate.GetNameInfo(X509NameType.SimpleName, false)));
+            return null;
         }
         catch (Exception ex)
         {

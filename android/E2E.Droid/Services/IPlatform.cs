@@ -85,6 +85,16 @@ public interface IPlatformServices
     /// <summary>Работает ли сейчас foreground-сервис (вызвал startForeground и не остановлен).</summary>
     bool IsBackgroundWorkRunning { get; }
 
+    /// <summary>Android не ограничивает приложение в фоне (снято «оптимизирование батареи»).</summary>
+    bool IsIgnoringBatteryOptimizations { get; }
+
+    /// <summary>
+    /// Системный вопрос «Не ограничивать работу в фоне?». На урезанных прошивках (читалки), где его нет, — общий
+    /// список приложений в настройках батареи.
+    /// </summary>
+    /// <returns>true — ограничение снято (или его и не было).</returns>
+    Task<bool> RequestIgnoreBatteryOptimizationsAsync();
+
     /// <summary>Номер сборки (versionCode).</summary>
     string BuildNumber { get; }
 }
