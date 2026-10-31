@@ -52,9 +52,13 @@ jobs:
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
+        env:
+          # Токен для gh: права ограничены блоком permissions выше.
+          GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           additional_permissions: |
             actions: read
+          # Инструменты через запятую, без пробелов, в одной строке в кавычках.
           claude_args: |
-            --allowedTools "Bash(dotnet:*)"
+            --allowedTools "Bash(dotnet:*),Bash(gh:*),Bash(curl:*),WebFetch,WebSearch"
