@@ -1,0 +1,60 @@
+name: Claude Code
+
+# Запуск Claude по упоминанию @claude в issue, комментариях и ревью PR.
+# Оплата — по подписке Claude через секрет CLAUDE_CODE_OAUTH_TOKEN.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      # Инструменты, чтобы Claude мог собрать Android-приложение.
+      # Версии держите такими же, как в android.yml.
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: microsoft
+          java-version: '17'
+
+      - name: Install MAUI Android workload
+        run: dotnet workload install maui-android
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          claude_args: |
+            --allowedTools "Bash(dotnet:*)"
