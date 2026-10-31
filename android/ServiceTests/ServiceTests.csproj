@@ -12,5 +12,7 @@
     <Using Include="Xunit" />
     <Using Include="Microsoft.Maui.ApplicationModel" />
     <Compile Include="../E2E.Droid/Platforms/Android/ActivityResults.cs" Link="Shared/ActivityResults.cs" />
+    <Compile Include="../E2E.Droid/Services/CredentialStore.cs" Link="Shared/CredentialStore.cs" />
+    <Compile Include="../E2E.Droid/Services/ToastService.cs" Link="Shared/ToastService.cs" />
   </ItemGroup>
 </Project>

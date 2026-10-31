@@ -583,8 +583,11 @@
         var hasLogin = !string.IsNullOrWhiteSpace(Form.Login) && !string.IsNullOrWhiteSpace(Form.Password);
         if (hasLogin && Form.RememberCredentials && CurrentHost != null)
         {
-            await Credentials.SaveAsync(CurrentHost, new SiteCredential(Form.Login.Trim(), Form.Password));
-            Form.CredentialsHost = CurrentHost;
+            if (await Credentials.SaveAsync(CurrentHost, new SiteCredential(Form.Login.Trim(), Form.Password)))
+            {
+                Form.CredentialsHost = CurrentHost;
+            }
+            // Ошибка сохранения не мешает скачать книгу с уже введёнными логином и паролем.
         }
 
         Form.Urls = string.Join('\n', urls);

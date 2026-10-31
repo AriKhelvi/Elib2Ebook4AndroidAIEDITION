@@ -543,7 +543,10 @@
             return;
         }
 
-        await Credentials.SaveAsync(host, new SiteCredential(_editLogin.Trim(), _editPassword));
+        if (!await Credentials.SaveAsync(host, new SiteCredential(_editLogin.Trim(), _editPassword)))
+        {
+            return; // Редактор остаётся открытым, введённые данные доступны для повторной попытки.
+        }
         CloseEditor();
         await LoadCredentials();
         Toasts.Show($"Вход для {host} сохранён", ToastKind.Success, 3);
@@ -552,7 +555,7 @@
     private async Task RemoveCredential()
     {
         var host = _editHost;
-        Credentials.Remove(host);
+        if (!Credentials.Remove(host)) return;
         _logins.Remove(host);
         CloseEditor();
         await LoadCredentials();

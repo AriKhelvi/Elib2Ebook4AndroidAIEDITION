@@ -30,6 +30,8 @@ public static class MauiProgram
 
         builder.Services.AddSingleton<AppSettings>();
         builder.Services.AddSingleton<HistoryStore>();
+        builder.Services.AddSingleton<ISecureStorage>(SecureStorage.Default);
+        builder.Services.AddSingleton<IPreferences>(Preferences.Default);
         builder.Services.AddSingleton<CredentialStore>();
         builder.Services.AddSingleton<ToastService>();
         builder.Services.AddSingleton<FormState>();
