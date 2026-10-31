@@ -7,6 +7,7 @@
 #
 # Когда запускается:
 #   - пуш в master, затрагивающий приложение или ядро  → APK в артефактах запуска (вкладка Actions);
+#   - пуш в ветки claude/dev и codex/dev               → то же: APK для проверки ветки до слияния в master;
 #   - ручной запуск (Actions → Android APK → Run workflow);
 #   - публикация релиза на GitHub                       → APK прикрепляется к этому релизу;
 #   - pull request                                       → только проверка, что всё собирается.
@@ -22,7 +23,7 @@ name: Android APK
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, 'claude/dev', 'codex/dev' ]
     paths:
       - 'android/**'
       - 'src/**'
