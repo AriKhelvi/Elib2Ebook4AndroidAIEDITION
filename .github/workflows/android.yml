@@ -51,6 +51,11 @@ on:
         required: false
         type: string
         default: ''
+      expected_sha:
+        description: 'Ожидаемый коммит (начало хэша). Если в ветке уже другой — сборка остановится сразу, ничего не выпустив'
+        required: false
+        type: string
+        default: ''
 
 # contents: write — чтобы прикрепить APK к релизу
 permissions:
@@ -123,12 +128,27 @@ jobs:
           # Через переменные, а не ${{ }} в тексте скрипта: поле ручного запуска — пользовательский ввод
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           ALPHA_INPUT: ${{ inputs.alpha_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
           CORE=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
           CODE=$(( ($(date +%s) - 1767225600) / 60 ))
           SHA=${GITHUB_SHA::7}
+
+          # Ручной запуск собирает то, что сейчас в ветке. Если туда успела запушить другая сессия, без этой проверки
+          # альфа вышла бы с чужим коммитом — поэтому агенты передают expected_sha (см. AGENTS.md)
+          EXPECTED=$(printf '%s' "$EXPECTED_SHA" | tr -d '[:space:]' | tr 'A-F' 'a-f')
+          if [ -n "$EXPECTED" ]; then
+            if ! [[ "$EXPECTED" =~ ^[0-9a-f]{7,40}$ ]]; then
+              echo "::error::expected_sha «$EXPECTED» — не хэш коммита (нужно 7–40 шестнадцатеричных символов)"
+              exit 1
+            fi
+            if [[ "$GITHUB_SHA" != "$EXPECTED"* ]]; then
+              echo "::error::В ветке коммит ${GITHUB_SHA::7}, а ожидался $EXPECTED: ветку обновили после запуска. Подтяните её и проверьте, что выпускаете"
+              exit 1
+            fi
+          fi
 
           # Альфа (тестовый релиз): пуш тега или ручной запуск с полем alpha_tag — только по схеме из AGENTS.md
           ALPHA=""

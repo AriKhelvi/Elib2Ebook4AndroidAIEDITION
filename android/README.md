@@ -140,7 +140,7 @@ Workflow [`.github/workflows/android.yml`](../.github/workflows/android.yml) с�
 | Пуш в `master`, затрагивающий `android/` или ядро | APK в артефактах запуска (Actions → запуск → Artifacts) |
 | Actions → **Android APK** → **Run workflow** | То же, вручную |
 | Публикация релиза (Releases → Draft a new release → тег `vX.Y.Z` → Publish) | APK `E2E-X.Y.Z.apk` прикрепляется к релизу автоматически |
-| Пуш тега `vX.Y.Z-alpha.<агент>.<N>` (тестовый релиз, см. ниже) или Run workflow на ветке с полем `alpha_tag` | Сборка и pre-release с APK — публикуется сам (при ручном запуске CI сам ставит тег) |
+| Пуш тега `vX.Y.Z-alpha.<агент>.<N>` (тестовый релиз, см. ниже) или Run workflow на ветке с полем `alpha_tag` (и `expected_sha` — какой коммит выпускаем) | Сборка и pre-release с APK — публикуется сам (при ручном запуске CI сам ставит тег; чужой коммит в ветке — остановка) |
 | Pull request | Только проверка, что всё собирается |
 
 В сводке каждого запуска — версия приложения и ядра, размер, versionCode, число сайтов и отпечаток
