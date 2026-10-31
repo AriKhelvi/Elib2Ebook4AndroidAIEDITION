@@ -121,6 +121,9 @@ public sealed class DownloadManager(
     /// <summary>Карточка книги (название, автор, обложка) — появляется до того, как скачаются главы.</summary>
     public BookPreview Preview => _job.Preview;
 
+    /// <summary>Адрес миниатюры обложки карточки (/_covers/…, см. CoverThumbnails); null — обложки нет.</summary>
+    public string PreviewCoverUrl => _job.PreviewCoverUrl;
+
     /// <summary>Номер текущей ссылки (с 1) при скачивании нескольких книг.</summary>
     public int Current => _job.Current;
 
@@ -281,12 +284,15 @@ public sealed class DownloadManager(
         // Рабочие папки — в кэше приложения: Android может их чистить сам, а мы удаляем их после каждой книги
         var jobsRoot = Path.Combine(FileSystem.CacheDirectory, "jobs");
 
+        // Миниатюры карточек прошлого задания больше не на экране (интерфейс читает уже этот Job)
+        TryDelete(CoverThumbnails.PreviewsDir);
+
         for (var i = 0; i < request.Urls.Count && !job.Cancelled; i++)
         {
             var url = request.Urls[i];
             var workDir = Path.Combine(jobsRoot, Guid.NewGuid().ToString("N"));
             job.Current = i + 1;
-            job.Preview = null;
+            SetPreview(job, null);
             Interlocked.Exchange(ref job.Chapters, 0);
 
             // Карточка именно этой книги — для записи о неудаче (в job.Preview её может сменить следующая)
@@ -301,8 +307,11 @@ public sealed class DownloadManager(
                 var result = await BookPipeline.RunAsync(options, logger, p =>
                 {
                     preview = p;
-                    job.Preview = p;
-                    NotifyChanged();
+                    if (!job.Cancelled)
+                    {
+                        SetPreview(job, p);
+                        NotifyChanged();
+                    }
                 }, ct);
 
                 // Отменили, пока ядро работало: сохранять уже нечего
@@ -370,6 +379,26 @@ public sealed class DownloadManager(
             {
                 TryDelete(workDir);
             }
+        }
+    }
+
+    /// <summary>
+    /// Карточка книги для интерфейса: обложка уменьшается в файл-миниатюру в кэше и показывается по адресу
+    /// (CoverThumbnails), а не data:-URL. Миниатюра прошлой карточки этого задания больше не нужна — удаляется.
+    /// </summary>
+    private void SetPreview(Job job, BookPreview preview)
+    {
+        var thumbnail = preview?.Cover == null ? null : platform.SaveThumbnail(preview.Cover, CoverThumbnails.NewPreviewPath());
+        var old = job.PreviewCoverPath;
+
+        // Сначала адрес, потом карточка: интерфейс, увидевший новую карточку, увидит и её обложку
+        job.PreviewCoverPath = thumbnail;
+        job.PreviewCoverUrl = CoverThumbnails.UrlFor(thumbnail);
+        job.Preview = preview;
+
+        if (old != null)
+        {
+            TryDeleteFile(old);
         }
     }
 
@@ -540,7 +569,7 @@ public sealed class DownloadManager(
         record.Annotation = info.Annotation;
         record.Chapters = info.Chapters;
         record.LastChapter = info.LastChapter;
-        record.CoverPath = info.Cover == null ? null : platform.SaveThumbnail(info.Cover, record.Id);
+        record.CoverPath = info.Cover == null ? null : platform.SaveThumbnail(info.Cover, CoverThumbnails.RecordPath(record.Id));
     }
 
     /// <summary>Не скачалось — берём что успели узнать из карточки книги (если ядро до неё дошло).</summary>
@@ -557,20 +586,8 @@ public sealed class DownloadManager(
         record.SeriaName = preview.Seria;
         record.SeriaUrl = preview.SeriaUrl;
         record.Annotation = preview.Annotation;
-
-        // Обложка в карточке — data:-URL (data:image/jpeg;base64,…)
-        var comma = preview.CoverDataUrl?.IndexOf(',') ?? -1;
-        if (comma > 0)
-        {
-            try
-            {
-                record.CoverPath = platform.SaveThumbnail(Convert.FromBase64String(preview.CoverDataUrl[(comma + 1)..]), record.Id);
-            }
-            catch (FormatException)
-            {
-                // битая картинка — запись будет без обложки
-            }
-        }
+        // Битая картинка — SaveThumbnail вернёт null, запись будет без обложки
+        record.CoverPath = preview.Cover == null ? null : platform.SaveThumbnail(preview.Cover, CoverThumbnails.RecordPath(record.Id));
     }
 
     /// <summary>Строка журнала от ядра или от нас: в журнал, в статус и (не чаще раза в секунду) в шторку.</summary>
@@ -642,10 +659,25 @@ public sealed class DownloadManager(
         });
     }
 
-    /// <summary>При запуске приложения удаляет рабочие папки, оставшиеся от прошлого (например, после краша).</summary>
+    /// <summary>
+    /// При запуске приложения удаляет рабочие папки и миниатюры карточек, оставшиеся от прошлого (например, после краша).
+    /// </summary>
     public static void CleanupLeftovers()
     {
         TryDelete(Path.Combine(FileSystem.CacheDirectory, "jobs"));
+        TryDelete(CoverThumbnails.PreviewsDir);
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // подчистится при следующем запуске (CleanupLeftovers)
+        }
     }
 
     private static void TryDelete(string dir)
@@ -685,6 +717,10 @@ public sealed class DownloadManager(
         public volatile string Status = "Подготовка…";
         public volatile BookPreview Preview;
         public volatile int Current;
+
+        /// <summary>Миниатюра обложки карточки: адрес для интерфейса и файл в кэше (его удаляем при смене карточки).</summary>
+        public volatile string PreviewCoverUrl;
+        public string PreviewCoverPath;
 
         /// <summary>Счётчик глав текущей книги (через Interlocked).</summary>
         public int Chapters;

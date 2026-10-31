@@ -72,7 +72,7 @@ var logger = new CallbackLogger(line =>
 var sw = System.Diagnostics.Stopwatch.StartNew();
 var result = await BookPipeline.RunAsync(options, logger, p => preview = p, CancellationToken.None);
 Console.WriteLine($"Готово за {sw.Elapsed.TotalSeconds:0.0} с, строк лога: {lines}");
-Console.WriteLine($"Превью: «{preview?.Title}» / {preview?.Author}, обложка: {(preview?.CoverDataUrl == null ? "нет" : preview.CoverDataUrl.Length + " симв.")}");
+Console.WriteLine($"Превью: «{preview?.Title}» / {preview?.Author}, обложка: {(preview?.Cover == null ? "нет" : $"{preview.Cover.Length} байт, {preview.CoverMime}")}");
 Console.WriteLine($"Книга: «{result.Title}» / {result.Author}");
 var bookInfo = result.Info;
 Console.WriteLine($"Для «Книг»: глав {bookInfo.Chapters}, последняя «{bookInfo.LastChapter}», серия «{bookInfo.SeriaName}» #{bookInfo.SeriaNumber} ({bookInfo.SeriaUrl}), " +

@@ -33,6 +33,9 @@ namespace E2E.Droid.Services;
 /// Краткие сведения о книге для карточки на главном экране. Это отдельный «снимок», а не сам <see cref="Book"/>:
 /// временные файлы книги (в том числе обложка) удаляются сразу после сборки, а карточка должна жить дольше.
 /// </summary>
+/// <param name="Cover">Обложка как есть (байты с сайта); null — обложки нет. Интерфейс показывает не её,
+/// а уменьшенную копию файлом (см. CoverThumbnails) — без base64 и data:-URL.</param>
+/// <param name="CoverMime">Тип картинки обложки (image/jpeg, image/png…); null — обложки нет.</param>
 public sealed record BookPreview(
     string Url,
     string Title,
@@ -41,18 +44,21 @@ public sealed record BookPreview(
     string Seria,
     string SeriaUrl,
     string Annotation,
-    string CoverDataUrl)
+    byte[] Cover,
+    string CoverMime)
 {
-    /// <summary>Снимает данные с книги; обложка превращается в data:-URL, чтобы показать её в WebView без файла.</summary>
+    /// <summary>Снимает данные с книги; обложка копируется байтами (временные файлы книги скоро удалятся).</summary>
     public static BookPreview From(Book book)
     {
         // Обложки бывают не у всех книг — тогда Cover == null и карточка покажет заглушку
-        string cover = null;
+        byte[] cover = null;
+        string mime = null;
         var content = book.Cover?.Content;
         if (content is { Length: > 0 })
         {
-            // Тип картинки определяем по расширению временного файла; если не знаем — JPEG (браузер всё равно разберётся)
-            var mime = (book.Cover.Extension ?? string.Empty).ToLowerInvariant() switch
+            cover = content;
+            // Тип картинки — по расширению временного файла; если не знаем — JPEG (декодер всё равно разберётся)
+            mime = (book.Cover.Extension ?? string.Empty).ToLowerInvariant() switch
             {
                 ".png" => "image/png",
                 ".webp" => "image/webp",
@@ -60,7 +66,6 @@ public sealed record BookPreview(
                 ".svg" => "image/svg+xml",
                 _ => "image/jpeg"
             };
-            cover = $"data:{mime};base64,{Convert.ToBase64String(content)}";
         }
 
         // «Серия #3» — так же, как в ShortBook.razor веб-версии
@@ -76,7 +81,8 @@ public sealed record BookPreview(
             seria,
             book.Seria?.Url?.ToString(),
             book.Annotation,
-            cover);
+            cover,
+            mime);
     }
 }
 

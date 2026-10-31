@@ -33,7 +33,7 @@
             </div>
             @if (Downloads.Preview != null)
             {
-                <div class="card-section"><ShortBook Book="Downloads.Preview" Compact="true" /></div>
+                <div class="card-section"><ShortBook Book="Downloads.Preview" CoverUrl="@Downloads.PreviewCoverUrl" Compact="true" /></div>
             }
             <div class="list">
                 @foreach (var file in saved)
@@ -110,7 +110,7 @@
         <section class="card card-padded" aria-label="Загрузка">
             @if (Downloads.Preview != null)
             {
-                <ShortBook Book="Downloads.Preview" />
+                <ShortBook Book="Downloads.Preview" CoverUrl="@Downloads.PreviewCoverUrl" />
             }
             else
             {

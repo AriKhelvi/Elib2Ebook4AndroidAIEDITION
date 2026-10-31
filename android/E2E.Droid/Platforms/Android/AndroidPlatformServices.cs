@@ -44,7 +44,7 @@ public sealed class AndroidPlatformServices : IPlatformServices
     /// Обложка уменьшается средствами Android: сначала читаются только размеры, затем картинка декодируется
     /// с прореживанием (inSampleSize) и масштабируется до 240 px по высоте — так не тратится память на огромные обложки.
     /// </summary>
-    public string SaveThumbnail(byte[] image, string name)
+    public string SaveThumbnail(byte[] image, string path)
     {
         const int targetHeight = 240;
         try
@@ -74,15 +74,33 @@ public sealed class AndroidPlatformServices : IPlatformServices
                 ? Android.Graphics.Bitmap.CreateScaledBitmap(decoded, Math.Max(1, (int)(decoded.Width * scale)), targetHeight, true)
                 : null;
 
-            var dir = Path.Combine(FileSystem.AppDataDirectory, "covers");
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, name + ".jpg");
-            using var stream = File.Create(path);
-            (scaled ?? decoded).Compress(Android.Graphics.Bitmap.CompressFormat.Jpeg!, 82, stream);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            bool written;
+            using (var stream = File.Create(path))
+            {
+                written = (scaled ?? decoded).Compress(Android.Graphics.Bitmap.CompressFormat.Jpeg!, 82, stream);
+            }
+
+            if (!written)
+            {
+                File.Delete(path);
+                return null;
+            }
+
             return path;
         }
         catch
         {
+            // Недописанный файл не оставляем: интерфейс показал бы битую картинку
+            try
+            {
+                File.Delete(path);
+            }
+            catch
+            {
+                // нет файла — тем лучше
+            }
+
             return null; // обложка — не главное, запись о книге сохранится и без неё
         }
     }

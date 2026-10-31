@@ -182,7 +182,7 @@
 
         var record = _record;
         (_cover, _missing) = await Task.Run(() => (
-            BookActions.CoverDataUrl(record),
+            BookActions.CoverUrl(record),
             record.Files.Where(f => !Storage.Exists(f)).Select(f => f.Id).ToHashSet()));
         _allMissing = record.Files.Count > 0 && _missing.Count == record.Files.Count;
     }

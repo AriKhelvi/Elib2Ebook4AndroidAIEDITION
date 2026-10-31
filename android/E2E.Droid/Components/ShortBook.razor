@@ -3,9 +3,9 @@
 <div class="book-summary">
     @* Обложки бывают не у всех книг — тогда вместо неё значок *@
     <div class="book-cover @(Compact ? "small" : "")">
-        @if (!string.IsNullOrEmpty(Book.CoverDataUrl))
+        @if (!string.IsNullOrEmpty(CoverUrl))
         {
-            <img src="@Book.CoverDataUrl" alt="Обложка" />
+            <img src="@CoverUrl" alt="Обложка" />
         }
         else
         {
@@ -68,6 +68,13 @@
 @code {
     [Parameter, EditorRequired]
     public BookPreview Book { get; set; }
+
+    /// <summary>
+    /// Адрес миниатюры обложки (/_covers/…, см. DownloadManager.PreviewCoverUrl); null — вместо обложки значок.
+    /// Сама обложка (Book.Cover) — байты с сайта: в data:-URL её не превращаем.
+    /// </summary>
+    [Parameter]
+    public string CoverUrl { get; set; }
 
     /// <summary>Компактно (в карточке «Готово»): маленькая обложка, без сайта и аннотации.</summary>
     [Parameter]

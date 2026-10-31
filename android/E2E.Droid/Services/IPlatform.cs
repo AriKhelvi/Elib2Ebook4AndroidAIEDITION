@@ -67,10 +67,11 @@ public interface IPlatformServices
     IReadOnlyDictionary<string, string> GetDynamicColorScheme(bool dark);
 
     /// <summary>
-    /// Уменьшенная копия обложки для вкладки «Книги» (JPEG ~240 px по высоте) в личной папке приложения.
+    /// Уменьшенная копия обложки (JPEG ~240 px по высоте) — для карточки книги и вкладки «Книги».
+    /// Куда класть — решает вызывающий (см. CoverThumbnails: RecordPath, NewPreviewPath); папка создаётся сама.
     /// </summary>
-    /// <returns>Путь к файлу или null, если картинку не удалось прочитать.</returns>
-    string SaveThumbnail(byte[] image, string name);
+    /// <returns>Путь к файлу (тот же path) или null, если картинку не удалось прочитать.</returns>
+    string SaveThumbnail(byte[] image, string path);
 
     /// <summary>Версия приложения (versionName): 0.2.0 или 0.2.1-dev.5.</summary>
     string AppVersion { get; }

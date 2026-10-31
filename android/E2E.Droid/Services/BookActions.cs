@@ -62,14 +62,15 @@ public sealed class BookActions(
         storage.Share(files);
     }
 
-    /// <summary>Миниатюра обложки как data:-URL (встроенный браузер не читает файлы из личной папки приложения).</summary>
-    public static string CoverDataUrl(BookRecord record)
+    /// <summary>
+    /// Адрес миниатюры обложки для &lt;img src&gt; (/_covers/…): файл из личной папки приложения встроенному
+    /// браузеру отдаёт AppBlazorWebView — без чтения файла в base64. null — миниатюры нет.
+    /// </summary>
+    public static string CoverUrl(BookRecord record)
     {
         try
         {
-            return !string.IsNullOrEmpty(record.CoverPath) && File.Exists(record.CoverPath)
-                ? "data:image/jpeg;base64," + Convert.ToBase64String(File.ReadAllBytes(record.CoverPath))
-                : null;
+            return CoverThumbnails.UrlFor(record.CoverPath);
         }
         catch
         {
