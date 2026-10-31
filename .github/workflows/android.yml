@@ -107,6 +107,9 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', 'android/**/*.csproj', 'src/**/*.csproj') }}
           restore-keys: nuget-${{ runner.os }}-
 
+      - name: Проверки таймаута выбора папки и хранилища логинов
+        run: dotnet test android/ServiceTests/ServiceTests.csproj -c Release --nologo -v:minimal
+
       - name: Workload MAUI для Android
         run: dotnet workload install maui-android
 
