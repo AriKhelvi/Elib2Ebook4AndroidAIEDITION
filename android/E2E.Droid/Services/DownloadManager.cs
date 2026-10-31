@@ -87,6 +87,12 @@ public sealed class DownloadManager(
     /// <summary>Номер текущего задания. Колбэки отменённых заданий видят «чужой» номер и ничего не делают.</summary>
     private int _jobId;
 
+    /// <summary>
+    /// 1 — StartAsync уже идёт (ждёт разрешений). Защита от двойного старта: между проверкой IsRunning
+    /// и State = Running есть await-ы, и второе нажатие успело бы проскочить проверку.
+    /// </summary>
+    private int _starting;
+
     /// <summary>1 — обновление интерфейса уже запланировано (см. NotifyChanged).</summary>
     private int _changePending;
 
@@ -155,40 +161,67 @@ public sealed class DownloadManager(
         }
     }
 
-    /// <summary>Запускает задание. Вызывать из UI-потока (запрос разрешения показывает системный диалог).</summary>
-    public async Task StartAsync(DownloadRequest request)
+    /// <summary>
+    /// Запускает задание. Вызывать из UI-потока (запрос разрешения показывает системный диалог).
+    /// Повторный вызов, пока идёт запуск или скачивание, ничего не делает.
+    /// </summary>
+    /// <returns>true — задание запущено; false — уже идёт другое, нет ссылок или нет доступа к памяти.</returns>
+    public async Task<bool> StartAsync(DownloadRequest request)
     {
-        if (IsRunning || request.Urls.Count == 0)
+        if (request.Urls.Count == 0 || IsRunning)
         {
-            return;
+            return false;
         }
 
-        // Android 7–9: без разрешения на запись книгу некуда сохранить — не начинаем зря
-        if (!await storage.EnsureWriteAccessAsync())
+        // Атомарно занимаем запуск: двойное нажатие «Скачать» (или «Скачать заново» + авто-старт по ссылке
+        // из «Поделиться») иначе запустило бы два задания, пока первое ждёт разрешений
+        if (Interlocked.CompareExchange(ref _starting, 1, 0) != 0)
         {
-            toasts.Show("Без доступа к памяти книги некуда сохранить. Разрешите доступ или выберите папку в настройках", ToastKind.Error, 8);
-            return;
+            return false;
         }
 
-        // Android 13+: без разрешения не будет видно прогресса в шторке (сама загрузка всё равно пойдёт)
-        await platform.RequestNotificationPermissionAsync();
+        try
+        {
+            // Пока запуск занят, Running может выставить только этот вызов — но проверяем ещё раз
+            // на случай, если предыдущий запуск закончился между первой проверкой и CompareExchange
+            if (IsRunning)
+            {
+                return false;
+            }
 
-        var jobId = Interlocked.Increment(ref _jobId);
-        _cts = new CancellationTokenSource();
-        lock (_log) _log.Clear();
-        lock (_saved) _saved.Clear();
-        lock (_errors) _errors.Clear();
-        Preview = null;
-        Status = "Подготовка…";
-        Current = 0;
-        Total = request.Urls.Count;
-        State = DownloadState.Running;
-        Changed?.Invoke();
+            // Android 7–9: без разрешения на запись книгу некуда сохранить — не начинаем зря
+            if (!await storage.EnsureWriteAccessAsync())
+            {
+                toasts.Show("Без доступа к памяти книги некуда сохранить. Разрешите доступ или выберите папку в настройках", ToastKind.Error, 8);
+                return false;
+            }
 
-        // Foreground-сервис не даёт Android убить процесс, пока приложение свёрнуто
-        platform.StartBackgroundWork(Status);
-        var ct = _cts.Token;
-        _ = Task.Run(() => RunAsync(jobId, request, ct));
+            // Android 13+: без разрешения не будет видно прогресса в шторке (сама загрузка всё равно пойдёт)
+            await platform.RequestNotificationPermissionAsync();
+
+            var jobId = Interlocked.Increment(ref _jobId);
+            _cts = new CancellationTokenSource();
+            lock (_log) _log.Clear();
+            lock (_saved) _saved.Clear();
+            lock (_errors) _errors.Clear();
+            Preview = null;
+            Status = "Подготовка…";
+            Current = 0;
+            Total = request.Urls.Count;
+            State = DownloadState.Running;
+            Changed?.Invoke();
+
+            // Foreground-сервис не даёт Android убить процесс, пока приложение свёрнуто
+            platform.StartBackgroundWork(Status);
+            var ct = _cts.Token;
+            _ = Task.Run(() => RunAsync(jobId, request, ct));
+            return true;
+        }
+        finally
+        {
+            // Освобождаем запуск только после State = Running: следующий вызов увидит IsRunning
+            Volatile.Write(ref _starting, 0);
+        }
     }
 
     /// <summary>Отмена: интерфейс освобождается сразу, ядро дорабатывает «вхолостую» в фоне.</summary>

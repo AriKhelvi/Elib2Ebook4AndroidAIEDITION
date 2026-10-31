@@ -276,7 +276,7 @@
 
         <!-- Скачать -->
         <div class="stack">
-            <button type="button" class="btn btn-filled btn-block" @onclick="Start">
+            <button type="button" class="btn btn-filled btn-block" disabled="@_starting" @onclick="Start">
                 <Icon Name="download" Size="18" />Скачать
             </button>
             <p class="hint-row"><Icon Name="folder" Size="16" />Сохраняется в «@Storage.DestinationLabel»</p>
@@ -426,7 +426,8 @@
 
     private async Task ApplySharedLink(string urls)
     {
-        if (Downloads.IsRunning)
+        // _starting: запуск ещё ждёт разрешений — не подменяем ссылку в поле под уже собранным заданием
+        if (Downloads.IsRunning || _starting)
         {
             Toasts.Show("Сейчас идёт скачивание. Ссылку скопировал — вставьте её, когда закончится");
             await Clipboard.Default.SetTextAsync(urls);
@@ -535,7 +536,31 @@
         Form.StartNum = Form.EndNum = Form.StartName = Form.EndName = string.Empty;
     }
 
+    /// <summary>
+    /// Идёт Start(): проверки, сохранение логина, запрос разрешений. Второе нажатие «Скачать» (или авто-старт
+    /// по ссылке из «Поделиться» в это время) игнорируется. Обработчики Blazor идут в UI-потоке — хватает bool.
+    /// </summary>
+    private bool _starting;
+
     private async Task Start()
+    {
+        if (_starting || Downloads.IsRunning)
+        {
+            return;
+        }
+
+        _starting = true;
+        try
+        {
+            await StartCore();
+        }
+        finally
+        {
+            _starting = false;
+        }
+    }
+
+    private async Task StartCore()
     {
         await Js.InvokeVoidAsync("e2e.blur");
 
