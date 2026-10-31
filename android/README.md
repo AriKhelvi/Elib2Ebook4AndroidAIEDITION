@@ -74,6 +74,25 @@ Pixel 9a; Android 7–9 и 32-битные читалки поддерживаю
 
 ## Сборка APK
 
+### Открытие в IDE
+
+Откройте `android/Elib2Ebook.Android.sln` в IDE с поддержкой .NET 10 и MAUI для Android.
+Solution включает приложение, CoreSmoke, ServiceTests и библиотеки ядра с загрузчиками сайтов;
+стартовый проект — `E2E.Droid`. Для сборки нужны JDK 21, Android SDK 36 и workload `maui-android`.
+Основной `Elib2Ebook.sln` остаётся решением для консольной и веб-версии.
+
+`android/global.json` выбирает установленный стабильный SDK .NET 10.0, разрешая более новые feature bands
+внутри 10.0 (например, 10.0.403). Для применения этого выбора запускайте CLI из каталога `android`:
+
+```sh
+cd android
+dotnet build Elib2Ebook.Android.sln -c Debug
+dotnet test ServiceTests/ServiceTests.csproj -c Release
+```
+
+ServiceTests проверяет логику сервисов на ПК с подменой Android/MAUI API; проверки настоящего SAF,
+Keystore и интерфейса выполняются на Android-устройстве или эмуляторе.
+
 ### Подготовка ПК (один раз, Windows, без прав администратора)
 
 Всё ставится в `%LOCALAPPDATA%\Elib2EbookAndroidToolchain` и удаляется вместе с этой папкой (~5 ГБ):
