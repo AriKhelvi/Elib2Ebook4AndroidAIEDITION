@@ -6,14 +6,16 @@
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
              xmlns:components="clr-namespace:E2E.Droid.Components"
+             xmlns:local="clr-namespace:E2E.Droid"
              x:Class="E2E.Droid.MainPage"
              SafeAreaEdges="All"
              BackgroundColor="{AppThemeBinding Light=#F8F9FF, Dark=#111418}">
 
-    <BlazorWebView x:Name="blazorWebView" HostPage="wwwroot/index.html">
-        <BlazorWebView.RootComponents>
+    <!-- AppBlazorWebView — BlazorWebView, который ещё отдаёт миниатюры обложек (/_covers/…, см. AppBlazorWebView.cs) -->
+    <local:AppBlazorWebView x:Name="blazorWebView" HostPage="wwwroot/index.html">
+        <local:AppBlazorWebView.RootComponents>
             <RootComponent Selector="#app" ComponentType="{x:Type components:Routes}" />
-        </BlazorWebView.RootComponents>
-    </BlazorWebView>
+        </local:AppBlazorWebView.RootComponents>
+    </local:AppBlazorWebView>
 
 </ContentPage>

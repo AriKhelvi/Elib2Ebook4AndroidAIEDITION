@@ -36,7 +36,7 @@
                         <span class="book-cover tile">
                             @if (item.Cover != null)
                             {
-                                <img src="@item.Cover" alt="" />
+                                <img src="@item.Cover" alt="" loading="lazy" decoding="async" />
                             }
                             else
                             {
@@ -94,7 +94,7 @@
         var records = History.Records;
         // Обложки и проверка «файлы ещё на месте» — с диска и через ContentResolver, не в UI-потоке
         _items = await Task.Run(() => records
-            .Select(r => new Item(r, BookActions.CoverDataUrl(r), !r.Failed && r.Files.Count > 0 && !r.Files.Any(Storage.Exists)))
+            .Select(r => new Item(r, BookActions.CoverUrl(r), !r.Failed && r.Files.Count > 0 && !r.Files.Any(Storage.Exists)))
             .ToList());
     }
 

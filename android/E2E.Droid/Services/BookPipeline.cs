@@ -10,7 +10,9 @@
 //   BookGetterConfig.GetDefault  → HttpClient с cookies, прокси, таймаутом (как в CLI)
 //   GetterResolver.Create        → загрузчик нужного сайта по ссылке
 //   getter.Init / Authorize      → подготовка сессии, вход по логину (если задан)
-//   getter.Get (NoChapters=true) → быстрое «превью»: название, автор, обложка — для карточки в интерфейсе
+//   getter.Get (NoChapters=true) → быстрое «превью»: название, автор, обложка — для карточки в интерфейсе.
+//                                  Необязательное: его ошибки не роняют скачивание, а для сайтов, где
+//                                  такой проход всё равно качает всю книгу, оно отключено (NoPreviewGetters)
 //   getter.Get                   → полная книга со всеми главами и картинками
 //   BuilderProvider.Get(format)  → сборка EPUB/FB2/CBZ/TXT в рабочую папку задания
 //   AdditionaFileBuilder         → доп. файлы (аудио, вложения), если включены в настройках
@@ -21,6 +23,7 @@ using Elib2Ebook.Domain.Book;
 using Elib2Ebook.DomainServices.Builders;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
+using Elib2Ebook.DomainServices.Getters;
 using Elib2Ebook.DomainServices.Misc;
 using Microsoft.Extensions.Logging;
 
@@ -30,6 +33,9 @@ namespace E2E.Droid.Services;
 /// Краткие сведения о книге для карточки на главном экране. Это отдельный «снимок», а не сам <see cref="Book"/>:
 /// временные файлы книги (в том числе обложка) удаляются сразу после сборки, а карточка должна жить дольше.
 /// </summary>
+/// <param name="Cover">Обложка как есть (байты с сайта); null — обложки нет. Интерфейс показывает не её,
+/// а уменьшенную копию файлом (см. CoverThumbnails) — без base64 и data:-URL.</param>
+/// <param name="CoverMime">Тип картинки обложки (image/jpeg, image/png…); null — обложки нет.</param>
 public sealed record BookPreview(
     string Url,
     string Title,
@@ -38,18 +44,21 @@ public sealed record BookPreview(
     string Seria,
     string SeriaUrl,
     string Annotation,
-    string CoverDataUrl)
+    byte[] Cover,
+    string CoverMime)
 {
-    /// <summary>Снимает данные с книги; обложка превращается в data:-URL, чтобы показать её в WebView без файла.</summary>
+    /// <summary>Снимает данные с книги; обложка копируется байтами (временные файлы книги скоро удалятся).</summary>
     public static BookPreview From(Book book)
     {
         // Обложки бывают не у всех книг — тогда Cover == null и карточка покажет заглушку
-        string cover = null;
+        byte[] cover = null;
+        string mime = null;
         var content = book.Cover?.Content;
         if (content is { Length: > 0 })
         {
-            // Тип картинки определяем по расширению временного файла; если не знаем — JPEG (браузер всё равно разберётся)
-            var mime = (book.Cover.Extension ?? string.Empty).ToLowerInvariant() switch
+            cover = content;
+            // Тип картинки — по расширению временного файла; если не знаем — JPEG (декодер всё равно разберётся)
+            mime = (book.Cover.Extension ?? string.Empty).ToLowerInvariant() switch
             {
                 ".png" => "image/png",
                 ".webp" => "image/webp",
@@ -57,7 +66,6 @@ public sealed record BookPreview(
                 ".svg" => "image/svg+xml",
                 _ => "image/jpeg"
             };
-            cover = $"data:{mime};base64,{Convert.ToBase64String(content)}";
         }
 
         // «Серия #3» — так же, как в ShortBook.razor веб-версии
@@ -73,7 +81,8 @@ public sealed record BookPreview(
             seria,
             book.Seria?.Url?.ToString(),
             book.Annotation,
-            cover);
+            cover,
+            mime);
     }
 }
 
@@ -135,10 +144,33 @@ public sealed record BookJobResult(BookInfo Info, string OutputDir, IReadOnlyLis
 /// </summary>
 public static class BookPipeline
 {
+    /// <summary>
+    /// Загрузчики, у которых быстрый проход без глав (NoChapters) всё равно скачивает книгу целиком: файл книги,
+    /// аудио или весь текст. Для них карточку до скачивания не показываем — иначе книга качалась бы дважды.
+    /// Имена сверяет с загрузчиками ядра android/CoreSmoke: если в ядре класс переименуют, проверка упадёт.
+    /// </summary>
+    public static readonly IReadOnlySet<string> NoPreviewGetters = new HashSet<string>(StringComparer.Ordinal)
+    {
+        // NoChapters не проверяет вовсе — качает все посты
+        "Elib2Ebook.ExternalServices.Boosty.BoostyGetter",
+        // Сначала качают файл книги (epub, fb3), аудио или все эпизоды сериала и только потом смотрят на NoChapters
+        "Elib2Ebook.ExternalServices.BooksYandex.Getters.BooksYandexBooksGetter",
+        "Elib2Ebook.ExternalServices.Litres.LitresGetter",
+        "Elib2Ebook.ExternalServices.MyBook.MyBookGetter",
+        // Весь текст книги приходит одним запросом (/reader/blocks) ещё до проверки NoChapters
+        "Elib2Ebook.ExternalServices.Litmarket.LitmarketGetter"
+    };
+
+    /// <summary>Показывать ли карточку книги до скачивания для этого загрузчика (см. <see cref="NoPreviewGetters"/>).</summary>
+    public static bool SupportsPreview(Type getterType) => !NoPreviewGetters.Contains(getterType.FullName ?? string.Empty);
+
     /// <summary>Скачивает одну книгу (одну ссылку из options.Url) во все запрошенные форматы.</summary>
     /// <param name="options">Опции ядра; SavePath и TempPath должны указывать на рабочие папки задания.</param>
     /// <param name="logger">Куда писать журнал (строки ядра на русском: «Загружаю главу …»).</param>
-    /// <param name="onPreview">Вызывается, как только известны название/автор/обложка; null — без превью.</param>
+    /// <param name="onPreview">
+    /// Вызывается, как только известны название/автор/обложка; null — без превью. Может и не вызваться:
+    /// превью необязательное (см. <see cref="TryPreviewAsync"/>).
+    /// </param>
     /// <param name="ct">Отмена. Ядро токен не принимает, поэтому отмена реализована через закрытие HttpClient.</param>
     /// <exception cref="OperationCanceledException">Если загрузку отменили.</exception>
     public static async Task<BookJobResult> RunAsync(Options options, ILogger logger, Action<BookPreview> onPreview, CancellationToken ct)
@@ -177,17 +209,9 @@ public static class BookPipeline
             await getter.Authorize();
             ct.ThrowIfCancellationRequested();
 
-            if (onPreview != null)
+            if (onPreview != null && SupportsPreview(getter.GetType()))
             {
-                // Как в веб-версии: сначала быстрый проход без глав, чтобы сразу показать карточку книги
-                options.NoChapters = true;
-                using (var shortBook = await getter.Get(url))
-                {
-                    onPreview(BookPreview.From(shortBook));
-                }
-
-                options.NoChapters = false;
-                ct.ThrowIfCancellationRequested();
+                await TryPreviewAsync(getter, url, options, logger, onPreview, ct);
             }
 
             // Полная загрузка: главы, картинки (если не выбрано «без картинок»), диапазон глав из options.Start/End
@@ -221,5 +245,35 @@ public static class BookPipeline
         {
             config.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Как в веб-версии: сначала быстрый проход без глав, чтобы сразу показать карточку книги.
+    /// Карточка — только украшение: любая её ошибка (сайт не отдал обложку, таймаут, сбой разбора) пишется
+    /// в журнал, а книга скачивается дальше. Пробрасывается только отмена.
+    /// </summary>
+    private static async Task TryPreviewAsync(GetterBase getter, Uri url, Options options, ILogger logger, Action<BookPreview> onPreview, CancellationToken ct)
+    {
+        // Доп. файлы (иллюстрации, аудио, оригиналы) карточке не нужны, а часть загрузчиков качает их,
+        // не глядя на NoChapters (например, галерею author.today) — на время превью выключаем
+        var additional = options.Additional;
+        options.NoChapters = true;
+        options.Additional = false;
+        try
+        {
+            using var shortBook = await getter.Get(url);
+            onPreview(BookPreview.From(shortBook));
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            logger.LogInformation($"Не удалось получить карточку книги, скачиваю без неё: {ex.Message}");
+        }
+        finally
+        {
+            options.NoChapters = false;
+            options.Additional = additional;
+        }
+
+        ct.ThrowIfCancellationRequested();
     }
 }

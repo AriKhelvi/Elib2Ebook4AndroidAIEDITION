@@ -1,4 +1,6 @@
 ﻿using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Misc.TempFolder;
 using FlareSolverrSharp;
@@ -68,6 +70,12 @@ public class BookGetterConfig : IDisposable
         }
     }
 
+    /// <summary>
+    /// Проверка сертификата сервера для всех запросов ядра. По умолчанию принимает любой сертификат (как раньше);
+    /// приложение может подставить свою политику (так делает Android-версия, см. android/E2E.Droid).
+    /// </summary>
+    public static Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> ServerCertificateValidator { get; set; } = (_, _, _, _) => true;
+
     public HttpClient Client { get; }
 
     public Options Options { get; }
@@ -108,7 +116,7 @@ public class BookGetterConfig : IDisposable
             AutomaticDecompression = DecompressionMethods.GZip |
                                      DecompressionMethods.Deflate |
                                      DecompressionMethods.Brotli,
-            ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+            ServerCertificateCustomValidationCallback = (request, certificate, chain, errors) => ServerCertificateValidator(request, certificate, chain, errors),
             CookieContainer = container,
             Proxy = null,
             UseProxy = false,

@@ -37,9 +37,16 @@ public static class MauiProgram
         builder.Services.AddSingleton<IPlatformServices, AndroidPlatformServices>();
         builder.Services.AddSingleton<DownloadManager>();
         builder.Services.AddSingleton<BookActions>();
+        builder.Services.AddSingleton<DiagnosticsRunner>();
 
         var app = builder.Build();
         Services = app.Services;
+
+        // Ядро само принимает любой сертификат — на телефоне проверяем (см. CertificatePolicy).
+        // «Не проверять сертификаты» в настройках читается при каждом соединении — перезапуск не нужен
+        var settings = app.Services.GetRequiredService<AppSettings>();
+        CertificatePolicy.AllowInsecure = () => settings.AllowInsecureTls;
+        Elib2Ebook.DomainServices.Configs.BookGetterConfig.ServerCertificateValidator = CertificatePolicy.Validate;
 
         // Подчищаем рабочие папки прошлых запусков и заранее грузим сборки сайтов (~60 dll)
         Task.Run(() =>
