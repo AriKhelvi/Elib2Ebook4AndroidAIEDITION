@@ -44,7 +44,7 @@ jobs:
         uses: actions/setup-java@v5
         with:
           distribution: microsoft
-          java-version: '17'
+          java-version: '21'
 
       - name: Install MAUI Android workload
         run: dotnet workload install maui-android
@@ -59,6 +59,16 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           additional_permissions: |
             actions: read
-          # Инструменты через запятую, без пробелов, в одной строке в кавычках.
+          # Разрешённые инструменты: через запятую, без пробелов, одной строкой в кавычках.
+          # Claude Code проверяет каждую часть составной команды (cd X && git clone ... | tar ...),
+          # поэтому здесь есть и служебные команды оболочки. Состав:
+          #   сборка и Android: dotnet, java, keytool, apksigner, zipalign, aapt2, sdkmanager, ilspycmd, pwsh;
+          #   git и сеть: git (вкл. clone), gh, curl, wget;
+          #   архивы: tar, unzip, zip, gzip;
+          #   скрипты: bash, sh, python3, jq;
+          #   файлы и текст: cd, ls, cat, find, grep, sed, awk, cp, mv, rm, mkdir и т. п.;
+          #   без Bash: Read, Edit, Write, Glob, Grep, WebFetch, WebSearch, TodoWrite.
+          # Если Claude снова попросит разрешение на какую-то команду — допишите её сюда
+          # или замените весь список одним словом "Bash" (разрешит любые команды).
           claude_args: |
-            --allowedTools "Bash(dotnet:*),Bash(gh:*),Bash(curl:*),WebFetch,WebSearch"
+            --allowedTools "Bash(dotnet:*),Bash(java:*),Bash(keytool:*),Bash(apksigner:*),Bash(zipalign:*),Bash(aapt2:*),Bash(sdkmanager:*),Bash(ilspycmd:*),Bash(pwsh:*),Bash(git:*),Bash(gh:*),Bash(curl:*),Bash(wget:*),Bash(tar:*),Bash(unzip:*),Bash(zip:*),Bash(gzip:*),Bash(bash:*),Bash(sh:*),Bash(python3:*),Bash(jq:*),Bash(cd:*),Bash(pwd),Bash(ls:*),Bash(cat:*),Bash(head:*),Bash(tail:*),Bash(wc:*),Bash(find:*),Bash(grep:*),Bash(rg:*),Bash(sed:*),Bash(awk:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(tr:*),Bash(xargs:*),Bash(tee:*),Bash(diff:*),Bash(cmp:*),Bash(file:*),Bash(stat:*),Bash(du:*),Bash(mkdir:*),Bash(cp:*),Bash(mv:*),Bash(rm:*),Bash(touch:*),Bash(chmod:*),Bash(ln:*),Bash(echo:*),Bash(printf:*),Bash(test:*),Bash(export:*),Bash(env:*),Bash(which:*),Bash(realpath:*),Bash(dirname:*),Bash(basename:*),Bash(date:*),Bash(sleep:*),Bash(timeout:*),Bash(true),Bash(base64:*),Bash(sha256sum:*),Bash(strings:*),Bash(od:*),Bash(uname:*),Bash(nproc),Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TodoWrite"
