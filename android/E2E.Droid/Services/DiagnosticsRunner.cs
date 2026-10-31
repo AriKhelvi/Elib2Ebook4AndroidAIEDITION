@@ -103,8 +103,9 @@ public sealed class DiagnosticsRunner(
         {
             var log = Log;
             var head = log.TakeWhile(l => l.StartsWith('#')).ToList();
+            // Строки «#» (шапка, легенда с «[FAIL]» и «[skip]») — не проблемы
             var problems = log
-                .Where(l => l.Contains("[FAIL]", StringComparison.Ordinal) || l.Contains("[skip]", StringComparison.Ordinal))
+                .Where(l => !l.StartsWith('#') && (l.Contains("[FAIL]", StringComparison.Ordinal) || l.Contains("[skip]", StringComparison.Ordinal)))
                 .Select(l => "#   " + FirstLine(StripTime(l)))
                 .ToList();
 
@@ -300,6 +301,11 @@ public sealed class DiagnosticsRunner(
             Info($"{key}: {value}");
         }
 
+        if (!platform.IsIgnoringBatteryOptimizations)
+        {
+            Info("Снять ограничение батареи: «Настройки» → «Скачивание» → «Работа в фоне ограничена»");
+        }
+
         Info(Safe(() => $".NET: {RuntimeInformation.FrameworkDescription}, {RuntimeInformation.OSDescription}, " +
                         $"процесс {RuntimeInformation.ProcessArchitecture}, ядер {Environment.ProcessorCount}"));
         Info(Safe(() => $"Время: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz} (UTC {DateTime.UtcNow:HH:mm:ss}), пояс {TimeZoneInfo.Local.Id}, " +
@@ -455,6 +461,16 @@ public sealed class DiagnosticsRunner(
                     var first = result.Outcome;
                     result = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, longTimeout, ct);
                     result.Lines.Insert(1, $"      Повтор с таймаутом {longTimeout.TotalSeconds:0} с (из настроек); первая попытка: {first}");
+                }
+
+                // TCP есть, а TLS виснет: пробуем TLS 1.2. Его первый пакет короче (без TLS 1.3 и больших ключей),
+                // на таком часто не ломаются фильтры провайдеров. Открылся — значит, мешает именно TLS 1.3
+                if (!result.Ok && result.TcpConnected)
+                {
+                    var tls12 = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, ProbeTimeout, ct, System.Security.Authentication.SslProtocols.Tls12);
+                    result.Lines.Insert(1, tls12.Ok
+                        ? $"      Проба TLS 1.2: ОТКРЫЛСЯ — {tls12.Outcome}. Мешает TLS 1.3 (вероятно, фильтр в сети)"
+                        : $"      Проба TLS 1.2: тоже не открылся — {tls12.Outcome}");
                 }
 
                 Report(result);

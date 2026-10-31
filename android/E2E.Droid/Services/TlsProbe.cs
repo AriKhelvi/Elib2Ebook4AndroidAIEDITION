@@ -7,6 +7,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -36,6 +37,9 @@ public sealed class TlsProbeResult
     /// <summary>Итог отдельной проверки TCP-соединения, если до TLS не дошло (без прокси); иначе null.</summary>
     public string TcpCheck { get; internal set; }
 
+    /// <summary>TCP-соединение есть, а TLS не прошёл — кандидат на пробу TLS 1.2 (см. DiagnosticsRunner).</summary>
+    public bool TcpConnected { get; internal set; }
+
     public SslPolicyErrors SystemErrors { get; internal set; }
 
     /// <summary>Итог одной строкой: «HTTP 200 …» или причина неудачи.</summary>
@@ -59,7 +63,9 @@ public static class TlsProbe
     /// <param name="url">Адрес; для обхода по IP — https://IP/.</param>
     /// <param name="hostHeader">Настоящее имя сайта в заголовке Host (обход по IP) или null.</param>
     /// <param name="proxy">Прокси из настроек (http://, socks5://…) или пусто.</param>
-    public static async Task<TlsProbeResult> ProbeAsync(Uri url, string hostHeader, string proxy, TimeSpan timeout, CancellationToken ct)
+    /// <param name="protocols">Только эти версии TLS (например, Tls12 — проба для сайтов, где виснет TLS 1.3); None — как у ядра.</param>
+    public static async Task<TlsProbeResult> ProbeAsync(Uri url, string hostHeader, string proxy, TimeSpan timeout, CancellationToken ct,
+        SslProtocols protocols = SslProtocols.None)
     {
         var result = new TlsProbeResult();
         var expected = hostHeader ?? url.IdnHost;
@@ -111,6 +117,11 @@ public static class TlsProbe
             }
         };
 
+        if (protocols != SslProtocols.None)
+        {
+            handler.SslProtocols = protocols;
+        }
+
         if (!string.IsNullOrWhiteSpace(proxy) && Uri.TryCreate(proxy.Trim(), UriKind.Absolute, out var proxyUri))
         {
             handler.Proxy = new WebProxy(proxyUri);
@@ -153,7 +164,7 @@ public static class TlsProbe
             // До TLS не дошло: проверяем голое TCP-соединение — сайт недоступен или соединение есть, а дальше тишина
             if (!result.TlsSeen && string.IsNullOrWhiteSpace(proxy))
             {
-                result.TcpCheck = await CheckTcpAsync(url, ct);
+                (result.TcpConnected, result.TcpCheck) = await CheckTcpAsync(url, ct);
             }
         }
 
@@ -197,7 +208,7 @@ public static class TlsProbe
     /// Голое TCP-соединение с портом сайта (10 с). Соединение есть, а TLS и ответа нет — похоже на блокировку по
     /// содержимому (DPI) или зависший сервер; соединения нет — сайт выключен или адрес заблокирован целиком.
     /// </summary>
-    private static async Task<string> CheckTcpAsync(Uri url, CancellationToken ct)
+    private static async Task<(bool Connected, string Text)> CheckTcpAsync(Uri url, CancellationToken ct)
     {
         var port = url.IsDefaultPort ? 443 : url.Port;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -207,15 +218,15 @@ public static class TlsProbe
         {
             using var tcp = new System.Net.Sockets.TcpClient();
             await tcp.ConnectAsync(url.IdnHost, port, timeout.Token);
-            return $"соединение с портом {port} есть ({sw.ElapsedMilliseconds} мс), но TLS и ответа нет — похоже на блокировку или зависший сервер";
+            return (true, $"соединение с портом {port} есть ({sw.ElapsedMilliseconds} мс), но TLS и ответа нет — похоже на блокировку или зависший сервер");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return $"соединение с портом {port} не устанавливается за 10 с — сайт недоступен из этой сети";
+            return (false, $"соединение с портом {port} не устанавливается за 10 с — сайт недоступен из этой сети");
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            return $"соединения с портом {port} нет: {Describe(ex)}";
+            return (false, $"соединения с портом {port} нет: {Describe(ex)}");
         }
     }
 
