@@ -20,6 +20,8 @@ BookGetterConfig.ServerCertificateValidator = CertificatePolicy.Validate;
 var roots = CertificatePolicy.Roots;
 Check(roots.Count >= 20, $"встроенных корней: {roots.Count}");
 Check(roots.All(r => r.NotAfter > DateTime.Now.AddYears(1)), "встроенные корни действуют ещё минимум год");
+var bridges = CertificatePolicy.Bridges;
+Check(bridges.Count >= 3 && bridges.All(b => b.NotAfter > DateTime.Now.AddYears(1)), $"мостовых сертификатов Let's Encrypt: {bridges.Count}, действуют ещё минимум год");
 
 // Самопроверка разбора ссылок, которые прилетают через «Поделиться» и из поля ввода
 Check(SharedLinkInbox.ExtractUrls("Мастер Ветров — Author.Today\nhttps://author.today/work/212721").SequenceEqual(["https://author.today/work/212721"]), "ExtractUrls: заголовок + ссылка");

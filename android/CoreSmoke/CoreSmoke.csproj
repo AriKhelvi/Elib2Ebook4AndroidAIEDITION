@@ -32,5 +32,6 @@
         <Compile Include="..\E2E.Droid\Services\CertificatePolicy.cs" Link="Shared\CertificatePolicy.cs" />
         <EmbeddedResource Include="..\..\README.md" LogicalName="Elib2Ebook.README.md" />
         <EmbeddedResource Include="..\E2E.Droid\Resources\Certificates\trusted-roots.pem" LogicalName="E2E.Droid.trusted-roots.pem" />
+        <EmbeddedResource Include="..\E2E.Droid\Resources\Certificates\trusted-bridges.pem" LogicalName="E2E.Droid.trusted-bridges.pem" />
     </ItemGroup>
 </Project>

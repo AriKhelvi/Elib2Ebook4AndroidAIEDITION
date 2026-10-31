@@ -24,8 +24,11 @@ public sealed class TlsProbeResult
     /// <summary>Сертификат отклонён политикой (а не сеть подвела).</summary>
     public bool TlsRejected { get; internal set; }
 
-    /// <summary>Система цепочку не построила, а встроенные корни — построили.</summary>
-    public bool UsedBundledRoots { get; internal set; }
+    /// <summary>Система цепочку не построила, а политика достроила (мостами Let's Encrypt или встроенными корнями).</summary>
+    public bool ChainCompleted { get; internal set; }
+
+    /// <summary>Каким путём принят, если система была против (из CertificatePolicy.Check).</summary>
+    public string AcceptedHow { get; internal set; }
 
     public SslPolicyErrors SystemErrors { get; internal set; }
 
@@ -95,7 +98,9 @@ public static class TlsProbe
                     }
                 }
 
-                verdict = errors == SslPolicyErrors.None ? null : CertificatePolicy.Check(expected, certificate, chain, errors);
+                string how = null;
+                verdict = errors == SslPolicyErrors.None ? null : CertificatePolicy.Check(expected, certificate, chain, errors, out how);
+                result.AcceptedHow = how;
                 return verdict == null;
             }
         };
@@ -136,7 +141,7 @@ public static class TlsProbe
                 : $"не открылся за {sw.ElapsedMilliseconds} мс: {Describe(ex)}";
         }
 
-        result.UsedBundledRoots = result.Ok && result.SystemErrors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors);
+        result.ChainCompleted = result.Ok && result.SystemErrors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors);
         result.Lines.Add($"[{(result.Ok ? "ok" : "FAIL")}] {url.IdnHost}{(hostHeader != null ? $" (Host: {hostHeader})" : "")} — {result.Outcome}");
         if (dns != null)
         {
@@ -147,26 +152,10 @@ public static class TlsProbe
             ? $"      TLS: система — {system}; " +
               (verdict != null ? $"отклонён: {verdict}"
                   : result.SystemErrors == SslPolicyErrors.None ? "принят"
-                  : result.UsedBundledRoots ? "принят: цепочку достроили встроенные корни"
-                  : "принят: имя сверено с Host") +
+                  : $"принят: {result.AcceptedHow}") +
               $"; цепочка: {chainText}"
             : "      TLS: до проверки сертификата не дошло");
         return result;
-    }
-
-    /// <summary>
-    /// Как на старом Android, где нет ни одного нужного корня: строим цепочку без доверенных корней (система
-    /// ответит ошибкой) и отдаём политике. null — политика цепочку достроила встроенными корнями; иначе — причина.
-    /// </summary>
-    public static (string SystemView, string Verdict) CheckWithoutSystemRoots(X509Certificate2 leaf, X509Certificate2Collection sent, string host)
-    {
-        using var bare = new X509Chain();
-        bare.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        bare.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        bare.ChainPolicy.ExtraStore.AddRange(sent);
-        bare.Build(leaf);
-        var view = CertificatePolicy.DescribeErrors(SslPolicyErrors.RemoteCertificateChainErrors, bare);
-        return (view, CertificatePolicy.Check(host, leaf, bare, SslPolicyErrors.RemoteCertificateChainErrors));
     }
 
     /// <summary>Подставной (самоподписанный) сертификат на имя сайта. null — политика его ПРИНЯЛА (так быть не должно).</summary>
@@ -178,11 +167,9 @@ public static class TlsProbe
         names.AddDnsName(host);
         request.CertificateExtensions.Add(names.Build());
         using var forged = request.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddDays(30));
-        using var chain = new X509Chain();
-        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        chain.Build(forged);
-        return CertificatePolicy.Check(host, forged, chain, SslPolicyErrors.RemoteCertificateChainErrors);
+        // Цепочку не строим: на Android нельзя X509Chain с пустым набором своих корней. Система бы ответила
+        // ChainErrors — ровно это и отдаём политике: пусть попробует мосты и встроенные корни
+        return CertificatePolicy.Check(host, forged, null, SslPolicyErrors.RemoteCertificateChainErrors);
     }
 
     /// <summary>Исключение со всеми вложенными: тип и сообщение каждого.</summary>

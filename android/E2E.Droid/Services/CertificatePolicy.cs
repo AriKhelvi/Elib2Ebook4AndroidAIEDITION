@@ -22,8 +22,10 @@ namespace E2E.Droid.Services;
 /// <item>Включено «Не проверять сертификаты» (настройки → Сеть) — принимаем, как ядро на ПК.</item>
 /// <item>Имя: сертификат должен быть выдан на сайт, к которому запрос. Если ядро ходит по IP в обход блокировок
 /// (author.today, readli) и передаёт настоящее имя в заголовке Host — сверяем с ним.</item>
-/// <item>Цепочка: если система не знает корня (старые Android и читалки — в Android 7.0 нет ISRG Root X1 от
-/// Let's Encrypt), достраиваем её по встроенному набору публичных корней (Resources/Certificates/trusted-roots.pem).</item>
+/// <item>Цепочка, если система её не построила: сначала ещё раз системой Android, добавив «мостовые» сертификаты
+/// Let's Encrypt (Resources/Certificates/trusted-bridges.pem) — сайты, не присылающие Root YE/YR, тогда доходят до
+/// ISRG Root X1; затем по встроенному набору публичных корней (trusted-roots.pem) — для старых Android и читалок,
+/// где нет нужного корня (в Android 7.0 нет ISRG Root X1).</item>
 /// </list>
 /// Всё остальное — просроченный, самоподписанный, выданный неизвестным центром или на другой сайт — отказ.
 /// Не зависит от MAUI: проверяется на ПК (android/CoreSmoke).
@@ -33,10 +35,15 @@ public static class CertificatePolicy
     /// <summary>Имя встроенного набора корней (EmbeddedResource в E2E.Droid.csproj и CoreSmoke.csproj).</summary>
     public const string RootsResource = "E2E.Droid.trusted-roots.pem";
 
+    /// <summary>Имя набора «мостовых» сертификатов Let's Encrypt (EmbeddedResource там же).</summary>
+    public const string BridgesResource = "E2E.Droid.trusted-bridges.pem";
+
     /// <summary>Назначение «TLS-сервер» (serverAuth): корень и промежуточные должны разрешать именно его.</summary>
     private const string ServerAuthOid = "1.3.6.1.5.5.7.3.1";
 
-    private static readonly Lazy<X509Certificate2Collection> BundledRoots = new(LoadBundledRoots);
+    private static readonly Lazy<X509Certificate2Collection> BundledRoots = new(() => LoadPem(RootsResource));
+
+    private static readonly Lazy<X509Certificate2Collection> BundledBridges = new(() => LoadPem(BridgesResource));
 
     private static volatile string _lastRejection;
 
@@ -48,6 +55,9 @@ public static class CertificatePolicy
 
     /// <summary>Встроенные корни (для самопроверки в CoreSmoke).</summary>
     public static IReadOnlyList<X509Certificate2> Roots => BundledRoots.Value.ToList();
+
+    /// <summary>Встроенные «мостовые» сертификаты (для самопроверки и диагностики).</summary>
+    public static IReadOnlyList<X509Certificate2> Bridges => BundledBridges.Value.ToList();
 
     /// <summary>
     /// Каждая проверка сертификата одной строкой: сайт, что сказала система, решение, цепочка. Для подробного журнала
@@ -72,13 +82,11 @@ public static class CertificatePolicy
         }
         else
         {
-            reason = Check(host, certificate, chain, errors);
+            reason = Check(host, certificate, chain, errors, out var how);
             accepted = reason == null;
             if (accepted)
             {
-                reason = errors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors)
-                    ? "цепочка достроена встроенными корнями"
-                    : "имя сверено с заголовком Host";
+                reason = how;
             }
             else
             {
@@ -102,22 +110,44 @@ public static class CertificatePolicy
     /// <param name="host">Сайт, на который должен быть выдан сертификат.</param>
     /// <returns>null — сертификат подходит; иначе — причина отказа.</returns>
     public static string Check(string host, X509Certificate2 certificate, X509Chain chain, SslPolicyErrors errors)
+        => Check(host, certificate, chain, errors, out _);
+
+    /// <param name="how">Если принят несмотря на ошибки системы — каким путём (для журнала); иначе null.</param>
+    public static string Check(string host, X509Certificate2 certificate, X509Chain chain, SslPolicyErrors errors, out string how)
     {
+        how = null;
         if (certificate == null || errors.HasFlag(SslPolicyErrors.RemoteCertificateNotAvailable))
         {
             return "сайт не прислал сертификат";
         }
 
         // Система сверяет имя с адресом соединения; при обходе по IP настоящее имя — в заголовке Host
-        if (errors.HasFlag(SslPolicyErrors.RemoteCertificateNameMismatch)
-            && (string.IsNullOrEmpty(host) || !certificate.MatchesHostname(host)))
+        if (errors.HasFlag(SslPolicyErrors.RemoteCertificateNameMismatch))
         {
-            return $"сертификат выдан на другой сайт ({certificate.GetNameInfo(X509NameType.DnsName, false)})";
+            if (string.IsNullOrEmpty(host) || !certificate.MatchesHostname(host))
+            {
+                return $"сертификат выдан на другой сайт ({certificate.GetNameInfo(X509NameType.DnsName, false)})";
+            }
+
+            how = "имя сверено с заголовком Host";
         }
 
         if (errors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors))
         {
-            return CheckChainWithBundledRoots(certificate, chain);
+            var sent = SentCertificates(certificate, chain);
+            if (TryChainWithSystemAndBridges(certificate, sent) == null)
+            {
+                how = "цепочка достроена мостовыми сертификатами Let's Encrypt";
+                return null;
+            }
+
+            var reason = TryChainWithBundledRoots(certificate, sent);
+            if (reason != null)
+            {
+                return reason;
+            }
+
+            how = "цепочка достроена встроенными корнями";
         }
 
         return null;
@@ -171,11 +201,38 @@ public static class CertificatePolicy
     }
 
     /// <summary>
-    /// Система не смогла построить доверенную цепочку — пробуем со встроенными корнями. Промежуточные сертификаты
-    /// берём из того, что прислал сайт (ExtraStore системной цепочки) и что система уже нашла.
+    /// Ещё раз системой Android (её корни), добавив к присланному сайтом «мостовые» сертификаты Let's Encrypt.
+    /// Так проверяет и браузер, когда сам докачивает недостающее звено. Доверие — только к корням системы.
+    /// </summary>
+    /// <param name="sent">Промежуточные, которые прислал сайт (и которые система уже нашла).</param>
+    /// <returns>null — цепочка доверенная; иначе — причина отказа.</returns>
+    public static string TryChainWithSystemAndBridges(X509Certificate2 certificate, X509Certificate2Collection sent)
+    {
+        try
+        {
+            using var chain = new X509Chain();
+            var policy = chain.ChainPolicy;
+            // Как у системной проверки TLS в .NET (CheckCertificateRevocationList = false): без запросов к CRL/OCSP.
+            // И без докачки звеньев по AIA: никакой сети внутри рукопожатия, а Android её всё равно не делает
+            policy.RevocationMode = X509RevocationMode.NoCheck;
+            policy.DisableCertificateDownloads = true;
+            policy.ApplicationPolicy.Add(new Oid(ServerAuthOid));
+            policy.ExtraStore.AddRange(sent);
+            policy.ExtraStore.AddRange(BundledBridges.Value);
+            return chain.Build(certificate) ? null : Describe(chain.ChainStatus);
+        }
+        catch (Exception ex)
+        {
+            return $"не удалось проверить цепочку сертификата ({ex.Message})";
+        }
+    }
+
+    /// <summary>
+    /// Только по встроенным корням (старые Android без нужного корня). Промежуточные — присланные сайтом и мосты.
+    /// На Android .NET не умеет строить цепочку с ПУСТЫМ набором своих корней — у нас он не пустой.
     /// </summary>
     /// <returns>null — цепочка доверенная; иначе — причина отказа.</returns>
-    private static string CheckChainWithBundledRoots(X509Certificate2 certificate, X509Chain systemChain)
+    public static string TryChainWithBundledRoots(X509Certificate2 certificate, X509Certificate2Collection sent)
     {
         try
         {
@@ -183,29 +240,39 @@ public static class CertificatePolicy
             var policy = chain.ChainPolicy;
             policy.TrustMode = X509ChainTrustMode.CustomRootTrust;
             policy.CustomTrustStore.AddRange(BundledRoots.Value);
-            // Как у системной проверки TLS в .NET (CheckCertificateRevocationList = false): без запросов к CRL/OCSP
             policy.RevocationMode = X509RevocationMode.NoCheck;
+            policy.DisableCertificateDownloads = true;
             policy.ApplicationPolicy.Add(new Oid(ServerAuthOid));
-
-            if (systemChain != null)
-            {
-                policy.ExtraStore.AddRange(systemChain.ChainPolicy.ExtraStore);
-                foreach (var element in systemChain.ChainElements)
-                {
-                    if (!element.Certificate.RawDataMemory.Span.SequenceEqual(certificate.RawDataMemory.Span))
-                    {
-                        policy.ExtraStore.Add(element.Certificate);
-                    }
-                }
-            }
-
+            policy.ExtraStore.AddRange(sent);
+            policy.ExtraStore.AddRange(BundledBridges.Value);
             return chain.Build(certificate) ? null : Describe(chain.ChainStatus);
         }
         catch (Exception ex)
         {
-            // Например, на платформе нет своих корней доверия (PlatformNotSupportedException) — значит, отказ
+            // Например, платформа не умеет свои корни доверия (PlatformNotSupportedException) — значит, отказ
             return $"не удалось проверить цепочку сертификата ({ex.Message})";
         }
+    }
+
+    /// <summary>Что прислал сайт (ExtraStore системной цепочки) и что система уже нашла — кроме самого сертификата сайта.</summary>
+    private static X509Certificate2Collection SentCertificates(X509Certificate2 certificate, X509Chain systemChain)
+    {
+        var result = new X509Certificate2Collection();
+        if (systemChain == null)
+        {
+            return result;
+        }
+
+        result.AddRange(systemChain.ChainPolicy.ExtraStore);
+        foreach (var element in systemChain.ChainElements)
+        {
+            if (!element.Certificate.RawDataMemory.Span.SequenceEqual(certificate.RawDataMemory.Span))
+            {
+                result.Add(element.Certificate);
+            }
+        }
+
+        return result;
     }
 
     private static string Describe(X509ChainStatus[] statuses)
@@ -239,17 +306,17 @@ public static class CertificatePolicy
         return $"цепочка сертификата не проверяется ({flags})";
     }
 
-    private static X509Certificate2Collection LoadBundledRoots()
+    private static X509Certificate2Collection LoadPem(string resource)
     {
-        var roots = new X509Certificate2Collection();
-        using var stream = typeof(CertificatePolicy).Assembly.GetManifestResourceStream(RootsResource);
+        var certificates = new X509Certificate2Collection();
+        using var stream = typeof(CertificatePolicy).Assembly.GetManifestResourceStream(resource);
         if (stream != null)
         {
             using var reader = new StreamReader(stream);
             // Комментарии между блоками PEM ImportFromPem пропускает
-            roots.ImportFromPem(reader.ReadToEnd());
+            certificates.ImportFromPem(reader.ReadToEnd());
         }
 
-        return roots;
+        return certificates;
     }
 }

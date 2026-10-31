@@ -188,7 +188,7 @@ public sealed class DiagnosticsRunner(
             ("Хранилище: запись, удаление, отмена", StepStorageAsync),
             ("Сертификаты и доступность сайтов", StepSitesAsync),
             ("Обход блокировок по IP", StepBypassAsync),
-            ("Встроенные корни в деле (как на старом Android)", StepOldDeviceAsync),
+            ("Мосты, встроенные корни и подмена", StepOldDeviceAsync),
             ("Пробное скачивание", StepTestDownloadAsync),
             ("Миниатюра обложки", StepThumbnailAsync)
         };
@@ -422,7 +422,7 @@ public sealed class DiagnosticsRunner(
 
         Info($"итого: прошли {results.Count(r => r.Ok)}, отказ по сертификату {results.Count(r => r.TlsRejected)}, " +
              $"недоступны по сети {results.Count(r => !r.Ok && !r.TlsRejected)}, " +
-             $"цепочку достроили встроенные корни {results.Count(r => r.UsedBundledRoots)}");
+             $"цепочку достроила политика {results.Count(r => r.ChainCompleted)}");
     }
 
     private async Task StepBypassAsync(CancellationToken ct)
@@ -444,19 +444,24 @@ public sealed class DiagnosticsRunner(
 
     private async Task StepOldDeviceAsync(CancellationToken ct)
     {
-        // Сертификаты author.today (Let's Encrypt → ISRG Root X1) — проверяем их так, будто в системе нет ни одного корня
+        // Мосты Let's Encrypt: сайты, не присылающие Root YE/YR, должны доходить до ISRG Root X1 системой Android
+        var bridges = CertificatePolicy.Bridges;
+        Check(bridges.Count > 0, $"мостовых сертификатов: {bridges.Count} " +
+                                 $"({string.Join("; ", bridges.Select(b => $"{b.GetNameInfo(X509NameType.SimpleName, false)} ← {b.GetNameInfo(X509NameType.SimpleName, true)}"))})");
+
+        // Старый Android без ISRG Root X1: цепочку author.today (Let's Encrypt) — только по встроенным корням
         var sample = await TlsProbe.ProbeAsync(new Uri("https://author.today/"), null, settings.Proxy, ProbeTimeout, ct);
         if (sample.Leaf == null)
         {
             Skip($"не удалось получить сертификат author.today: {sample.Outcome}");
-            return;
         }
-
-        var (systemView, verdict) = TlsProbe.CheckWithoutSystemRoots(sample.Leaf, sample.Sent, "author.today");
-        Info($"без корней система видит: {systemView}; сайт прислал {sample.Sent.Count}");
-        Check(verdict == null, verdict == null
-            ? "цепочка достроена встроенными корнями — на Android без ISRG Root X1 сайты Let's Encrypt откроются"
-            : $"цепочка не достроилась: {verdict}");
+        else
+        {
+            var reason = CertificatePolicy.TryChainWithBundledRoots(sample.Leaf, sample.Sent);
+            Check(reason == null, reason == null
+                ? "цепочка author.today строится по одним встроенным корням — на Android без ISRG Root X1 сайты Let's Encrypt откроются"
+                : $"по встроенным корням цепочка не строится: {reason}");
+        }
 
         // И обратное: подставной сертификат на то же имя политика не пропускает
         var forged = TlsProbe.CheckForgedRejected("author.today");
