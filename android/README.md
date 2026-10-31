@@ -218,6 +218,12 @@ Workflow [`.github/workflows/android.yml`](../.github/workflows/android.yml) с�
 - **Обложки без base64.** Интерфейс показывает уменьшенные JPEG-миниатюры файлами по адресу `/_covers/…`: их отдаёт
   встроенному браузеру `AppBlazorWebView` (свой `CreateFileProvider`) — только из папок миниатюр и только с именами,
   которые выдаёт приложение (`CoverThumbnails`, `CoverFileProvider`).
+- **Сертификаты сайтов проверяются**, хотя ядро само принимает любые: приложение подставляет свою проверку
+  (`CertificatePolicy` через `BookGetterConfig.ServerCertificateValidator` — единственная правка в `src/` ради этого).
+  Если в старом Android нет нужного корня (в 7.0 нет ISRG Root X1 от Let's Encrypt), цепочка достраивается по
+  встроенному набору публичных корней (`Resources/Certificates/trusted-roots.pem`); при обходе блокировок по IP
+  сертификат сверяется с настоящим именем сайта из заголовка Host. Запасной выход — «Не проверять сертификаты
+  сайтов» в настройках (по умолчанию выключено).
 - **Сохранение** — MediaStore (Android 10+, без разрешений), по пути с разрешением на память (Android 7–9) или
   папка, выбранная через Storage Access Framework. Файлы по пути отдаются читалкам через FileProvider.
 - **Минимум Android 7.0** — ниже не поддерживается сам BlazorWebView в MAUI; встроенный браузер нужен Chrome 94+

@@ -210,6 +210,21 @@
                 </div>
                 <p class="supporting-text">@(string.IsNullOrWhiteSpace(Settings.Proxy) ? "Пусто — без прокси." : $"Сейчас: {Settings.Proxy}")</p>
             </div>
+
+            <hr class="divider" />
+
+            @* Запасной выход для сайтов с неправильным сертификатом и совсем старых устройств (см. CertificatePolicy) *@
+            <label class="list-item two-line">
+                <span class="list-item-text">
+                    <span class="list-item-headline">Не проверять сертификаты сайтов</span>
+                    <span class="list-item-supporting">Небезопасно: в чужой сети можно перехватить пароль от сайта и подменить книгу. Включайте, только если сайт не открывается из-за сертификата</span>
+                </span>
+                <input type="checkbox" role="switch" class="switch" checked="@Settings.AllowInsecureTls" @onchange="e => Settings.AllowInsecureTls = (bool)e.Value!" />
+            </label>
+            @if (Settings.AllowInsecureTls)
+            {
+                <p class="supporting-text warning flush">Проверка сертификатов выключена для всех сайтов.</p>
+            }
         </div>
     </section>
 

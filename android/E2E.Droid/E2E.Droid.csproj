@@ -157,6 +157,11 @@
         <EmbeddedResource Include="$(E2ECoreDir)README.md" LogicalName="Elib2Ebook.README.md" Visible="false" />
     </ItemGroup>
 
+    <!-- Публичные корни для проверки сертификатов на старых устройствах (см. Services/CertificatePolicy.cs) -->
+    <ItemGroup>
+        <EmbeddedResource Include="Resources\Certificates\trusted-roots.pem" LogicalName="E2E.Droid.trusted-roots.pem" />
+    </ItemGroup>
+
     <!-- Загрузчики сайтов находятся рефлексией, прямых ссылок на них в коде нет — без этих строк тримминг
          выкинул бы их из APK. Корним сборки ядра и его сторонние библиотеки целиком.
          Имена — это имена DLL, а не NuGet-пакетов (например, пакет OAuth.DotNetCore даёт OAuth.dll). -->

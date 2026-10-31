@@ -357,10 +357,14 @@ public sealed class DownloadManager(
                 }
 
                 // Ошибка одной книги не останавливает остальные ссылки.
-                // TaskCanceledException без отмены = сработал таймаут HttpClient.
+                // TaskCanceledException без отмены = сработал таймаут HttpClient;
+                // AuthenticationException внутри = сертификат сайта не прошёл проверку (см. CertificatePolicy).
                 var message = ex is TaskCanceledException
                     ? "Сервер не успевает ответить. Попробуйте увеличить таймаут в настройках"
-                    : ex.Message;
+                    : HasInner<System.Security.Authentication.AuthenticationException>(ex)
+                        ? $"Сертификат сайта не прошёл проверку ({CertificatePolicy.LastRejection ?? "причина неизвестна"}). " +
+                          "Если сеть надёжная, проверку можно выключить: «Настройки» → «Сеть»"
+                        : ex.Message;
                 lock (job.Errors) job.Errors.Add($"{url}: {message}");
                 // В журнал — полный текст исключения со стеком: пригодится для отчёта об ошибке
                 Write(job, $"Генерация книги {url} завершилась с ошибкой. {ex}");
@@ -696,6 +700,15 @@ public sealed class DownloadManager(
     }
 
     private static string NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>Есть ли среди вложенных исключений (в том числе в AggregateException) исключение типа T.</summary>
+    private static bool HasInner<T>(Exception ex) where T : Exception => ex switch
+    {
+        null => false,
+        T => true,
+        AggregateException aggregate => aggregate.InnerExceptions.Any(HasInner<T>),
+        _ => HasInner<T>(ex.InnerException)
+    };
 
     /// <summary>
     /// Одно задание (нажатие «Скачать»): запрос, отмена и всё, что видит интерфейс. Фоновая часть пишет

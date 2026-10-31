@@ -29,6 +29,8 @@
         <Compile Include="..\E2E.Droid\Services\Formatting.cs" Link="Shared\Formatting.cs" />
         <Compile Include="..\E2E.Droid\Services\SharedLinkInbox.cs" Link="Shared\SharedLinkInbox.cs" />
         <Compile Include="..\E2E.Droid\Services\SupportedSites.cs" Link="Shared\SupportedSites.cs" />
+        <Compile Include="..\E2E.Droid\Services\CertificatePolicy.cs" Link="Shared\CertificatePolicy.cs" />
         <EmbeddedResource Include="..\..\README.md" LogicalName="Elib2Ebook.README.md" />
+        <EmbeddedResource Include="..\E2E.Droid\Resources\Certificates\trusted-roots.pem" LogicalName="E2E.Droid.trusted-roots.pem" />
     </ItemGroup>
 </Project>

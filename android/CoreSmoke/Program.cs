@@ -15,6 +15,12 @@ using Elib2Ebook.DomainServices.Configs;
 Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 Console.OutputEncoding = Encoding.UTF8;
 
+// Проверка сертификатов — как в приложении (MauiProgram): ядро само принимает любой
+BookGetterConfig.ServerCertificateValidator = CertificatePolicy.Validate;
+var roots = CertificatePolicy.Roots;
+Check(roots.Count >= 20, $"встроенных корней: {roots.Count}");
+Check(roots.All(r => r.NotAfter > DateTime.Now.AddYears(1)), "встроенные корни действуют ещё минимум год");
+
 // Самопроверка разбора ссылок, которые прилетают через «Поделиться» и из поля ввода
 Check(SharedLinkInbox.ExtractUrls("Мастер Ветров — Author.Today\nhttps://author.today/work/212721").SequenceEqual(["https://author.today/work/212721"]), "ExtractUrls: заголовок + ссылка");
 Check(Formatting.ParseUrls("author.today/work/1\nhttps://litnet.com/ru/book/x-b1, мусор").Count == 2, "ParseUrls: без схемы и с запятой");

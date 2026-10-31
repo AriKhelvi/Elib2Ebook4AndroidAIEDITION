@@ -72,6 +72,16 @@ public sealed class AppSettings
         set => Set(nameof(Proxy), value?.Trim() ?? string.Empty);
     }
 
+    /// <summary>
+    /// «Не проверять сертификаты сайтов» — как ядро на ПК. По умолчанию выключено: сертификаты проверяются
+    /// (см. CertificatePolicy). Запасной выход для сайтов с неправильным сертификатом.
+    /// </summary>
+    public bool AllowInsecureTls
+    {
+        get => P.Get(nameof(AllowInsecureTls), false);
+        set => Set(nameof(AllowInsecureTls), value);
+    }
+
     /// <summary>Шаблон имени файла (--book-name-pattern), например «{Author.Name} - {Book.Title}».</summary>
     public string BookNamePattern
     {
