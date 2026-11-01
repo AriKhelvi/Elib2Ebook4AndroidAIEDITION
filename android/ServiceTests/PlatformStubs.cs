@@ -9,6 +9,17 @@ namespace Android.Content
 // Контракты методов MAUI, используемых CredentialStore. Сам Keystore проверяется на устройстве.
 namespace Microsoft.Maui.Storage
 {
+    public static class FileSystem
+    {
+        public static string CacheDirectory { get; set; }
+        public static string AppDataDirectory { get; set; }
+    }
+
+    public static class Preferences
+    {
+        public static IPreferences Default { get; set; }
+    }
+
     public interface ISecureStorage
     {
         Task<string> GetAsync(string key);
