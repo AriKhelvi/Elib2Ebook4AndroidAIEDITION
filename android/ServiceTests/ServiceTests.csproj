@@ -9,10 +9,33 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Abstractions" Version="10.0.12" />
+    <ProjectReference Include="../../src/Elib2Ebook.DomainServices/Elib2Ebook.DomainServices.csproj" />
     <Using Include="Xunit" />
     <Using Include="Microsoft.Maui.ApplicationModel" />
+    <Using Include="Microsoft.Maui.Storage" />
     <Compile Include="../E2E.Droid/Platforms/Android/ActivityResults.cs" Link="Shared/ActivityResults.cs" />
     <Compile Include="../E2E.Droid/Services/CredentialStore.cs" Link="Shared/CredentialStore.cs" />
     <Compile Include="../E2E.Droid/Services/ToastService.cs" Link="Shared/ToastService.cs" />
+    <!-- Проверяем настоящий DownloadManager и его зависимости без Android и сетевых запросов. -->
+    <Compile Include="../E2E.Droid/Services/DownloadManager.cs" Link="Shared/DownloadManager.cs" />
+    <Compile Include="../E2E.Droid/Services/AppSettings.cs" Link="Shared/AppSettings.cs" />
+    <Compile Include="../E2E.Droid/Services/HistoryStore.cs" Link="Shared/HistoryStore.cs" />
+    <Compile Include="../E2E.Droid/Services/IPlatform.cs" Link="Shared/IPlatform.cs" />
+    <Compile Include="../E2E.Droid/Services/SavedFile.cs" Link="Shared/SavedFile.cs" />
+    <Compile Include="../E2E.Droid/Services/BookRecord.cs" Link="Shared/BookRecord.cs" />
+    <Compile Include="../E2E.Droid/Services/BookPipeline.cs" Link="Shared/BookPipeline.cs" />
+    <Compile Include="../E2E.Droid/Services/GetterResolver.cs" Link="Shared/GetterResolver.cs" />
+    <Compile Include="../E2E.Droid/Services/CallbackLogger.cs" Link="Shared/CallbackLogger.cs" />
+    <Compile Include="../E2E.Droid/Services/CertificatePolicy.cs" Link="Shared/CertificatePolicy.cs" />
+    <Compile Include="../E2E.Droid/Services/BuildInfo.cs" Link="Shared/BuildInfo.cs" />
+    <Compile Include="../E2E.Droid/Services/DiagnosticsRunner.cs" Link="Shared/DiagnosticsRunner.cs" />
+    <Compile Include="../E2E.Droid/Services/TlsProbe.cs" Link="Shared/TlsProbe.cs" />
+    <Compile Include="../E2E.Droid/Services/CoverThumbnails.cs" Link="Shared/CoverThumbnails.cs" />
+    <Compile Include="../E2E.Droid/Services/CoverFileProvider.cs" Link="Shared/CoverFileProvider.cs" />
+    <Compile Include="../E2E.Droid/Services/SupportedSites.cs" Link="Shared/SupportedSites.cs" />
+    <Compile Include="../E2E.Droid/Services/SharedLinkInbox.cs" Link="Shared/SharedLinkInbox.cs" />
+    <Compile Include="../E2E.Droid/Services/Formatting.cs" Link="Shared/Formatting.cs" />
+    <Compile Include="../E2E.Droid/Services/FormatSupport.cs" Link="Shared/FormatSupport.cs" />
   </ItemGroup>
 </Project>

@@ -335,8 +335,18 @@ public sealed class DownloadManager(
         // Рабочие папки — в кэше приложения: Android может их чистить сам, а мы удаляем их после каждой книги
         var jobsRoot = Path.Combine(FileSystem.CacheDirectory, "jobs");
 
-        // Миниатюры карточек прошлого задания больше не на экране (интерфейс читает уже этот Job)
-        TryDelete(CoverThumbnails.PreviewsDir);
+        lock (_sync)
+        {
+            // Task.Run отменённого задания может начаться уже после следующего запуска.
+            // Проверка и очистка вместе защищены от смены _job в StartAsync:
+            // старое задание не удалит миниатюры новой карточки между проверкой и удалением.
+            if (job.Cancelled || !ReferenceEquals(job, _job))
+            {
+                return;
+            }
+
+            TryDelete(CoverThumbnails.PreviewsDir);
+        }
 
         for (var i = 0; i < request.Urls.Count && !job.Cancelled; i++)
         {
