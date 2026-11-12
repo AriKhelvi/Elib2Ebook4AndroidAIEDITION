@@ -199,6 +199,117 @@ public class RequestPolicyTests
         Assert.Equal(1, calls);
     }
 
+    [Fact]
+    public async Task RedirectFailureDisposesOwnedResourcesButKeepsCallerContent()
+    {
+        using var body = new TrackedContent("тело запроса");
+        using var redirectBody = new TrackedContent("перенаправление");
+        using var redirectResponse = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect) { Content = redirectBody };
+        redirectResponse.Headers.Location = new Uri("/next", UriKind.Relative);
+        HttpRequestMessage redirected = null;
+        var calls = 0;
+        using var client = Client(new Clock().Pacer(), (request, _) =>
+        {
+            if (++calls == 1)
+            {
+                return Task.FromResult(redirectResponse);
+            }
+            redirected = request;
+            Assert.True(redirectBody.IsDisposed);
+            throw new InvalidOperationException("Ошибка отправки перенаправленного запроса");
+        });
+        using var original = new HttpRequestMessage(HttpMethod.Post, "https://example.org/start") { Content = body };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.SendAsync(original));
+
+        Assert.True(redirectBody.IsDisposed);
+        Assert.NotNull(redirected);
+        Assert.Throws<ObjectDisposedException>(() => redirected.Method = HttpMethod.Get);
+        Assert.False(body.IsDisposed);
+        Assert.Equal("тело запроса", await body.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task CancellationDuringRedirectDisposesRequestAndKeepsCallerContent()
+    {
+        using var body = new TrackedContent("не закрывать");
+        using var redirectBody = new TrackedContent("перенаправление");
+        using var redirectResponse = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect) { Content = redirectBody };
+        redirectResponse.Headers.Location = new Uri("/next", UriKind.Relative);
+        using var cancellation = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        HttpRequestMessage redirected = null;
+        var calls = 0;
+        using var client = Client(new Clock().Pacer(), async (request, token) =>
+        {
+            if (++calls == 1)
+            {
+                return redirectResponse;
+            }
+            redirected = request;
+            started.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            throw new InvalidOperationException("Ожидалась отмена");
+        });
+        using var original = new HttpRequestMessage(HttpMethod.Post, "https://example.org/start") { Content = body };
+        var sending = client.SendAsync(original, cancellation.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => sending);
+
+        Assert.True(redirectBody.IsDisposed);
+        Assert.Throws<ObjectDisposedException>(() => redirected.Method = HttpMethod.Get);
+        Assert.False(body.IsDisposed);
+        Assert.Equal("не закрывать", await body.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Redirect307UsesIndependentContentAndReturnsLiveFinalResponse()
+    {
+        using var body = new TrackedContent("тело");
+        body.Headers.ContentType = new MediaTypeHeaderValue("application/custom");
+        using var redirectBody = new TrackedContent("перенаправление");
+        using var finalBody = new TrackedContent("результат");
+        using var redirectResponse = new HttpResponseMessage(HttpStatusCode.TemporaryRedirect) { Content = redirectBody };
+        redirectResponse.Headers.Location = new Uri("/next", UriKind.Relative);
+        using var finalResponse = new HttpResponseMessage(HttpStatusCode.OK) { Content = finalBody };
+        HttpRequestMessage redirected = null;
+        var calls = 0;
+        using var client = Client(new Clock().Pacer(), async (request, _) =>
+        {
+            if (++calls == 1)
+            {
+                return redirectResponse;
+            }
+            redirected = request;
+            Assert.NotSame(body, request.Content);
+            Assert.Equal("application/custom", request.Content.Headers.ContentType!.MediaType);
+            Assert.Equal("тело", await request.Content.ReadAsStringAsync());
+            return finalResponse;
+        });
+        using var original = new HttpRequestMessage(HttpMethod.Post, "https://example.org/start") { Content = body };
+
+        using var final = await client.SendAsync(original);
+
+        Assert.True(redirectBody.IsDisposed);
+        Assert.Throws<ObjectDisposedException>(() => redirected.Method = HttpMethod.Get);
+        Assert.False(body.IsDisposed);
+        Assert.False(finalBody.IsDisposed);
+        Assert.Equal("результат", await final.Content.ReadAsStringAsync());
+        Assert.Equal("тело", await body.ReadAsStringAsync());
+    }
+
+    private sealed class TrackedContent(string text) : ByteArrayContent(System.Text.Encoding.UTF8.GetBytes(text))
+    {
+        public bool IsDisposed { get; private set; }
+        protected override void Dispose(bool disposing)
+        {
+            IsDisposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
     private static HttpClient Client(RequestPacer pacer, Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send)
         => new(new RequestPolicyHandler(pacer, null, new FakeHandler(send)));
 

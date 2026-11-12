@@ -52,14 +52,21 @@ public class TempFile : IDisposable
 
         var tempFile = new TempFile(url, directory, name, extension);
 
-        await using (var file = File.Create(tempFile.FilePath))
+        try
         {
-            await stream.CopyToAsync(file);
-            if (file.Length > 0) return tempFile;
+            await using (var file = File.Create(tempFile.FilePath))
+            {
+                await stream.CopyToAsync(file);
+                if (file.Length > 0) return tempFile;
+            }
+            tempFile.Dispose();
+            return null;
         }
-        tempFile.Dispose();
-
-        return null;
+        catch
+        {
+            tempFile.Dispose();
+            throw;
+        }
     }
 
     public Stream GetStream()

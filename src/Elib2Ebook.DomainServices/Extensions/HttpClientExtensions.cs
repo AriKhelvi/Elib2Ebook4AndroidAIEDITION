@@ -216,7 +216,8 @@ public static class HttpClientExtensions
         if (response.StatusCode == HttpStatusCode.TooManyRequests)
         {
             var retry = response.Headers.RetryAfter;
-            var seconds = retry?.Delta?.TotalSeconds ?? (retry?.Date - DateTimeOffset.UtcNow)?.TotalSeconds;
+            double? seconds = retry?.Delta is { } delay ? delay.TotalSeconds
+                : retry?.Date is { } date ? (date - DateTimeOffset.UtcNow).TotalSeconds : null;
             var when = seconds.HasValue ? $" Повторите через {Math.Max(1, Math.Ceiling(seconds.Value)):0} сек." : " Повторите позже.";
             return $"Сайт ограничил частоту запросов (HTTP 429).{when} Увеличьте задержку в настройках.";
         }

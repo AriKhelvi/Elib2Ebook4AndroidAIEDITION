@@ -107,8 +107,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         {
             var chapters = string.Join("&", batch.Select(t => $"chapter_ids[]={t.Id}"));
             var url = ApiIp.MakeRelativeUri($"/v1/book/get-chapters-texts/?{chapters}&app=android&device_id={DeviceId}&sign={GetSign(token)}&user_token={token}");
-            var data = await GetApiData<LitnetChapterResponse[]>(url);
-            var received = (data ?? []).Select(chapter => chapter.Id).ToHashSet();
+            var data = await GetApiData<LitnetChapterResponse[]>(url) ?? [];
+            var received = data.Select(chapter => chapter.Id).ToHashSet();
             var missing = batch.Count(chapter => !received.Contains(chapter.Id));
             if (missing > 0)
             {
@@ -124,7 +124,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     private async Task<T> GetApiData<T>(Uri uri)
     {
-        var response = await Config.Client.SendAsync(GetDefaultMessage(uri, ApiUrl));
+        using var request = GetDefaultMessage(uri, ApiUrl);
+        using var response = await Config.Client.SendAsync(request);
         if (response.StatusCode == HttpStatusCode.Forbidden)
         {
             throw new Exception("Получен бан. Попробуйте позже.");

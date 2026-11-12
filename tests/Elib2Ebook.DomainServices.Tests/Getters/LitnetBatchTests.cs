@@ -89,7 +89,7 @@ public class LitnetBatchTests
                     var ids = HttpUtility.ParseQueryString(uri.Query).GetValues("chapter_ids[]")!.Select(long.Parse).ToArray();
                     Batches.Add(ids);
                     // Сервер может вернуть главы в другом порядке и обрезать большой запрос.
-                    result = ids.Take(OmitLastChapter ? ids.Length - 1 : 100).Reverse().Select(id => new { id, text = (string)null });
+                    result = ids.Take(OmitLastChapter ? ids.Length - 1 : 100).Reverse().Select(id => new { id, text = default(string) });
                     break;
                 case "/ru/book/test-b123":
                     result = new { };
