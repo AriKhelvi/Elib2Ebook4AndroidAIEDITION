@@ -119,6 +119,9 @@ jobs:
           dotnet build android/E2E.Droid/E2E.Droid.csproj -t:InstallAndroidDependencies -f net10.0-android
           -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT" -p:JavaSdkDirectory="$JAVA_HOME" -p:AcceptAndroidSdkLicenses=True
 
+      - name: Проверка Android Debug
+        run: dotnet build android/E2E.Droid/E2E.Droid.csproj -f net10.0-android -c Debug
+
       # Схема версий (та же, что в android/build.ps1, — см. android/README.md, раздел «Версии»):
       #   релиз с тегом v0.2.0                 → версия 0.2.0,         файл E2E-0.2.0.apk
       #   5 коммитов после тега v0.2.0          → версия 0.2.1-dev.5,   файл E2E-0.2.1-dev.5-<коммит>.apk
