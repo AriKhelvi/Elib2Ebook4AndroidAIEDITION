@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Web;
 using Elib2Ebook.Domain.Book;
 using Elib2Ebook.Domain.Common;
@@ -23,8 +24,10 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
 
         Config.Client.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
 
-        var response = await Config.Client.GetWithTriesAsync(SystemUrl);
-        var doc = await response.Content.ReadAsStreamAsync().ContinueWith(t => t.Result.AsHtmlDoc());
+        using var response = await Config.Client.GetWithTriesAsync(SystemUrl);
+        response.EnsureDownloadSuccess();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        var doc = stream.AsHtmlDoc();
 
         var csrf = doc.QuerySelector("[name=csrf-token]")?.Attributes["content"]?.Value;
         if (string.IsNullOrWhiteSpace(csrf))
@@ -33,7 +36,7 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
         }
 
         var cookies = response.Headers.SingleOrDefault(header => header.Key == "Set-Cookie").Value;
-        var xsrfCookie = cookies.FirstOrDefault(c => c.StartsWith("XSRF-TOKEN="));
+        var xsrfCookie = cookies?.FirstOrDefault(c => c.StartsWith("XSRF-TOKEN="));
         if (xsrfCookie == null)
         {
             throw new ArgumentException("Не удалось получить XSRF-TOKEN", nameof(xsrfCookie));
@@ -133,7 +136,7 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
     private List<Block> GetToc(Response response, string title)
     {
         var toc = response.Toc.Deserialize<List<Block>>();
-        if (toc?.Count == 0)
+        if (toc == null || toc.Count == 0)
         {
             toc =
             [
@@ -154,8 +157,23 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
             ];
         }
 
-        return SliceToc(toc, c => c.Chunk.Mods[0].Text).ToList();
+        return toc;
     }
+
+    private static string NormalizeTitle(string text)
+        => Regex.Replace(HttpUtility.HtmlDecode(text ?? string.Empty), @"\s+", " ").Trim();
+
+    private static string ModText(Mod mod)
+        => mod.Text ?? string.Concat((mod.Mods ?? []).Select(ModText));
+
+    private static string BlockTitle(Block block)
+        => NormalizeTitle(string.Concat((block.Chunk.Mods ?? []).Select(ModText)));
+
+    private static string ChapterTitle(Block block)
+        => BlockTitle(block) is { Length: > 0 } title ? title : "Без названия";
+
+    private static bool ContainsImage(Mod mod)
+        => mod.Type == "IMAGE" || (mod.Mods?.Any(ContainsImage) ?? false);
 
     private async Task<List<Chapter>> FillChapters(List<Block> toc, Block[] blocks, Uri bookUri, long eBookId)
     {
@@ -165,15 +183,29 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
             return result;
         }
 
-        for (var i = 0; i < toc.Count; i++)
+        // Граница последней выбранной главы берётся из полного оглавления, иначе
+        // при заданном End в неё попадает весь оставшийся текст книги.
+        var ranges = toc.Select((block, index) => (
+            Block: block,
+            NextIndex: index + 1 < toc.Count ? (int?)toc[index + 1].Index : null)).ToList();
+        foreach (var range in SliceToc(ranges, r => ChapterTitle(r.Block)))
         {
-            var chapterTitle = string.IsNullOrWhiteSpace(toc[i].Chunk.Mods[0].Text.Trim()) ? "Без названия" : toc[i].Chunk.Mods[0].Text.Trim();
+            var chapterTitle = ChapterTitle(range.Block);
             Config.Logger.LogInformation($"Загружаю главу {chapterTitle.CoverQuotes()}");
             var sb = new StringBuilder();
             var chapter = new Chapter();
 
-            foreach (var block in blocks.Where(b => b.Index >= toc[i].Index && (i == toc.Count - 1 || b.Index < toc[i + 1].Index)))
+            foreach (var block in blocks.Where(b => b.Index >= range.Block.Index && (!range.NextIndex.HasValue || b.Index < range.NextIndex.Value)))
             {
+                // Название уже выводит сборщик книги. Убираем только совпавший
+                // блок типа chapter на его позиции в оглавлении; обычную прозу
+                // и блоки с изображением сохраняем, даже если их текст совпал.
+                if (block.Index == range.Block.Index && block.Chunk.Type == "chapter"
+                    && BlockTitle(block) == chapterTitle && !(block.Chunk.Mods?.Any(ContainsImage) ?? false))
+                {
+                    continue;
+                }
+
                 var p = new StringBuilder();
 
                 foreach (var mod in block.Chunk.Mods)
@@ -188,11 +220,6 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
                             break;
                         default:
                             var text = $"{mod.Text ?? string.Empty}";
-                            if (sb.Length == 0 && text == chapterTitle)
-                            {
-                                continue;
-                            }
-
                             if (mod.Styles?.Length > 0)
                             {
                                 foreach (var style in mod.Styles)
@@ -236,13 +263,17 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<Response> GetMainData(string bookId)
     {
-        var data = await Config.Client.GetWithTriesAsync(SystemUrl.MakeRelativeUri($"/reader/data/{bookId}"));
-        return await data.Content.ReadFromJsonAsync<Response>();
+        using var data = await Config.Client.GetWithTriesAsync(SystemUrl.MakeRelativeUri($"/reader/data/{bookId}"));
+        data.EnsureDownloadSuccess();
+        return await data.Content.ReadFromJsonAsync<Response>()
+            ?? throw new InvalidOperationException("Литмаркет не вернул сведения о книге.");
     }
 
     private async Task<Block[]> GetBlocks(int eBookId)
     {
-        var resp = await Config.Client.GetWithTriesAsync(SystemUrl.MakeRelativeUri($"/reader/blocks/{eBookId}"));
-        return await resp.Content.ReadFromJsonAsync<Block[]>();
+        using var resp = await Config.Client.GetWithTriesAsync(SystemUrl.MakeRelativeUri($"/reader/blocks/{eBookId}"));
+        resp.EnsureDownloadSuccess();
+        return await resp.Content.ReadFromJsonAsync<Block[]>()
+            ?? throw new InvalidOperationException("Литмаркет не вернул блоки текста книги.");
     }
 }
