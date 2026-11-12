@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.RegularExpressions;
+using System.Web;
 using Elib2Ebook.Domain.Book;
 using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
@@ -75,7 +76,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
     {
         var bookId = GetId(url);
         url = SystemUrl.MakeRelativeUri($"/book/{bookId}");
-        var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
+        var doc = await GetBookPage(url);
 
         var book = new Book(url)
         {
@@ -133,7 +134,8 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
             return result;
         }
 
-        foreach (var (id, name) in GetToc(doc))
+        var toc = await GetToc(doc, bookUri);
+        foreach (var (id, name) in SliceToc(toc, c => c.Title))
         {
             Config.Logger.LogInformation($"Загружаю главу {name.CoverQuotes()}");
             var chapter = new Chapter();
@@ -155,12 +157,84 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
         return (s.CanRead ? s.Content.AsHtmlDoc().QuerySelector("div.content-text")?.InnerHtml ?? string.Empty : string.Empty).AsHtmlDoc();
     }
 
-    private IEnumerable<IdChapter> GetToc(HtmlDocument doc)
+    private async Task<HtmlDocument> GetBookPage(Uri url)
     {
-        var result = doc.QuerySelectorAll("#Chapters tr[data-id]")
-            .Select(chapter => new IdChapter(chapter.Attributes["data-id"].Value, chapter.GetTextBySelector("td.t")))
-            .ToList();
+        using var response = await Config.Client.GetWithTriesAsync(url);
+        if (response == null)
+        {
+            throw new InvalidOperationException($"Не удалось загрузить страницу оглавления {url}");
+        }
 
-        return SliceToc(result, c => c.Title);
+        response.EnsureDownloadSuccess();
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        return stream.AsHtmlDoc();
+    }
+
+    private async Task<List<IdChapter>> GetToc(HtmlDocument firstPage, Uri bookUri)
+    {
+        var chaptersByPage = new SortedDictionary<int, List<IdChapter>>();
+        var chapterIds = new HashSet<string>(StringComparer.Ordinal);
+        var visitedPages = new HashSet<int>();
+        var pendingPages = new SortedSet<int> { 1 };
+
+        while (pendingPages.Count > 0)
+        {
+            var page = pendingPages.Min;
+            pendingPages.Remove(page);
+            visitedPages.Add(page);
+            // Ограничение защищает от бесконечного оглавления при ошибке сайта.
+            if (visitedPages.Count > 10000)
+            {
+                throw new InvalidOperationException("Оглавление содержит слишком много страниц. Загрузка остановлена, чтобы не сохранить неполную книгу.");
+            }
+
+            var pageUri = page == 1 ? bookUri : new UriBuilder(bookUri) { Query = $"Chapter_page={page}" }.Uri;
+            var doc = page == 1 ? firstPage : await GetBookPage(pageUri);
+            if (doc.QuerySelector("#Chapters") == null)
+            {
+                throw new InvalidOperationException($"На странице оглавления {pageUri} не найден список глав. Возможно, сайт ограничил доступ.");
+            }
+
+            var countBefore = chapterIds.Count;
+            var pageChapters = new List<IdChapter>();
+            foreach (var row in doc.QuerySelectorAll("#Chapters tr[data-id]"))
+            {
+                var id = row.Attributes["data-id"].Value.Trim();
+                if (string.IsNullOrEmpty(id))
+                {
+                    throw new InvalidOperationException($"На странице оглавления {pageUri} найдена глава без идентификатора.");
+                }
+
+                chapterIds.Add(id);
+                pageChapters.Add(new IdChapter(id, row.GetTextBySelector("td.t")));
+            }
+
+            if (page != 1 && chapterIds.Count == countBefore)
+            {
+                throw new InvalidOperationException($"Страница оглавления {pageUri} пуста или повторяет уже загруженные главы. Книга не будет сохранена частично.");
+            }
+
+            chaptersByPage.Add(page, pageChapters);
+
+            foreach (var link in doc.QuerySelectorAll("a[href]"))
+            {
+                var href = HttpUtility.HtmlDecode(link.Attributes["href"].Value);
+                if (!Uri.TryCreate(pageUri, href, out var next) ||
+                    !string.Equals(next.Scheme, bookUri.Scheme, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(next.Authority, bookUri.Authority, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(next.AbsolutePath.TrimEnd('/'), bookUri.AbsolutePath.TrimEnd('/'), StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var value = HttpUtility.ParseQueryString(next.Query)["Chapter_page"];
+                if (int.TryParse(value, out var nextPage) && nextPage > 0 && !visitedPages.Contains(nextPage))
+                {
+                    pendingPages.Add(nextPage);
+                }
+            }
+        }
+
+        return chaptersByPage.Values.SelectMany(chapters => chapters).DistinctBy(chapter => chapter.Id).ToList();
     }
 }

@@ -21,5 +21,8 @@
 
     <ItemGroup>
       <ProjectReference Include="..\..\src\Elib2Ebook.DomainServices\Elib2Ebook.DomainServices.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Rulate/Elib2Ebook.ExternalServices.Rulate.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litgorod/Elib2Ebook.ExternalServices.Litgorod.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litnet/Elib2Ebook.ExternalServices.Litnet.csproj" />
     </ItemGroup>
 </Project>

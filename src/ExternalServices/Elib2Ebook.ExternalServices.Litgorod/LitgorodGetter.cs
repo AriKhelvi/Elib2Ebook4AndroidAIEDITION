@@ -20,7 +20,7 @@ public class LitgorodGetter(BookGetterConfig config) : GetterBase(config)
     public override async Task<Book> Get(Uri url)
     {
         url = SystemUrl.MakeRelativeUri($"/books/view/{GetId(url)}");
-        Config.Client.DefaultRequestHeaders.Add("Referer", url.ToString());
+        Config.Client.DefaultRequestHeaders.Referrer = url;
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
 
         var book = new Book(url)

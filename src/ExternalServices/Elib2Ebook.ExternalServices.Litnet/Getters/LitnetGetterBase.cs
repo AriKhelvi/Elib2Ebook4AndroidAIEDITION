@@ -102,10 +102,24 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     private async Task<IEnumerable<LitnetChapterResponse>> GetToc(string token, IEnumerable<LitnetContentsResponse> contents)
     {
-        var chapters = string.Join("&", contents.Select(t => $"chapter_ids[]={t.Id}"));
-        var url = ApiIp.MakeRelativeUri($"/v1/book/get-chapters-texts/?{chapters}&app=android&device_id={DeviceId}&sign={GetSign(token)}&user_token={token}");
-        var data = await GetApiData<LitnetChapterResponse[]>(url);
-        return SliceToc(data, c => c.Text);
+        var result = new List<LitnetChapterResponse>();
+        foreach (var batch in contents.Chunk(100))
+        {
+            var chapters = string.Join("&", batch.Select(t => $"chapter_ids[]={t.Id}"));
+            var url = ApiIp.MakeRelativeUri($"/v1/book/get-chapters-texts/?{chapters}&app=android&device_id={DeviceId}&sign={GetSign(token)}&user_token={token}");
+            var data = await GetApiData<LitnetChapterResponse[]>(url);
+            var received = (data ?? []).Select(chapter => chapter.Id).ToHashSet();
+            var missing = batch.Count(chapter => !received.Contains(chapter.Id));
+            if (missing > 0)
+            {
+                throw new InvalidOperationException($"Litnet не вернул {missing} из {batch.Length} запрошенных глав. Проверьте доступ к главам и повторите загрузку. Неполная книга не будет сохранена.");
+            }
+
+            var requested = batch.Select(chapter => chapter.Id).ToHashSet();
+            result.AddRange(data.Where(chapter => requested.Contains(chapter.Id)).DistinctBy(chapter => chapter.Id));
+        }
+
+        return result;
     }
 
     private async Task<T> GetApiData<T>(Uri uri)
@@ -237,17 +251,15 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             return result;
         }
 
-        var chapters = await GetToc(token, contents);
+        var selected = SliceToc(contents.DistinctBy(content => content.Id).ToList(), content => content.Title).ToList();
+        var chapters = await GetToc(token, selected);
         var map = chapters.ToDictionary(t => t.Id);
 
-        foreach (var content in contents)
+        foreach (var content in selected)
         {
-            if (!map.TryGetValue(content.Id, out var litnetChapter))
-            {
-                litnetChapter = new LitnetChapterResponse();
-            }
+            var litnetChapter = map[content.Id];
 
-            Config.Logger.LogInformation($"Загружаю главу {content.Title.Trim().CoverQuotes()}");
+            Config.Logger.LogInformation($"Загружаю главу {(content.Title ?? book.Title).Trim().CoverQuotes()}");
             var chapter = new Chapter
             {
                 Title = (content.Title ?? book.Title).Trim()
