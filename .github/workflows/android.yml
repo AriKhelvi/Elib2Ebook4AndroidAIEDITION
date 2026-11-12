@@ -120,6 +120,10 @@ jobs:
           -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT" -p:JavaSdkDirectory="$JAVA_HOME" -p:AcceptAndroidSdkLicenses=True
 
       # Схема версий (та же, что в android/build.ps1, — см. android/README.md, раздел «Версии»):
+      - name: Проверка Android Debug
+        run: dotnet build android/E2E.Droid/E2E.Droid.csproj -f net10.0-android -c Debug
+
+      # Схема версий сборки APK:
       #   релиз с тегом v0.2.0                 → версия 0.2.0,         файл E2E-0.2.0.apk
       #   5 коммитов после тега v0.2.0          → версия 0.2.1-dev.5,   файл E2E-0.2.1-dev.5-<коммит>.apk
       #   тегов ещё нет                         → версия 0.0.0-dev.<число коммитов>
