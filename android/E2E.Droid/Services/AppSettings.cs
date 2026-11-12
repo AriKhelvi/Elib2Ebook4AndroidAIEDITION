@@ -6,7 +6,7 @@
 
 namespace E2E.Droid.Services;
 
-/// <summary>Настройки приложения (Preferences). Значения по умолчанию — как у консольной версии.</summary>
+/// <summary>Настройки приложения (Preferences). Для всех сайтов по умолчанию включена стандартная задержка.</summary>
 public sealed class AppSettings
 {
     public const string DefaultBookNamePattern = "{Author.Name} - {Book.Title}";
@@ -64,6 +64,22 @@ public sealed class AppSettings
         get => P.Get(nameof(Delay), 0);
         set => Set(nameof(Delay), Math.Clamp(value, 0, 600));
     }
+
+    /// <summary>Четыре режима паузы: без паузы, стандартная, увеличенная, своя. По умолчанию — второй.</summary>
+    public int DelayMode
+    {
+        get => Math.Clamp(P.Get(nameof(DelayMode), 2), 1, 4);
+        set => Set(nameof(DelayMode), Math.Clamp(value, 1, 4));
+    }
+
+    /// <summary>Своя пауза, в секундах; используется только в четвёртом режиме.</summary>
+    public double CustomDelaySeconds
+    {
+        get => NormalizeCustomDelay(P.Get(nameof(CustomDelaySeconds), 1d));
+        set => Set(nameof(CustomDelaySeconds), NormalizeCustomDelay(value));
+    }
+
+    private static double NormalizeCustomDelay(double value) => double.IsFinite(value) ? Math.Clamp(value, 0.01, 120) : 1;
 
     /// <summary>Прокси (--proxy): http://, https://, socks4:// или socks5://host:port. Пусто — без прокси.</summary>
     public string Proxy
