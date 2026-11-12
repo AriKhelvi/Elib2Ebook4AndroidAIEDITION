@@ -6,6 +6,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.ExternalServices.Rulate.Types;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
@@ -164,49 +165,13 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
         var content = s.Content?.AsHtmlDoc().QuerySelector("div.content-text");
         if (content == null)
             throw new InvalidOperationException($"Не найден текст доступной главы {chapterId}. Неполная книга не будет сохранена.");
-        RemoveTrailingChapterLink(content, SystemUrl.MakeRelativeUri($"/book/{bookId}/{chapterId}"));
+        // Ответ зеркала может содержать служебный адрес той же главы на основном домене.
+        var sources = new[] { SystemUrl.Host, "tl.rulate.ru", "bllate.org", "mlate.ru", "erolate.com" }
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(host => new Uri($"https://{host}/book/{bookId}/{chapterId}")).ToArray();
+        ChapterContentCleaner.RemoveTrailingSourceLink(content, sources);
         return content.InnerHtml.AsHtmlDoc();
     }
-
-    private static void RemoveTrailingChapterLink(HtmlNode content, Uri chapterUri)
-    {
-        // Rulate добавляет в конец текста отдельный абзац с адресом этой главы.
-        // Удаляем только эту форму; авторские ссылки, подписи и изображения сохраняем.
-        var last = content.ChildNodes.LastOrDefault(node => !IsEmptyTailNode(node));
-        if (last?.Name != "p" || !IsChapterUri(HtmlEntity.DeEntitize(last.InnerText).Trim(), chapterUri))
-            return;
-
-        var elements = last.ChildNodes.Where(node => node.NodeType == HtmlNodeType.Element).ToList();
-        if (elements.Count == 0 && last.ChildNodes.All(IsTextOrComment))
-        {
-            last.Remove();
-            return;
-        }
-
-        if (elements.Count == 1 && elements[0].Name == "a" &&
-            elements[0].ChildNodes.All(IsTextOrComment) &&
-            last.ChildNodes.Where(node => node != elements[0]).All(IsWhitespaceOrComment) &&
-            IsChapterUri(HtmlEntity.DeEntitize(elements[0].GetAttributeValue("href", string.Empty)).Trim(), chapterUri))
-            last.Remove();
-    }
-
-    private static bool IsTextOrComment(HtmlNode node)
-        => node.NodeType is HtmlNodeType.Text or HtmlNodeType.Comment;
-
-    private static bool IsWhitespaceOrComment(HtmlNode node)
-        => node.NodeType == HtmlNodeType.Comment ||
-           node.NodeType == HtmlNodeType.Text && string.IsNullOrWhiteSpace(HtmlEntity.DeEntitize(node.InnerText));
-
-    private static bool IsEmptyTailNode(HtmlNode node)
-        => IsWhitespaceOrComment(node) || node.Name == "br" ||
-           node.Name == "p" && node.ChildNodes.All(child => IsWhitespaceOrComment(child) || child.Name == "br");
-
-    private static bool IsChapterUri(string value, Uri chapterUri)
-        => Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
-           uri.Scheme is "http" or "https" && uri.IsDefaultPort &&
-           uri.UserInfo.Length == 0 && uri.Query.Length == 0 && uri.Fragment.Length == 0 &&
-           string.Equals(uri.Host, chapterUri.Host, StringComparison.OrdinalIgnoreCase) &&
-           string.Equals(uri.AbsolutePath, chapterUri.AbsolutePath, StringComparison.Ordinal);
 
     private async Task<HtmlDocument> GetBookPage(Uri url)
     {

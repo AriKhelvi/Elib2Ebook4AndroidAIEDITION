@@ -6,6 +6,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 
 namespace Elib2Ebook.ExternalServices.Bookinist;
 
@@ -58,9 +59,11 @@ public class BookinistGetter(BookGetterConfig config) : GetterBase(config)
         return !string.IsNullOrWhiteSpace(imagePath) ? SaveImage(uri.MakeRelativeUri(imagePath)) : Task.FromResult(default(TempFile));
     }
 
-    private Task<HtmlDocument> GetChapter(UrlChapter bookChapter)
+    private async Task<HtmlDocument> GetChapter(UrlChapter bookChapter)
     {
-        return Config.Client.GetHtmlDocWithTriesAsync(bookChapter.Url).ContinueWith(t => t.Result.RemoveNodes("h2"));
+        var doc = await Config.Client.GetHtmlDocWithTriesAsync(bookChapter.Url);
+        ChapterContentCleaner.RemoveLeadingTitle(doc.DocumentNode, bookChapter.Title);
+        return doc;
     }
 
     private IEnumerable<UrlChapter> GetToc(HtmlDocument doc, Uri url)

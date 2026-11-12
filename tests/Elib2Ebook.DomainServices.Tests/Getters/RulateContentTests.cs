@@ -81,6 +81,17 @@ public class RulateContentTests
         return mirror ? new BllateGetter(config) : new RulateGetter(config);
     }
 
+    [Theory]
+    [InlineData("tl.rulate.ru")]
+    [InlineData("mlate.ru")]
+    [InlineData("erolate.com")]
+    public async Task MirrorRemovesExactChapterFooterFromKnownSiblingDomain(string footerHost)
+    {
+        using var getter = CreateGetter($"<p>Текст главы.</p><p>http://{footerHost}/book/129557/123</p>", mirror: true);
+        using var book = await getter.Get(new Uri("https://bllate.org/book/129557"));
+        Assert.Equal("<p>Текст главы.</p>", Assert.Single(book.Chapters).Content);
+    }
+
     private sealed class FakeHandler(string content) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)

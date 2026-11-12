@@ -39,5 +39,9 @@
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Younettranslate/Elib2Ebook.ExternalServices.Younettranslate.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Romfant/Elib2Ebook.ExternalServices.Romfant.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.ReadManga/Elib2Ebook.ExternalServices.ReadManga.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.LitLife/Elib2Ebook.ExternalServices.LitLife.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.TopLiba/Elib2Ebook.ExternalServices.TopLiba.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Bookinist/Elib2Ebook.ExternalServices.Bookinist.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Fb2Top/Elib2Ebook.ExternalServices.Fb2Top.csproj" />
     </ItemGroup>
 </Project>

@@ -4,6 +4,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.ExternalServices.Boosty.Types;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
@@ -81,7 +82,8 @@ public class BoostyGetter(BookGetterConfig config) : GetterBase(config)
         }
 
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"/{bookId}/posts/{post.Id}"));
-        doc = doc.QuerySelector("article.Post_content_ETkyT").InnerHtml.AsHtmlDoc().RemoveNodes("h1");
+        doc = doc.QuerySelector("article.Post_content_ETkyT").InnerHtml.AsHtmlDoc();
+        ChapterContentCleaner.RemoveLeadingTitle(doc.DocumentNode, post.Title);
 
         foreach (var img in doc.QuerySelectorAll("img"))
         {

@@ -8,6 +8,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.ExternalServices.DarkNovels.Types;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
@@ -179,7 +180,8 @@ public class DarkNovelsGetter : GetterBase
             }
         }
 
-        var chapterDoc = sb.AsHtmlDoc().RemoveNodes("h1");
+        var chapterDoc = sb.AsHtmlDoc();
+        ChapterContentCleaner.RemoveLeadingTitle(chapterDoc.DocumentNode, chapter.Title);
         chapter.Images = await GetImages(chapterDoc, SystemUrl);
         chapter.Content = chapterDoc.DocumentNode.InnerHtml;
     }

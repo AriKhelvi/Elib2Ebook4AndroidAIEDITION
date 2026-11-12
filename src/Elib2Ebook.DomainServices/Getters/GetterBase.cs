@@ -240,7 +240,8 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
 
                 var content = GetContent(epubBook, current);
                 chapter.Images = await GetImages(content, epubBook);
-                chapter.Content = content.DocumentNode.RemoveNodes("h1, h2, h3").InnerHtml;
+                ChapterContentCleaner.RemoveLeadingTitle(content.DocumentNode, chapter.Title);
+                chapter.Content = content.DocumentNode.InnerHtml;
                 result.Add(chapter);
             } while ((current = current.Next) != null);
         }
@@ -268,6 +269,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
 
             var content = sb.AsHtmlDoc();
             chapter.Images = await GetImages(content, epubBook);
+            ChapterContentCleaner.RemoveLeadingTitle(content.DocumentNode, chapter.Title);
             chapter.Content = content.DocumentNode.InnerHtml;
             result.Add(chapter);
         }

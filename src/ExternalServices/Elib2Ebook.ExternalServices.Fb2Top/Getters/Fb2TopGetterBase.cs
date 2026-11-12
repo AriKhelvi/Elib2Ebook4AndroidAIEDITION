@@ -3,6 +3,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
 using Microsoft.Extensions.Logging;
@@ -48,7 +49,7 @@ public abstract class Fb2TopGetterBase(BookGetterConfig config) : GetterBase(con
                 Title = urlChapter.Title
             };
 
-            var chapterDoc = await GetChapter(urlChapter.Url);
+            var chapterDoc = await GetChapter(urlChapter);
             if (chapterDoc != null)
             {
                 chapter.Images = await GetImages(chapterDoc, urlChapter.Url);
@@ -61,12 +62,12 @@ public abstract class Fb2TopGetterBase(BookGetterConfig config) : GetterBase(con
         return result;
     }
 
-    private async Task<HtmlDocument> GetChapter(Uri url)
+    private async Task<HtmlDocument> GetChapter(UrlChapter urlChapter)
     {
-        var doc = await Config.Client.GetStringAsync(url);
-        doc = doc.Replace("</h2>", "</h3>");
-        doc = doc.Replace("<h2>", "<h3>");
-        return doc.AsHtmlDoc().QuerySelector("section").RemoveNodes("h3").InnerHtml.AsHtmlDoc();
+        var doc = await Config.Client.GetStringAsync(urlChapter.Url);
+        var content = doc.AsHtmlDoc().QuerySelector("section");
+        ChapterContentCleaner.RemoveLeadingTitle(content, urlChapter.Title);
+        return content.InnerHtml.AsHtmlDoc();
     }
 
     private IEnumerable<UrlChapter> GetToc(HtmlDocument doc, Uri url)

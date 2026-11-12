@@ -4,6 +4,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
 using Microsoft.Extensions.Logging;
@@ -97,9 +98,10 @@ public abstract class TopLibaGetterBase(BookGetterConfig config) : GetterBase(co
             }
 
             var doc = content.AsHtmlDoc();
-            chapter.Title = (doc.GetTextBySelector("h1.capter-title") ?? title).ReplaceNewLine();
+            var titleNode = doc.QuerySelector("h1.capter-title");
+            chapter.Title = (titleNode.GetText() ?? title).ReplaceNewLine();
 
-            doc.RemoveNodes("h1");
+            ChapterContentCleaner.RemoveNodePreservingAnchors(titleNode);
             chapter.Images = await GetImages(doc, uri);
             chapter.Content = doc.DocumentNode.InnerHtml;
 

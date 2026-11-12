@@ -4,6 +4,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
 using Microsoft.Extensions.Logging;
@@ -153,7 +154,7 @@ public class LitLifeGetter(BookGetterConfig config) : GetterBase(config)
         var result = new StringBuilder();
 
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(urlChapter.Url);
-        result.Append(doc.QuerySelector("div.book_text").RemoveNodes("#read_online_ad, h4").InnerHtml);
+        result.Append(GetPageContent(doc, urlChapter.Title));
 
         var pages = doc.QuerySelectorAll("div.card-body ul.pagination a.page-link")
             .Where(a => int.TryParse(a.GetText(), out _))
@@ -165,11 +166,18 @@ public class LitLifeGetter(BookGetterConfig config) : GetterBase(config)
             for (var i = 2; i <= pages.Max(); i++)
             {
                 doc = await Config.Client.GetHtmlDocWithTriesAsync(urlChapter.Url.AppendQueryParameter("page", i));
-                result.Append(doc.QuerySelector("div.book_text").RemoveNodes("#read_online_ad, h4").InnerHtml);
+                result.Append(GetPageContent(doc, urlChapter.Title));
             }
         }
 
         return result.AsHtmlDoc();
+    }
+
+    private static string GetPageContent(HtmlDocument doc, string title)
+    {
+        var content = doc.QuerySelector("div.book_text").RemoveNodes("#read_online_ad");
+        ChapterContentCleaner.RemoveLeadingTitle(content, title);
+        return content.InnerHtml;
     }
 
     private Task<TempFile> GetCover(HtmlDocument doc, Uri bookUri)
