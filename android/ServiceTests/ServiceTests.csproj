@@ -27,9 +27,12 @@
     <Compile Include="../E2E.Droid/Services/BookPipeline.cs" Link="Shared/BookPipeline.cs" />
     <Compile Include="../E2E.Droid/Services/GetterResolver.cs" Link="Shared/GetterResolver.cs" />
     <Compile Include="../E2E.Droid/Services/CallbackLogger.cs" Link="Shared/CallbackLogger.cs" />
+    <Compile Include="../E2E.Droid/Services/BoundedFileLog.cs" Link="Shared/BoundedFileLog.cs" />
+    <Compile Include="../E2E.Droid/Services/StartupLog.cs" Link="Shared/StartupLog.cs" />
     <Compile Include="../E2E.Droid/Services/CertificatePolicy.cs" Link="Shared/CertificatePolicy.cs" />
     <Compile Include="../E2E.Droid/Services/BuildInfo.cs" Link="Shared/BuildInfo.cs" />
     <Compile Include="../E2E.Droid/Services/DiagnosticsRunner.cs" Link="Shared/DiagnosticsRunner.cs" />
+    <Compile Include="../E2E.Droid/Services/DiagnosticBookChecks.cs" Link="Shared/DiagnosticBookChecks.cs" />
     <Compile Include="../E2E.Droid/Services/TlsProbe.cs" Link="Shared/TlsProbe.cs" />
     <Compile Include="../E2E.Droid/Services/CoverThumbnails.cs" Link="Shared/CoverThumbnails.cs" />
     <Compile Include="../E2E.Droid/Services/CoverFileProvider.cs" Link="Shared/CoverFileProvider.cs" />

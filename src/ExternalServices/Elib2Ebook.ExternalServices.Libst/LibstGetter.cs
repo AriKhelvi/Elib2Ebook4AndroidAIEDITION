@@ -98,6 +98,7 @@ public class LibstGetter(BookGetterConfig config) : GetterBase(config)
     {
         if (string.IsNullOrWhiteSpace(bookChapter.Id))
         {
+            Config.Logger.LogWarning($"Глава {bookChapter.Title.CoverQuotes()} недоступна: сайт не предоставил ссылку на текст.");
             return null;
         }
 
@@ -105,13 +106,23 @@ public class LibstGetter(BookGetterConfig config) : GetterBase(config)
 
         for (var i = 1;; i++)
         {
-            var response = await Config.Client.GetAsync(SystemUrl.MakeRelativeUri($"/Detail/GetChapterTextForCanvas?ChapID={bookChapter.Id}&k=0&page={i}"));
-            if (response.StatusCode != HttpStatusCode.OK)
+            if (i > 10000) throw new InvalidOperationException("Libst вернул слишком много страниц главы; загрузка остановлена.");
+            using var response = await Config.Client.GetAsync(SystemUrl.MakeRelativeUri($"/Detail/GetChapterTextForCanvas?ChapID={bookChapter.Id}&k=0&page={i}"));
+            if (i > 1 && response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.NoContent)
             {
                 break;
             }
+            response.EnsureDownloadSuccess();
+            if (response.StatusCode == HttpStatusCode.NoContent)
+                throw new InvalidOperationException($"Libst не вернул текст главы {bookChapter.Title.CoverQuotes()}.");
 
             var data = await response.Content.ReadAsStringAsync().ContinueWith(t => t.Result.Deserialize<string[]>());
+            if (data == null) throw new InvalidOperationException("Libst вернул некорректный ответ страницы главы.");
+            if (data.Length == 0)
+            {
+                if (i == 1) throw new InvalidOperationException($"Libst не вернул текст главы {bookChapter.Title.CoverQuotes()}.");
+                break;
+            }
             sb.AppendJoin(string.Empty, data.Select(r => r.Trim().CoverTag("p")));
         }
 

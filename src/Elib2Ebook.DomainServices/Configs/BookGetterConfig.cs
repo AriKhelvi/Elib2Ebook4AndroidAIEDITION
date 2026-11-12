@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using Elib2Ebook.DomainServices.Extensions;
@@ -12,63 +12,8 @@ public class BookGetterConfig : IDisposable
 {
     public readonly ILogger Logger;
 
-    private class RedirectHandler : HttpClientHandler
-    {
-        private readonly ILogger _logger;
-        public int Delay { get; set; }
-
-        public RedirectHandler(ILogger logger)
-        {
-            _logger = logger;
-        }
-
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            try
-            {
-                var responseMessage = await base.SendAsync(request, cancellationToken);
-
-                if (responseMessage is
-                    {
-                        StatusCode: HttpStatusCode.Redirect or HttpStatusCode.PermanentRedirect or HttpStatusCode.MovedPermanently or HttpStatusCode.Moved, Headers.Location: not null
-                    })
-                {
-                    request = new HttpRequestMessage(request.Method, responseMessage.Headers.Location);
-                    responseMessage = await base.SendAsync(request, cancellationToken);
-                }
-
-                if (responseMessage.StatusCode == HttpStatusCode.TooManyRequests)
-                {
-                    responseMessage.StatusCode = HttpStatusCode.Forbidden;
-                }
-
-                return responseMessage;
-            }
-            catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
-            {
-                _logger.LogInformation("Сервер не успевает ответить. Попробуйте увеличить Timeout с помощью параметра -t");
-                throw;
-            }
-            catch (TaskCanceledException ex)
-            {
-                _logger.LogInformation(ex, "Сервер не успевает ответить. Попробуйте увеличить Timeout с помощью параметра -t");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogInformation(ex.Message);
-                throw;
-            }
-            finally
-            {
-                if (Delay > 0)
-                {
-                    _logger.LogInformation($"Жду {Delay} секунд(-ы)");
-                    await Task.Delay(TimeSpan.FromSeconds(Delay), cancellationToken);
-                }
-            }
-        }
-    }
+    private readonly RequestPacer _pacer;
+    private readonly List<HttpClient> _additionalClients = [];
 
     /// <summary>
     /// Проверка сертификата сервера для всех запросов ядра. По умолчанию принимает любой сертификат (как раньше);
@@ -76,7 +21,7 @@ public class BookGetterConfig : IDisposable
     /// </summary>
     public static Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> ServerCertificateValidator { get; set; } = (_, _, _, _) => true;
 
-    public HttpClient Client { get; }
+    public HttpClient Client { get; private set; }
 
     public Options Options { get; }
 
@@ -89,6 +34,7 @@ public class BookGetterConfig : IDisposable
     public BookGetterConfig(Options options, HttpClient client, CookieContainer cookieContainer, TempFolder tempFolder, ILogger logger)
     {
         Logger = logger;
+        _pacer = new RequestPacer(options);
         Client = client;
         CookieContainer = cookieContainer;
         Options = options;
@@ -97,30 +43,39 @@ public class BookGetterConfig : IDisposable
 
     public void Dispose()
     {
+        foreach (var client in _additionalClients) client.Dispose();
         Client?.Dispose();
         TempFolder?.Dispose();
     }
 
     public static BookGetterConfig GetDefault(Options options, ILogger logger)
     {
-        var cookieContainer = new CookieContainer();
-        var client = GetClient(options, cookieContainer, logger);
-
-        return new BookGetterConfig(options, client, cookieContainer, TempFolderFactory.Create(options.TempPath), logger);
+        var config = new BookGetterConfig(options, null, new CookieContainer(), TempFolderFactory.Create(options.TempPath), logger);
+        config.Client = config.CreateClientCore();
+        return config;
     }
 
-    private static HttpClient GetClient(Options options, CookieContainer container, ILogger logger)
+    /// <summary>Клиент с отдельными заголовками, но общей паузой, cookie, прокси и проверкой сертификатов.</summary>
+    public HttpClient CreateAdditionalClient()
     {
-        var handler = new RedirectHandler(logger)
+        var client = CreateClientCore();
+        _additionalClients.Add(client);
+        return client;
+    }
+
+    private HttpClient CreateClientCore()
+    {
+        var options = Options;
+        var handler = new HttpClientHandler
         {
             AutomaticDecompression = DecompressionMethods.GZip |
                                      DecompressionMethods.Deflate |
                                      DecompressionMethods.Brotli,
+            AllowAutoRedirect = false,
             ServerCertificateCustomValidationCallback = (request, certificate, chain, errors) => ServerCertificateValidator(request, certificate, chain, errors),
-            CookieContainer = container,
+            CookieContainer = CookieContainer,
             Proxy = null,
-            UseProxy = false,
-            Delay = options.Delay
+            UseProxy = false
         };
 
         if (!string.IsNullOrEmpty(options.Proxy))
@@ -129,11 +84,13 @@ public class BookGetterConfig : IDisposable
             handler.UseProxy = true;
         }
 
+        var policyHandler = new RequestPolicyHandler(_pacer, Logger, handler);
+
         if (!string.IsNullOrWhiteSpace(options.Flare))
         {
             var chandler = new ClearanceHandler(options.Flare)
             {
-                MaxTimeout = options.Timeout * 1000, InnerHandler = handler
+                MaxTimeout = options.Timeout * 1000, InnerHandler = policyHandler
             };
 
             if (!string.IsNullOrEmpty(options.Proxy))
@@ -147,7 +104,7 @@ public class BookGetterConfig : IDisposable
             return cclient;
         }
 
-        var client = new HttpClient(handler);
+        var client = new HttpClient(policyHandler);
 
         client.Timeout = TimeSpan.FromSeconds(options.Timeout);
 

@@ -214,11 +214,20 @@
                     <input id="timeout" class="text-field-input" type="number" inputmode="numeric" min="5" @bind="_timeout" @bind:after="SaveNumbers" />
                 </div>
                 <div class="text-field">
-                    <label class="text-field-label" for="delay">Пауза, сек</label>
-                    <input id="delay" class="text-field-input" type="number" inputmode="numeric" min="0" @bind="_delay" @bind:after="SaveNumbers" />
+                    <label class="text-field-label" for="delay-mode">Задержка: @_delayMode из 4</label>
+                    <input id="delay-mode" class="text-field-input" type="range" min="1" max="4" step="1" aria-describedby="delay-description"
+                           @bind="_delayMode" @bind:event="oninput" @bind:after="SaveDelay" />
                 </div>
             </div>
-            <p class="supporting-text flush">Пауза — между запросами к сайту: помогает, если сайт ограничивает частые обращения.</p>
+            <p id="delay-description" class="supporting-text flush" aria-live="polite">@DelayDescription</p>
+            @if (_delayMode == 4)
+            {
+                <div class="text-field">
+                    <label class="text-field-label" for="custom-delay">Своя задержка, сек (0,01–120)</label>
+                    <input id="custom-delay" class="text-field-input" type="number" inputmode="decimal" min="0.01" max="120" step="0.01"
+                           @bind="_customDelay" @bind:after="SaveDelay" />
+                </div>
+            }
 
             <h3 class="section-label">Прокси</h3>
             <div class="segmented" role="radiogroup" aria-label="Тип прокси">
@@ -322,8 +331,11 @@
 
                     <h3 class="section-label">Диагностика</h3>
                     <p class="supporting-text flush">
-                        Проверит устройство, сертификаты всех сайтов, обход блокировок по IP, прогресс сохранения, отмену и очистку файлов после ошибки. Скачает @DiagnosticsTestChapters главы пробной книги.
-                        Идёт в фоне — приложение можно свернуть. Журнал сохранится в «@Storage.DestinationLabel».
+                        Проверит устройство, сеть, сохранение файлов, FB2/EPUB, заголовки и прошлые журналы ошибок.
+                        Запросит до 10 глав: пробную текстовую книгу и примеры Rulate (100–101), Bllate, Litmarket и RanobeLib.
+                        Некоторые сайты возвращают весь текст одним ответом.
+                        Потребуется интернет. Через 3 минуты пример отменяется; завершение обработки может занять время. Временные книги удаляются.
+                        Идёт в фоне — приложение можно свернуть. Файл отчёта сохранится в «@Storage.DestinationLabel».
                     </p>
                     <div class="text-field">
                         <label class="text-field-label" for="debug-url">Пробная книга</label>
@@ -357,11 +369,11 @@
 
                     <hr class="divider" />
 
-                    <button type="button" class="list-item two-line" disabled="@(Downloads.Log.Count == 0)" @onclick="SaveDownloadLog">
+                    <button type="button" class="list-item two-line" disabled="@(Downloads.Log.Count == 0 && !HasStartupLog)" @onclick="SaveDownloadLog">
                         <span class="list-item-leading"><Icon Name="log" /></span>
                         <span class="list-item-text">
-                            <span class="list-item-headline">Сохранить журнал последнего скачивания</span>
-                            <span class="list-item-supporting">@(Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</span>
+                            <span class="list-item-headline">Сохранить журнал скачивания и запуска</span>
+                            <span class="list-item-supporting">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{Storage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</span>
                         </span>
                     </button>
                 </div>
@@ -403,6 +415,14 @@
                 </span>
                 <span class="list-item-trailing"><Icon Name="external" Size="20" /></span>
             </a>
+            <a class="list-item two-line" href="https://t.me/elib_fb2_android" target="_blank" rel="noopener">
+                <span class="list-item-leading"><Icon Name="globe" /></span>
+                <span class="list-item-text">
+                    <span class="list-item-headline">ТГ-канал разработчиков</span>
+                    <span class="list-item-supporting">Если возникла ошибка — напишите в сообщения каналу</span>
+                </span>
+                <span class="list-item-trailing"><Icon Name="external" Size="20" /></span>
+            </a>
             <a class="list-item two-line" href="https://github.com/OnlyFart/Elib2Ebook" target="_blank" rel="noopener">
                 <span class="list-item-leading"><Icon Name="globe" /></span>
                 <span class="list-item-text">
@@ -436,16 +456,24 @@
         ("socks5", "SOCKS5")
     ];
 
-    private const int DiagnosticsTestChapters = 2;
 
     private bool _showDebug;
+    private static bool HasStartupLog => StartupLog.FailedLines().Count > 0;
 
     /// <summary>Android не ограничивает приложение в фоне (см. «Работа в фоне» в разделе «Скачивание»).</summary>
     private bool _backgroundAllowed = true;
     private string _debugUrl;
     private string _pattern;
     private int _timeout;
-    private int _delay;
+    private int _delayMode;
+    private double _customDelay;
+    private string DelayDescription => _delayMode switch
+    {
+        1 => "Нулевая задержка. Значительно уменьшает время загрузки, но может вызвать резкий ответ от Claudflare",
+        2 => "Стандартная задержка, обычно хватает чтобы не вызвать реакцию сайтов",
+        3 => "Увеличеная задержка, когда сайт не хочет пускать",
+        _ => "Своя задержка - выберите сами"
+    };
     private string _proxyType = "http";
     private string _proxyAddress;
     private bool _dynamicColor = true;
@@ -470,7 +498,8 @@
         _showDebug = Diagnostics.IsRunning || Diagnostics.Summary != null;
         _pattern = Settings.BookNamePattern;
         _timeout = Settings.Timeout;
-        _delay = Settings.Delay;
+        _delayMode = Settings.DelayMode;
+        _customDelay = Settings.CustomDelaySeconds;
         ParseProxy(Settings.Proxy);
 
         // Версия ядра и коммит форка зашиваются при сборке (см. таргет E2ECoreVersion в E2E.Droid.csproj)
@@ -539,9 +568,15 @@
     private void SaveNumbers()
     {
         Settings.Timeout = _timeout;
-        Settings.Delay = _delay;
         _timeout = Settings.Timeout;
-        _delay = Settings.Delay;
+    }
+
+    private void SaveDelay()
+    {
+        Settings.DelayMode = _delayMode;
+        Settings.CustomDelaySeconds = _customDelay;
+        _delayMode = Settings.DelayMode;
+        _customDelay = Settings.CustomDelaySeconds;
     }
 
     /// <summary>«socks5://127.0.0.1:1080» → тип socks5 и адрес «127.0.0.1:1080»; без схемы — HTTP.</summary>

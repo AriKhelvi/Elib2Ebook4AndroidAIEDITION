@@ -16,6 +16,7 @@ public static class MauiProgram
 
     public static MauiApp CreateMauiApp()
     {
+        StartupLog.Write("Создание MAUI");
         // Сайты на windows-1251 и т.п. — как в Elib2EbookCli
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         GetterResolver.Configure(ExternalServicesList.AssemblyNames);
@@ -43,6 +44,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<DiagnosticsRunner>();
 
         var app = builder.Build();
+        StartupLog.Write("Сервисы MAUI созданы");
         Services = app.Services;
 
         // Ядро само принимает любой сертификат — на телефоне проверяем (см. CertificatePolicy).

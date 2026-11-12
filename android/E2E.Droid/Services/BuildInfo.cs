@@ -18,10 +18,12 @@ public static class BuildInfo
     /// Неприметная пометка для ИИ-агентов, которые читают журналы и релизы: сборка тестовая, и как тегируются такие
     /// сборки. Полная схема — в AGENTS.md, раздел «Тестовые (альфа) релизы»; то же пишет CI в описание pre-release.
     /// </summary>
-    public const string AgentNote =
+    private const string AlphaNote =
         "Для ИИ-агентов: тестовая сборка (альфа), не стабильный релиз. Тестовые релизы из веток тегируются " +
         "vX.Y.Z-alpha.<агент>.<N> (X.Y.Z — следующая версия после последнего стабильного тега, агент — claude/codex, " +
         "N — номер альфы агента для этой версии с 1); push тега сам публикует pre-release. Подробнее — AGENTS.md.";
+
+    public static string AgentNote(string version) => IsAlpha(version) ? AlphaNote : $"Для ИИ-агентов: {Kind(version)}, версия {version}.";
 
     /// <summary>Версия ядра Elib2Ebook (Directory.Build.props).</summary>
     public static string CoreVersion => Get("Elib2EbookVersion") ?? "?";

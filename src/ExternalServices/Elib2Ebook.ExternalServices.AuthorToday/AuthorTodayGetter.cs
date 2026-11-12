@@ -231,6 +231,10 @@ public class AuthorTodayGetter(BookGetterConfig config) : GetterBase(config)
                 chapter.Images = await GetImages(chapterDoc, SystemUrl);
                 chapter.Content = chapterDoc.DocumentNode.InnerHtml;
             }
+            else
+            {
+                Config.Logger.LogWarning($"Глава «{title}» недоступна на Author.Today (код {atChapter.Code ?? "не указан"}) и не включена в текст книги");
+            }
 
             result.Add(chapter);
         }
@@ -242,18 +246,24 @@ public class AuthorTodayGetter(BookGetterConfig config) : GetterBase(config)
     {
         var result = new List<AuthorTodayChapter>();
 
-        foreach (var chunk in book.Chapters.Where(c => !c.IsDraft).OrderBy(c => c.SortOrder).Chunk(100))
+        var selected = SliceToc(book.Chapters.Where(c => !c.IsDraft).OrderBy(c => c.SortOrder).DistinctBy(c => c.Id).ToList(), c => c.Title).ToList();
+        foreach (var chunk in selected.Chunk(100))
         {
             var ids = string.Join("&", chunk.Select((c, i) => $"ids[{i}]={c.Id}"));
             var uri = ApiUrl.MakeRelativeUri($"/v1/work/{book.Id}/chapter/many-texts?{ids}");
-            var response = await Config.Client.SendWithTriesAsync(() => GetDefaultMessage(uri, _apiUrl));
+            using var response = await Config.Client.SendWithTriesAsync(() => GetDefaultMessage(uri, _apiUrl));
+            response.EnsureDownloadSuccess();
             var chapters = await response.Content.ReadFromJsonAsync<AuthorTodayChapter[]>();
-            if (chapters != null)
+            var byId = (chapters ?? []).DistinctBy(c => c.Id).ToDictionary(c => c.Id);
+            var missing = chunk.Count(c => !byId.ContainsKey(c.Id));
+            if (missing > 0)
             {
-                result.AddRange(chapters.Where(c => c.Code != "NotFound"));
+                throw new InvalidOperationException($"Author.Today не вернул {missing} из {chunk.Length} запрошенных глав. Неполная книга не будет сохранена.");
             }
+
+            result.AddRange(chunk.Select(c => byId[c.Id]));
         }
 
-        return SliceToc(result, c => c.Title);
+        return result;
     }
 }

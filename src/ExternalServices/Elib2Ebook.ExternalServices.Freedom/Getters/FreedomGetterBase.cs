@@ -82,9 +82,12 @@ public abstract class FreedomGetterBase(BookGetterConfig config) : GetterBase(co
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
         var content = doc.QuerySelector("div.entry-content");
         var notice = content.QuerySelector("div.single-notice");
-        return notice?.GetText() == "Для чтения купите главу." ?
-            null :
-            content.InnerHtml.AsHtmlDoc().RemoveNodes("div[class*=adv]");
+        if (notice?.GetText() == "Для чтения купите главу.")
+        {
+            Config.Logger.LogWarning($"Глава {url} требует покупки и не включена в книгу");
+            return null;
+        }
+        return content.InnerHtml.AsHtmlDoc().RemoveNodes("div[class*=adv]");
     }
 
     private static Author GetAuthor()

@@ -20,7 +20,7 @@ public class LitgorodGetter(BookGetterConfig config) : GetterBase(config)
     public override async Task<Book> Get(Uri url)
     {
         url = SystemUrl.MakeRelativeUri($"/books/view/{GetId(url)}");
-        Config.Client.DefaultRequestHeaders.Add("Referer", url.ToString());
+        Config.Client.DefaultRequestHeaders.Referrer = url;
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
 
         var book = new Book(url)
@@ -144,18 +144,19 @@ public class LitgorodGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<HtmlDocument> GetChapter(Uri url)
     {
-        var response = await Config.Client.GetWithTriesAsync(url);
+        using var response = await Config.Client.GetWithTriesAsync(url);
         if (response == null)
         {
-            return null;
+            throw new InvalidOperationException($"Litgorod не вернул главу {url}");
         }
+        response.EnsureDownloadSuccess();
 
         var doc = await response.Content.ReadAsStreamAsync().ContinueWith(t => t.Result.AsHtmlDoc());
 
         var content = doc.QuerySelector("book-reader");
         if (content == null)
         {
-            return null;
+            throw new InvalidOperationException($"Litgorod не вернул текст главы {url}. Проверьте доступ к главе; неполная книга не будет сохранена.");
         }
 
         var sb = new StringBuilder();

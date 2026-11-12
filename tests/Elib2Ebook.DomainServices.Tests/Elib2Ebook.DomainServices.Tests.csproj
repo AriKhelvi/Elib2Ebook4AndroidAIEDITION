@@ -21,5 +21,27 @@
 
     <ItemGroup>
       <ProjectReference Include="..\..\src\Elib2Ebook.DomainServices\Elib2Ebook.DomainServices.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Rulate/Elib2Ebook.ExternalServices.Rulate.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litgorod/Elib2Ebook.ExternalServices.Litgorod.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litnet/Elib2Ebook.ExternalServices.Litnet.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litmarket/Elib2Ebook.ExternalServices.Litmarket.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.AuthorToday/Elib2Ebook.ExternalServices.AuthorToday.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.BooksYandex/Elib2Ebook.ExternalServices.BooksYandex.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Bookstab/Elib2Ebook.ExternalServices.Bookstab.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.BookRiver/Elib2Ebook.ExternalServices.BookRiver.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.DarkNovels/Elib2Ebook.ExternalServices.DarkNovels.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Boosty/Elib2Ebook.ExternalServices.Boosty.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Freedom/Elib2Ebook.ExternalServices.Freedom.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Libbox/Elib2Ebook.ExternalServices.Libbox.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Libking/Elib2Ebook.ExternalServices.Libking.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Libst/Elib2Ebook.ExternalServices.Libst.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.RanobesCom/Elib2Ebook.ExternalServices.RanobesCom.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Younettranslate/Elib2Ebook.ExternalServices.Younettranslate.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Romfant/Elib2Ebook.ExternalServices.Romfant.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.ReadManga/Elib2Ebook.ExternalServices.ReadManga.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.LitLife/Elib2Ebook.ExternalServices.LitLife.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.TopLiba/Elib2Ebook.ExternalServices.TopLiba.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Bookinist/Elib2Ebook.ExternalServices.Bookinist.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Fb2Top/Elib2Ebook.ExternalServices.Fb2Top.csproj" />
     </ItemGroup>
 </Project>

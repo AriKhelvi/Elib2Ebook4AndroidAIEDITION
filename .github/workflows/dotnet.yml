@@ -90,7 +90,8 @@ jobs:
     name: Check version
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
+    # Публикация upstream не относится к Android-форку: здесь stable готовит только владелец.
+    if: github.repository == 'OnlyFart/Elib2Ebook' && github.ref == 'refs/heads/master'
     outputs:
       VERSION: ${{ steps.get-version.outputs.version }}
       LAST_TAG: ${{ steps.last_release_tag.outputs.tag_name }}

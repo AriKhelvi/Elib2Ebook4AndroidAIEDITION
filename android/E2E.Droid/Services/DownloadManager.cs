@@ -18,6 +18,7 @@
 
 using Elib2Ebook.Domain.Book;
 using Elib2Ebook.DomainServices.Configs;
+using Elib2Ebook.DomainServices.Misc;
 
 namespace E2E.Droid.Services;
 
@@ -81,6 +82,12 @@ public sealed class DownloadManager(
     /// <summary>Журнал ограничен, чтобы книга на тысячу глав не съела память.</summary>
     private const int MaxLogLines = 3000;
 
+    internal static string DescribeSavedFiles(IReadOnlyCollection<SavedFile> files)
+    {
+        var books = files.Count(file => file.IsBook);
+        return $"файлов книги: {books}; дополнительных файлов: {files.Count - books}";
+    }
+
     /// <summary>С «Подробным журналом» строк куда больше (каждое TLS-соединение) — и предел выше.</summary>
     private const int MaxDebugLogLines = 20000;
 
@@ -92,6 +99,7 @@ public sealed class DownloadManager(
 
     /// <summary>Текущее (или последнее) задание. Интерфейс читает всё отсюда; пустое — до первого скачивания.</summary>
     private volatile Job _job = new(new DownloadRequest());
+    private readonly BoundedFileLog _persistentLog = new(Path.Combine(FileSystem.AppDataDirectory, "logs", "download.log"));
 
     /// <summary>
     /// 1 — StartAsync уже идёт (ждёт разрешений). Защита от двойного старта: между проверкой IsRunning
@@ -140,7 +148,10 @@ public sealed class DownloadManager(
 
     // Коллекции читаются из UI-потока, а пишутся из фонового — поэтому отдаём копии под lock
 
-    public IReadOnlyList<string> Log => Copy(_job.Log);
+    public IReadOnlyList<string> Log => _job.Log.Count > 0 ? Copy(_job.Log) : _persistentLog.Read();
+
+    public IReadOnlyList<string> Warnings => Copy(_job.Warnings);
+    public int WarningCount => Volatile.Read(ref _job.WarningCount);
 
     /// <summary>Файлы, сохранённые в текущем/последнем задании (книги, обложки, доп. файлы).</summary>
     public IReadOnlyList<SavedFile> Saved => Copy(_job.Saved);
@@ -190,6 +201,8 @@ public sealed class DownloadManager(
             lock (_sync)
             {
                 _job = job;
+                _persistentLog.Reset();
+                _persistentLog.Append($"# Запуск скачивания {DateTimeOffset.Now:O}; E2E {platform.AppVersion} ({BuildInfo.Kind(platform.AppVersion)}), сборка {platform.BuildNumber}, коммит {BuildInfo.Commit}");
                 State = DownloadState.Running;
                 job.HoldsService = true;
                 HoldService(job.Status);
@@ -363,11 +376,18 @@ public sealed class DownloadManager(
             {
                 Write(job, $"Начинаю генерацию книги {url}");
                 var options = BuildOptions(request, url, workDir);
-                var logger = new CallbackLogger(line => Write(job, line));
+                var logger = new CallbackLogger(line => Write(job, line), line =>
+                {
+                    Interlocked.Increment(ref job.WarningCount);
+                    lock (job.Warnings)
+                    {
+                        if (job.Warnings.Count < 50) job.Warnings.Add($"{url}: {line}");
+                    }
+                });
                 DebugLine(job, $"Параметры ядра: формат {string.Join(",", options.Format)}, главы {options.Start?.ToString() ?? "-"}..{options.End?.ToString() ?? "-"}" +
                                $" ({options.StartName ?? "-"}..{options.EndName ?? "-"}), без картинок {options.NoImage}, обложка {options.Cover}, " +
                                $"доп. файлы {options.Additional} [{string.Join(",", options.AdditionalTypes ?? [])}], таймаут {options.Timeout} с, " +
-                               $"пауза {options.Delay} с, прокси {DiagnosticsRunner.MaskProxy(options.Proxy)}, логин {(options.Login != null ? "задан" : "нет")}");
+                               $"режим задержки {options.DelayMode}, своя задержка {options.CustomDelaySeconds} с, прокси {DiagnosticsRunner.MaskProxy(options.Proxy)}, логин {(options.Login != null ? "задан" : "нет")}");
                 var stage = System.Diagnostics.Stopwatch.StartNew();
 
                 var result = await BookPipeline.RunAsync(options, logger, p =>
@@ -426,7 +446,7 @@ public sealed class DownloadManager(
                         history.Add(record);
                         lock (job.Saved) job.Saved.AddRange(saved);
                         DebugLine(job, $"Сохранено за {stage.ElapsedMilliseconds} мс: {string.Join("; ", saved.Select(f => $"{f.Folder}/{f.Name} {f.Size} байт {f.Mime} → {f.Uri}"))}");
-                        Write(job, $"Готово: {result.Title} ({saved.Count} файл(ов))");
+                        Write(job, $"Готово: {result.Title} ({DescribeSavedFiles(saved)})");
                     }
                     finally
                     {
@@ -549,7 +569,7 @@ public sealed class DownloadManager(
             }
 
             State = saved.Count > 0 ? DownloadState.Done : DownloadState.Failed;
-            job.Status = errors.Count == 0 ? "Готово" : "Завершено с ошибками";
+            job.Status = errors.Count > 0 ? "Завершено с ошибками" : job.WarningCount > 0 ? "Сохранено с предупреждениями" : "Готово";
         }
 
         Changed?.Invoke();
@@ -559,7 +579,12 @@ public sealed class DownloadManager(
         var total = job.Request.Urls.Count;
 
         string text;
-        if (errors.Count == 0)
+        if (errors.Count == 0 && job.WarningCount > 0)
+        {
+            text = $"Сохранено с предупреждениями: {job.WarningCount}. Проверьте полноту книги и журнал";
+            toasts.Show(text, ToastKind.Info, 10);
+        }
+        else if (errors.Count == 0)
         {
             text = total > 1 ? $"Готово книг: {total}" : $"Книга «{title}» сохранена";
             toasts.Show(text, ToastKind.Success);
@@ -573,8 +598,9 @@ public sealed class DownloadManager(
         // Если приложение на экране, хватает тоста; если свёрнуто — напоминаем уведомлением
         if (!platform.IsInForeground)
         {
-            platform.NotifyFinished(errors.Count == 0 ? "Книга готова" : "Скачивание завершилось с ошибкой", text);
+            platform.NotifyFinished(job.Status, text);
         }
+        AppendLog(job, text);
     }
 
     /// <summary>
@@ -633,6 +659,8 @@ public sealed class DownloadManager(
             Proxy = NullIfEmpty(settings.Proxy),
             Timeout = settings.Timeout,
             Delay = settings.Delay,
+            DelayMode = settings.DelayMode,
+            CustomDelaySeconds = settings.CustomDelaySeconds,
             NoImage = request.NoImage && !request.FormatsFor(url).Contains("cbz"),
             Start = request.Start,
             End = request.End,
@@ -696,6 +724,7 @@ public sealed class DownloadManager(
             return;
         }
 
+        line = LogText.Clean(line);
         AppendLog(job, line);
         job.Status = line.Length > 300 ? line[..300] + "…" : line;
         if (line.StartsWith("Загружаю главу", StringComparison.Ordinal))
@@ -731,16 +760,25 @@ public sealed class DownloadManager(
         NotifyChanged();
     }
 
-    private static void AppendLog(Job job, string line)
+    private void AppendLog(Job job, string line)
     {
-        lock (job.Log)
+        lock (_sync)
         {
-            job.Log.Add($"{DateTime.Now:HH:mm:ss} {line}");
-            var max = job.Debug ? MaxDebugLogLines : MaxLogLines;
-            if (job.Log.Count > max)
+            if (!ReferenceEquals(job, _job)) return;
+            var entry = $"{DateTime.Now:HH:mm:ss} {LogText.Clean(line)}";
+            lock (job.Log)
             {
-                job.Log.RemoveRange(0, job.Log.Count - max);
+                job.Log.Add(entry);
+                job.LogCharacters += entry.Length;
+                var max = job.Debug ? MaxDebugLogLines : MaxLogLines;
+                var maxCharacters = job.Debug ? 512 * 1024 : 128 * 1024;
+                while (job.Log.Count > max || job.LogCharacters > maxCharacters)
+                {
+                    job.LogCharacters -= job.Log[0].Length;
+                    job.Log.RemoveAt(0);
+                }
             }
+            _persistentLog.Append(entry);
         }
     }
 
@@ -854,10 +892,13 @@ public sealed class DownloadManager(
 
         /// <summary>Счётчик глав текущей книги (через Interlocked).</summary>
         public int Chapters;
+        public int WarningCount;
+        public int LogCharacters;
 
         // Пишутся из фонового потока, читаются из UI — только под lock на сам список
         public readonly List<string> Log = [];
         public readonly List<SavedFile> Saved = [];
         public readonly List<string> Errors = [];
+        public readonly List<string> Warnings = [];
     }
 }

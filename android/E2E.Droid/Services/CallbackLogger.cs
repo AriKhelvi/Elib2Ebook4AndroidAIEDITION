@@ -5,11 +5,12 @@
 // ============================================================================
 
 using Microsoft.Extensions.Logging;
+using Elib2Ebook.DomainServices.Misc;
 
 namespace E2E.Droid.Services;
 
 /// <summary>Логгер ядра, передающий строки в UI (аналог ActionLogger из Elib2EbookWeb).</summary>
-public sealed class CallbackLogger(Action<string> write) : ILogger
+public sealed class CallbackLogger(Action<string> write, Action<string> warning = null) : ILogger
 {
     public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -23,6 +24,8 @@ public sealed class CallbackLogger(Action<string> write) : ILogger
             message += " " + exception.Message;
         }
 
+        message = LogText.Clean(message);
+        if (logLevel >= LogLevel.Warning) warning?.Invoke(message);
         write(message);
     }
 }

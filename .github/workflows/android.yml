@@ -9,10 +9,11 @@
 #   - пуш в master, затрагивающий приложение или ядро  → APK в артефактах запуска (вкладка Actions);
 #   - пуш в ветки claude/dev и codex/dev               → то же: APK для проверки ветки до слияния в master;
 #   - ручной запуск (Actions → Android APK → Run workflow);
-#   - публикация релиза на GitHub                       → APK прикрепляется к этому релизу;
-#   - пуш тега vX.Y.Z-alpha.<агент>.<N> (тестовый релиз) → сборка + pre-release с APK, публикуется сам;
-#     то же — ручной запуск на ветке с полем «alpha_tag»: CI сам ставит тег на собранный коммит
-#     (схема тегов — в AGENTS.md, раздел «Тестовые (альфа) релизы»);
+#   - ручной запуск владельцем из master с release_tag → черновик стабильного релиза с APK;
+#   - публикация релиза на GitHub                       → проверка уже загруженного APK;
+#   - пуш тега vX.Y.Z-alpha.<агент>.<N> (тестовый релиз) → сборка + pre-release с APK;
+#     то же — ручной запуск на ветке с полем «alpha_tag». Автопубликация зависит от разрешений API
+#     (ограничение GITHUB_TOKEN для изменений workflow — android/README.md; схема тегов — AGENTS.md);
 #   - pull request                                       → только проверка, что всё собирается.
 #
 # Подпись APK. Чтобы новая версия ставилась поверх установленной, APK должен быть подписан тем же ключом,
@@ -37,42 +38,91 @@ on:
       - 'Directory.Packages.props'
       - 'nuget.config'
       - '.github/workflows/android.yml'
+      - '.github/scripts/**'
   pull_request:
     paths:
       - 'android/**'
       - 'src/**'
       - '.github/workflows/android.yml'
+      - '.github/scripts/**'
   release:
     types: [ published ]
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: 'Стабильный vX.Y.Z: только владелец из master с expected_sha. Создаёт draft с APK; владелец публикует после проверки'
+        required: false
+        type: string
+        default: ''
       alpha_tag:
-        description: 'Альфа-тег vX.Y.Z-alpha.<агент>.<N> (пусто — обычная сборка). CI поставит тег на этот коммит и опубликует pre-release'
+        description: 'Альфа vX.Y.Z-alpha.<агент>.<N> (пусто — обычная сборка). Изменения workflow относительно master могут потребовать действий владельца; см. README'
         required: false
         type: string
         default: ''
       expected_sha:
-        description: 'Ожидаемый коммит (начало хэша). Если в ветке уже другой — сборка остановится сразу, ничего не выпустив'
+        description: 'Обязателен с release_tag или alpha_tag: ожидаемый хэш (7–40 символов). Если ветка изменилась, сборка сразу остановится'
         required: false
         type: string
         default: ''
 
-# contents: write — чтобы прикрепить APK к релизу
+# Запись нужна только сборке, которая готовит draft или публикует альфу.
 permissions:
-  contents: write
+  contents: read
 
-# Новый пуш в ту же ветку отменяет недоделанную сборку предыдущего
+# Обычный пуш отменяет предыдущую сборку ветки, но не подготовку релиза.
 concurrency:
-  group: android-${{ github.ref }}
-  cancel-in-progress: true
+  group: android-${{ github.event.release.tag_name || inputs.release_tag || inputs.alpha_tag || (github.ref_type == 'tag' && github.ref_name) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
 
 jobs:
+  prepare:
+    name: Проверка параметров релиза
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      kind: ${{ steps.prepare.outputs.kind }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      build: ${{ steps.prepare.outputs.build }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Тесты подготовки релизов
+        run: python3 -m unittest discover -s .github/scripts/tests -v
+      - name: Проверка владельца, ветки, коммита и тега
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_INPUT: ${{ inputs.release_tag }}
+          ALPHA_INPUT: ${{ inputs.alpha_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python3 .github/scripts/android_release.py prepare
+
+  published:
+    name: Проверка опубликованного APK
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Проверка без изменения релиза
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python3 .github/scripts/android_release.py verify
+
   apk:
     name: Сборка APK
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
 
     env:
+      RELEASE_INPUT: ${{ inputs.release_tag }}
+      ALPHA_INPUT: ${{ inputs.alpha_tag }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
       # .NET ставим в домашнюю папку раннера: в системную /usr/share/dotnet workload без sudo не поставить
       DOTNET_INSTALL_DIR: ${{ github.workspace }}/../.dotnet
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
@@ -119,6 +169,9 @@ jobs:
           dotnet build android/E2E.Droid/E2E.Droid.csproj -t:InstallAndroidDependencies -f net10.0-android
           -p:AndroidSdkDirectory="$ANDROID_SDK_ROOT" -p:JavaSdkDirectory="$JAVA_HOME" -p:AcceptAndroidSdkLicenses=True
 
+      - name: Проверка Android Debug
+        run: dotnet build android/E2E.Droid/E2E.Droid.csproj -f net10.0-android -c Debug
+
       # Схема версий (та же, что в android/build.ps1, — см. android/README.md, раздел «Версии»):
       #   релиз с тегом v0.2.0                 → версия 0.2.0,         файл E2E-0.2.0.apk
       #   5 коммитов после тега v0.2.0          → версия 0.2.1-dev.5,   файл E2E-0.2.1-dev.5-<коммит>.apk
@@ -129,58 +182,23 @@ jobs:
         id: version
         env:
           # Через переменные, а не ${{ }} в тексте скрипта: поле ручного запуска — пользовательский ввод
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          ALPHA_INPUT: ${{ inputs.alpha_tag }}
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+          PUBLISH_TAG: ${{ needs.prepare.outputs.tag }}
+          PUBLISH_KIND: ${{ needs.prepare.outputs.kind }}
         run: |
           CORE=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props | head -1)
           CODE=$(( ($(date +%s) - 1767225600) / 60 ))
           SHA=${GITHUB_SHA::7}
 
-          # Ручной запуск собирает то, что сейчас в ветке. Если туда успела запушить другая сессия, без этой проверки
-          # альфа вышла бы с чужим коммитом — поэтому агенты передают expected_sha (см. AGENTS.md)
-          EXPECTED=$(printf '%s' "$EXPECTED_SHA" | tr -d '[:space:]' | tr 'A-F' 'a-f')
-          if [ -n "$EXPECTED" ]; then
-            if ! [[ "$EXPECTED" =~ ^[0-9a-f]{7,40}$ ]]; then
-              echo "::error::expected_sha «$EXPECTED» — не хэш коммита (нужно 7–40 шестнадцатеричных символов)"
-              exit 1
-            fi
-            if [[ "$GITHUB_SHA" != "$EXPECTED"* ]]; then
-              echo "::error::В ветке коммит ${GITHUB_SHA::7}, а ожидался $EXPECTED: ветку обновили после запуска. Подтяните её и проверьте, что выпускаете"
-              exit 1
-            fi
-          fi
-
-          # Альфа (тестовый релиз): пуш тега или ручной запуск с полем alpha_tag — только по схеме из AGENTS.md
+          # Параметры уже проверены до установки SDK; при загрузке APK они проверяются ещё раз.
           ALPHA=""
-          if [ "${{ github.event_name }}" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
-            ALPHA="$REF_NAME"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ALPHA=$(printf '%s' "$ALPHA_INPUT" | tr -d '[:space:]')
-          fi
-          if [ -n "$ALPHA" ]; then
-            if ! [[ "$ALPHA" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[a-z][a-z0-9]*\.[0-9]+$ ]]; then
-              echo "::error::Альфа-тег «$ALPHA» не по схеме vX.Y.Z-alpha.<агент>.<N> (например v0.1.1-alpha.claude.1, см. AGENTS.md)"
-              exit 1
-            fi
-            # Номер уже занят другим коммитом — не переставляем тег, нужен следующий N
-            EXISTING=$(git rev-parse -q --verify "refs/tags/$ALPHA^{commit}" || true)
-            if [ -n "$EXISTING" ] && [ "$EXISTING" != "$GITHUB_SHA" ]; then
-              echo "::error::Тег $ALPHA уже стоит на коммите ${EXISTING::7}, а собирается ${GITHUB_SHA::7}. Возьмите следующий номер альфы"
-              exit 1
-            fi
-          fi
+          STABLE=""
+          if [ "$PUBLISH_KIND" = "alpha" ]; then ALPHA="$PUBLISH_TAG"; fi
+          if [ "$PUBLISH_KIND" = "stable" ]; then STABLE="$PUBLISH_TAG"; fi
           echo "alpha=$ALPHA" >> "$GITHUB_OUTPUT"
+          echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.event_name }}" = "release" ] || [ -n "$ALPHA" ]; then
-            TAG="${ALPHA:-$RELEASE_TAG}"
-            if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-              echo "::error::Тег релиза «$TAG» не похож на версию. Нужен тег вида vX.Y.Z, например v0.1.0"
-              exit 1
-            fi
-            VERSION=${TAG#v}
+          if [ -n "$PUBLISH_TAG" ]; then
+            VERSION=${PUBLISH_TAG#v}
             NAME="E2E-$VERSION"
           else
             # Альфа-теги в версии сборок веток не участвуют: после альфы ветка остаётся «0.1.1-dev.N»
@@ -222,7 +240,7 @@ jobs:
             echo "kind=owner" >> "$GITHUB_OUTPUT"
             echo "Подпись: ключ владельца из секретов репозитория"
           else
-            if [ "${{ github.event_name }}" = "release" ] || [ -n "${{ steps.version.outputs.alpha }}" ]; then
+            if [ -n "${{ needs.prepare.outputs.tag }}" ]; then
               echo "::error::Для релиза и альфы нужен ключ подписи: добавьте секреты E2E_KEYSTORE_BASE64 и E2E_KEYSTORE_PASSWORD (см. android/README.md)"
               exit 1
             fi
@@ -298,35 +316,17 @@ jobs:
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
 
-      - name: Прикрепить к релизу
-        if: github.event_name == 'release'
+      - name: Черновик стабильного релиза с APK
+        if: steps.version.outputs.stable != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
           APK: ${{ steps.apk.outputs.path }}
-        run: |
-          NAME=$(basename "$APK")
-          # Несколько попыток: если релиз только что переименовали или перепубликовали,
-          # API GitHub может какое-то время отвечать ошибкой
-          for i in 1 2 3; do
-            if gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"; then
-              echo "APK $NAME прикреплён к релизу $TAG"
-              exit 0
-            fi
-            echo "Попытка $i не удалась, повтор через 15 с"
-            sleep 15
-          done
-          # Файл с тем же именем уже в релизе (например, его прикрепила сборка до переименования тега) — не ошибка
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qxF "$NAME"; then
-            echo "::notice::$NAME уже прикреплён к релизу $TAG — оставляю как есть"
-            exit 0
-          fi
-          echo "::error::Не удалось прикрепить $NAME к релизу $TAG"
-          exit 1
+        run: python3 .github/scripts/android_release.py attach
 
       # Тестовый (альфа) релиз: pre-release с APK, списком изменений и скрытой пометкой для ИИ-агентов.
-      # При ручном запуске тег ставит сам релиз (--target = собранный коммит). Релиз и тег создаются токеном
-      # Actions — они не запускают этот workflow ещё раз.
+      # При разрешении API тег ставит сам релиз (target_commitish = собранный коммит).
+      # При отказе Workflows:write helper объясняет действия владельца; PAT не используется.
+      # Релиз и тег, созданные токеном Actions, не запускают этот workflow ещё раз.
       - name: Альфа-релиз
         if: steps.version.outputs.alpha != ''
         env:
@@ -367,12 +367,4 @@ jobs:
             echo "Стабильные релизы vX.Y.Z — только владелец, из master. Подробнее — AGENTS.md, раздел «Тестовые (альфа) релизы». -->"
           } > "$NOTES"
 
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # Перезапуск сборки того же тега: обновляем APK и описание
-            gh release upload "$TAG" "$APK" --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$TAG" --prerelease --notes-file "$NOTES" --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false \
-              --title "E2E $VERSION (альфа)" --notes-file "$NOTES"
-          fi
-          echo "Опубликован pre-release $TAG: $(basename "$APK")"
+          NOTES="$NOTES" python3 .github/scripts/android_release.py attach

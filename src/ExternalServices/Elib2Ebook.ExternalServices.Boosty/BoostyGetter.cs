@@ -4,6 +4,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.ExternalServices.Boosty.Types;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
@@ -49,6 +50,7 @@ public class BoostyGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<IEnumerable<Chapter>> FillChapters(Uri uri, string bookId)
     {
         var result = new List<Chapter>();
+        if (Config.Options.NoChapters) return result;
 
         foreach (var post in await GetToc(bookId))
         {
@@ -75,11 +77,13 @@ public class BoostyGetter(BookGetterConfig config) : GetterBase(config)
     {
         if (!post.HasAccess)
         {
+            Config.Logger.LogWarning($"Пост «{post.Title}» недоступен на Boosty и не включён в книгу");
             return null;
         }
 
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"/{bookId}/posts/{post.Id}"));
-        doc = doc.QuerySelector("article.Post_content_ETkyT").InnerHtml.AsHtmlDoc().RemoveNodes("h1");
+        doc = doc.QuerySelector("article.Post_content_ETkyT").InnerHtml.AsHtmlDoc();
+        ChapterContentCleaner.RemoveLeadingTitle(doc.DocumentNode, post.Title);
 
         foreach (var img in doc.QuerySelectorAll("img"))
         {
@@ -104,18 +108,30 @@ public class BoostyGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<IEnumerable<BoostyPost>> GetToc(string bookId)
     {
         var result = new List<BoostyPost>();
-
-        var response = await Config.Client.GetWithTriesAsync(ApiUrl.MakeRelativeUri($"/v1/blog/{bookId}/post/").AppendQueryParameter("limit", 10));
-        var content = await response.Content.ReadFromJsonAsync<BoostyApiResponse<BoostyPost[]>>();
-        result.AddRange(content.Data);
-
-        while (!content.Extra.IsLast)
+        var seenPosts = new HashSet<Guid>();
+        var seenOffsets = new HashSet<string>(StringComparer.Ordinal);
+        string offset = null;
+        while (true)
         {
-            response = await Config.Client.GetWithTriesAsync(
-                ApiUrl.MakeRelativeUri($"/v1/blog/{bookId}/post/").AppendQueryParameter("limit", 10).AppendQueryParameter("offset", content.Extra.Offset));
-
-            content = await response.Content.ReadFromJsonAsync<BoostyApiResponse<BoostyPost[]>>();
-            result.AddRange(content.Data);
+            var uri = ApiUrl.MakeRelativeUri($"/v1/blog/{bookId}/post/").AppendQueryParameter("limit", 10);
+            if (offset != null) uri = uri.AppendQueryParameter("offset", offset);
+            using var response = await Config.Client.GetWithTriesAsync(uri);
+            response.EnsureDownloadSuccess();
+            var content = await response.Content.ReadFromJsonAsync<BoostyApiResponse<BoostyPost[]>>();
+            if (content?.Data == null || content.Extra == null)
+                throw new InvalidOperationException("Boosty не вернул список постов. Неполная книга не будет сохранена.");
+            var added = 0;
+            foreach (var post in content.Data)
+            {
+                if (post.Id == Guid.Empty) throw new InvalidOperationException("Boosty вернул пост без идентификатора");
+                if (!seenPosts.Add(post.Id)) continue;
+                result.Add(post);
+                added++;
+            }
+            if (content.Extra.IsLast) break;
+            offset = content.Extra.Offset;
+            if (added == 0 || string.IsNullOrWhiteSpace(offset) || !seenOffsets.Add(offset))
+                throw new InvalidOperationException("Boosty повторил или не вернул следующую страницу постов. Неполная книга не будет сохранена.");
         }
 
         result.Reverse();

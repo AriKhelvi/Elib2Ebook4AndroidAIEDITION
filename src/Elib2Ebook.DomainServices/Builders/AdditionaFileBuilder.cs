@@ -59,12 +59,13 @@ public class AdditionaFileBuilder(Options options, ILogger logger)
 
                 var fileName = Path.Combine(subPath, $"Cover{Path.GetExtension(book.Cover.FullName)}".RemoveInvalidChars());
                 await File.WriteAllBytesAsync(fileName, book.Cover.Content);
+                logger.LogInformation($"Обложка сохранена отдельным файлом {fileName.CoverQuotes()}");
             }
         }
 
         if (book.AdditionalFiles.Collection.Count == 0)
         {
-            logger.LogInformation("Нет дополнительных файлов");
+            logger.LogInformation("Других вложений нет");
             return;
         }
 

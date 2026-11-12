@@ -7,6 +7,7 @@ public class StringExtensionsTests
     [Theory]
     [InlineData("", "")]
     [InlineData("Hello World.txt", "Hello World.txt")]
+    [InlineData("Книга 🐠 👩🏽‍💻.fb2", "Книга 🐠 👩🏽‍💻.fb2")]
     public void RemoveInvalidChars(string input, string expected)
     {
         Assert.Equal(expected, input.RemoveInvalidChars());
@@ -22,6 +23,15 @@ public class StringExtensionsTests
     [Theory]
     [InlineData("hello", 10, "hello")]
     [InlineData("hello world", 5, "hello")]
+    [InlineData("A😀B", 2, "A")]
+    [InlineData("A😀B", 3, "A😀")]
+    [InlineData("A👩🏽‍💻B", 7, "A")]
+    [InlineData("A👩🏽‍💻B", 8, "A👩🏽‍💻")]
+    [InlineData("A🇷🇺B", 4, "A")]
+    [InlineData("A🇷🇺B", 5, "A🇷🇺")]
+    [InlineData("Aе\u0301B", 2, "A")]
+    [InlineData("Aе\u0301B", 3, "Aе\u0301")]
+    [InlineData("😀", 0, "")]
     public void Crop(string input, int len, string expected)
     {
         Assert.Equal(expected, input.Crop(len));
@@ -83,10 +93,13 @@ public class StringExtensionsTests
         Assert.Equal("https://example.com/", "https://example.com".AsUri().ToString());
     }
 
-    [Fact]
-    public void CleanInvalidXmlChars()
+    [Theory]
+    [InlineData("te\x00st", "test")]
+    [InlineData("🐠 👩🏽‍💻 🇷🇺 ☀️", "🐠 👩🏽‍💻 🇷🇺 ☀️")]
+    [InlineData("\u0001😀\u0002", "😀")]
+    public void CleanInvalidXmlChars(string input, string expected)
     {
-        Assert.Equal("test", "te\x00st".CleanInvalidXmlChars());
+        Assert.Equal(expected, input.CleanInvalidXmlChars());
     }
 
     [Theory]

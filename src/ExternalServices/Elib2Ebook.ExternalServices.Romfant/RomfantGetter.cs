@@ -92,10 +92,12 @@ public class RomfantGetter(BookGetterConfig config) : GetterBase(config)
 
             if (doc.DocumentNode.InnerText.Contains("Чтобы продолжить чтение, пожалуйста, оплатите доступ."))
             {
-                Config.Logger.LogInformation("Платный контент");
+                Config.Logger.LogWarning($"Сохранена только доступная часть книги: страница {i} из {pages} требует оплаты. Проверьте доступ к книге на сайте.");
                 break;
             }
 
+            if (doc.QuerySelector("div.book") == null)
+                throw new InvalidOperationException($"Не найден текст книги Romfant на странице {i}. Неполная книга не будет сохранена.");
             foreach (var p in doc.QuerySelectorAll("div.book p"))
             {
                 var content = p.GetText();

@@ -42,6 +42,12 @@ public class Options
     [Option('d', "delay", Required = false, HelpText = "Задержка между запросами в секундах", Default = 0)]
     public int Delay { get; set; }
 
+    /// <summary>Режим Android: 1 — без паузы, 2 — 0,6–1,5 с, 3 — 5–10 с, 4 — своя пауза.
+    /// null сохраняет значение консольного параметра --delay.</summary>
+    public int? DelayMode { get; set; }
+
+    public double CustomDelaySeconds { get; set; } = 1;
+
     [Option("no-image", Required = false, HelpText = "Не загружать картинки")]
     public bool NoImage { get; set; }
 

@@ -10,12 +10,11 @@
 // сохраняется файлом в папку загрузок приложения — его и присылают разработчикам.
 //
 // Формат журнала: строки «#» — шапка и итог (в шапке — пометка для ИИ-агентов, см. BuildInfo.AgentNote),
-// «== N. шаг ==» — начало шага, «[ok]/[FAIL]/[skip]» — проверки, «[i]» — сведения, «ядро |», «tls |» — строки
+// «== N. шаг ==» — начало шага, «[ok]/[FAIL]/[warn]/[skip]» — проверки, «[i]» — сведения, «ядро |», «tls |» — строки
 // ядра и проверок сертификатов во время пробного скачивания. Паролей и логинов в журнале нет.
 
 using System.Diagnostics;
 using System.Globalization;
-using System.IO.Compression;
 using System.Net;
 using System.Net.Security;
 using System.Runtime.InteropServices;
@@ -23,6 +22,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Elib2Ebook.DomainServices.Configs;
+using Elib2Ebook.DomainServices.Misc;
 using Microsoft.Extensions.FileProviders;
 
 namespace E2E.Droid.Services;
@@ -35,11 +35,13 @@ public sealed class DiagnosticsRunner(
     DownloadManager downloads,
     ToastService toasts)
 {
-    /// <summary>Книга для пробного скачивания по умолчанию — та же, что в android/CoreSmoke.</summary>
-    public const string DefaultTestUrl = "https://author.today/work/212721";
+    /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
+    public const string DefaultTestUrl = "https://tl.rulate.ru/book/209502";
+    public const string ScenarioVersion = "2026-11-12.2";
 
     private const int TestChapters = 2;
-    private const int MaxLines = 50000;
+    private const int MaxLines = 6000;
+    private const int MaxLogChars = 512 * 1024;
     private const int SiteParallelism = 6;
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(20);
 
@@ -63,6 +65,12 @@ public sealed class DiagnosticsRunner(
     private int _ok;
     private int _failed;
     private int _skipped;
+    private int _warnings;
+    private int _logChars;
+    private bool _logTruncated;
+    private bool _completed;
+    private BoundedFileLog _runLog;
+    private IReadOnlyList<string> _previousDiagnostic = [];
 
     /// <summary>Обложка пробной книги — для шага с миниатюрой.</summary>
     private byte[] _cover;
@@ -105,7 +113,7 @@ public sealed class DiagnosticsRunner(
             var head = log.TakeWhile(l => l.StartsWith('#')).ToList();
             // Строки «#» (шапка, легенда с «[FAIL]» и «[skip]») — не проблемы
             var problems = log
-                .Where(l => !l.StartsWith('#') && (l.Contains("[FAIL]", StringComparison.Ordinal) || l.Contains("[skip]", StringComparison.Ordinal)))
+                .Where(l => !l.StartsWith('#') && (l.Contains("[FAIL]", StringComparison.Ordinal) || l.Contains("[warn]", StringComparison.Ordinal) || l.Contains("[skip]", StringComparison.Ordinal)))
                 .Select(l => "#   " + FirstLine(StripTime(l)))
                 .ToList();
 
@@ -115,7 +123,9 @@ public sealed class DiagnosticsRunner(
                 result.Add($"# Кратко: {Summary}");
             }
 
-            result.Add(problems.Count == 0 ? "# Проблем нет" : $"# Проблемы ({problems.Count}):");
+            result.Add(_completed ? "# Сценарий выполнен до конца; результат относится только к выполненным проверкам." : "# Сценарий не завершён; отсутствие ошибок не означает успешную проверку.");
+            if (_logTruncated) result.Add("# Журнал ограничен по размеру: часть ранних подробностей удалена, итоговые счётчики сохранены.");
+            result.Add(problems.Count == 0 ? "# В сохранённых строках замечаний нет." : $"# Ошибки, предупреждения и пропуски ({problems.Count}):");
             result.AddRange(problems);
             result.AddRange(log.Skip(head.Count));
             return result;
@@ -156,7 +166,11 @@ public sealed class DiagnosticsRunner(
             await platform.RequestNotificationPermissionAsync();
 
             lock (_log) _log.Clear();
-            _ok = _failed = _skipped = 0;
+            _ok = _failed = _skipped = _warnings = _logChars = 0;
+            _logTruncated = _completed = false;
+            _runLog = new BoundedFileLog(Path.Combine(FileSystem.AppDataDirectory, "logs", "diagnostics-last.log"));
+            _previousDiagnostic = _runLog.Read();
+            _runLog.Reset();
             _cover = null;
             _coverMime = null;
             Summary = null;
@@ -183,6 +197,7 @@ public sealed class DiagnosticsRunner(
                 finally
                 {
                     hold.Dispose();
+                    Interlocked.Exchange(ref _cts, null)?.Dispose();
                     Volatile.Write(ref _busy, 0);
                     Changed?.Invoke();
                 }
@@ -198,12 +213,17 @@ public sealed class DiagnosticsRunner(
     }
 
     /// <summary>Остановить: текущий шаг прерывается, остальные пропускаются, журнал всё равно сохраняется.</summary>
-    public void Cancel() => _cts?.Cancel();
+    public void Cancel()
+    {
+        try { _cts?.Cancel(); }
+        catch (ObjectDisposedException) { /* Сценарий успел завершиться до нажатия. */ }
+    }
 
     /// <summary>Сохраняет журнал последнего скачивания файлом в папку загрузок (с шапкой о сборке).</summary>
     public async Task<SavedFile> SaveDownloadLogAsync()
     {
-        var lines = Header("журнал скачивания").Concat(downloads.Log);
+        var lines = Header("журнал скачивания").Concat(downloads.Log)
+            .Concat(StartupLog.FailedLines().Select(l => "# Предыдущий неудачный запуск: " + l));
         return await SaveTextAsync($"E2E-download-log-{DateTime.Now:yyyyMMdd-HHmmss}.txt", lines);
     }
 
@@ -215,18 +235,21 @@ public sealed class DiagnosticsRunner(
             Line(line);
         }
 
-        Line("# Обозначения: [ok] — проверка прошла, [FAIL] — нет, [skip] — пропущена, [i] — сведения.");
+        Line("# Обозначения: [ok] — проверка прошла, [FAIL] — ошибка, [warn] — ограничение или подозрение, [skip] — пропущена, [i] — сведения.");
+        Line("# HTTP-ответ и успешный TLS не доказывают работу загрузчика. Проверка примеров не гарантирует работу всех книг сайта.");
 
         var steps = new (string Name, Func<CancellationToken, Task> Run)[]
         {
             ("Устройство и приложение", StepEnvironmentAsync),
+            ("Сохранённые журналы", StepHistoryAsync),
+            ("FB2, EPUB, Unicode и изображения без сети", StepFormatsAsync),
             ("Встроенные корневые сертификаты", StepRootsAsync),
             ("Фоновый сервис", StepServiceAsync),
             ("Хранилище: запись, удаление, отмена", StepStorageAsync),
             ("Сертификаты и доступность сайтов", StepSitesAsync),
             ("Обход блокировок по IP", StepBypassAsync),
             ("Мосты, встроенные корни и подмена", StepOldDeviceAsync),
-            ("Пробное скачивание", StepTestDownloadAsync),
+            ("Пробная книга и регрессии загрузчиков", StepTestDownloadAsync),
             ("Миниатюра обложки", StepThumbnailAsync)
         };
 
@@ -234,6 +257,7 @@ public sealed class DiagnosticsRunner(
         {
             if (ct.IsCancellationRequested)
             {
+                _skipped += steps.Length - i;
                 Line("# Остановлено — остальные шаги пропущены");
                 break;
             }
@@ -241,7 +265,8 @@ public sealed class DiagnosticsRunner(
             await RunStepAsync(i + 1, steps.Length, steps[i].Name, steps[i].Run, ct);
         }
 
-        Summary = $"Проверок {_ok + _failed}: прошло {_ok}, ошибок {_failed}, пропущено {_skipped} — за {total.Elapsed:mm\\:ss}" +
+        _completed = !ct.IsCancellationRequested;
+        Summary = $"Проверок {_ok + _failed + _warnings}: прошло {_ok}, ошибок {_failed}, предупреждений {_warnings}, пропущено {_skipped} — за {total.Elapsed:mm\\:ss}" +
                   (ct.IsCancellationRequested ? " (остановлено)" : string.Empty);
         Line(string.Empty);
         Line($"# Итог: {Summary}");
@@ -252,6 +277,7 @@ public sealed class DiagnosticsRunner(
         try
         {
             Result = await SaveTextAsync($"E2E-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.txt", ReportLines);
+            if (Result == null) throw new IOException("хранилище не вернуло сохранённый файл");
         }
         catch (Exception ex)
         {
@@ -260,7 +286,12 @@ public sealed class DiagnosticsRunner(
 
         Status = ct.IsCancellationRequested ? "Остановлено" : "Готово";
         var where = Result != null ? $"Журнал: {storage.DestinationLabel}/{Result.Name}" : "Журнал можно скопировать в настройках";
-        toasts.Show($"Диагностика: {(_failed == 0 ? "всё в порядке" : $"ошибок {_failed}")}. {where}", _failed == 0 ? ToastKind.Success : ToastKind.Error, 8);
+        var passed = _completed && _failed == 0 && _warnings == 0 && _skipped == 0 && Result != null;
+        var outcome = !_completed ? "остановлена, проверка неполная"
+            : _failed > 0 ? $"ошибок {_failed}"
+            : _warnings > 0 || _skipped > 0 ? "завершена с предупреждениями или пропусками"
+            : Result == null ? "журнал не сохранён" : "выполненные проверки прошли";
+        toasts.Show($"Диагностика: {outcome}. {where}", passed ? ToastKind.Success : _failed > 0 ? ToastKind.Error : ToastKind.Info, 8);
         if (!platform.IsInForeground)
         {
             platform.NotifyFinished("Диагностика E2E завершена", $"{Summary}. {where}");
@@ -282,7 +313,7 @@ public sealed class DiagnosticsRunner(
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            Info("шаг прерван: диагностику остановили");
+            Skip("шаг прерван: диагностику остановили");
         }
         catch (Exception ex)
         {
@@ -293,6 +324,57 @@ public sealed class DiagnosticsRunner(
     }
 
     // ---------------------------------------------------------------- шаги
+
+    private Task StepHistoryAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_previousDiagnostic.Count > 0 && !_previousDiagnostic.Any(line => line.StartsWith("# Конец:", StringComparison.Ordinal)))
+        {
+            Warn("прошлая диагностика прервалась до итоговой записи; ниже последние 100 сохранённых строк");
+            foreach (var line in _previousDiagnostic.TakeLast(100)) Line("# Предыдущая диагностика: " + line);
+        }
+        var startup = StartupLog.FailedLines();
+        if (startup.Count > 0)
+        {
+            Warn($"есть журнал прошлого неудачного запуска: {startup.Count} строк; ниже последние 150");
+            foreach (var line in startup.TakeLast(150)) Line("# Предыдущий неудачный запуск: " + line);
+        }
+        else Info("журнала прошлого неудачного запуска нет; это не воспроизводит возможный сбой старта");
+
+        var previous = downloads.Log;
+        Info($"последний журнал скачивания: {previous.Count} строк; ниже последние 100, отдельный полный экспорт остаётся доступен");
+        foreach (var line in previous.TakeLast(100)) Line("# Предыдущее скачивание: " + line);
+        Info("исторические строки не относятся к текущим сетевым проверкам; журналы скачивания и запуска не изменены");
+        return Task.CompletedTask;
+    }
+
+    private async Task StepFormatsAsync(CancellationToken ct)
+    {
+        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "formats-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(work);
+        try
+        {
+            foreach (var check in await DiagnosticBookChecks.RunSelfTestAsync(work, ct)) Report(check);
+            var path = Path.Combine(work, "probe.log");
+            var log = new BoundedFileLog(path, 16000);
+            log.Append("Проверка журнала: Кириллица 🐈");
+            log.Append("data:image/png;base64," + new string('A', 10000));
+            var restored = new BoundedFileLog(path, 16000).Read();
+            Check(restored.Count == 2 && restored[0].Contains("Кириллица 🐈") && !restored[1].Contains("AAAA"),
+                "журнал на диске: повторное чтение, Unicode и удаление base64");
+        }
+        finally
+        {
+            TryDelete(work);
+            Check(!Directory.Exists(work), "временные файлы локальной проверки удалены");
+        }
+    }
+
+    private void Report(DiagnosticCheck check)
+    {
+        if (check.Warning) Warn(check.Message);
+        else Check(check.Passed, check.Message);
+    }
 
     private Task StepEnvironmentAsync(CancellationToken ct)
     {
@@ -507,6 +589,7 @@ public sealed class DiagnosticsRunner(
         var targets = SupportedSites.Sites.Where(s => s.Available).Select(s => s.Url).Distinct().ToList();
         Info($"сайтов: {targets.Count}; по {SiteParallelism} одновременно, таймаут {ProbeTimeout.TotalSeconds:0} с; " +
              $"прокси {MaskProxy(settings.Proxy)} (как у ядра)");
+        Info("этот шаг проверяет соединение и сертификаты; HTTP 403/404/429/5xx отмечается предупреждением, а загрузчики проверяются отдельно");
 
         using var gate = new SemaphoreSlim(SiteParallelism);
         var results = await Task.WhenAll(targets.Select(async url =>
@@ -531,7 +614,7 @@ public sealed class DiagnosticsRunner(
                 {
                     var tls12 = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, ProbeTimeout, ct, System.Security.Authentication.SslProtocols.Tls12);
                     result.Lines.Insert(1, tls12.Ok
-                        ? $"      Проба TLS 1.2: ОТКРЫЛСЯ — {tls12.Outcome}. Мешает TLS 1.3 (вероятно, фильтр в сети)"
+                        ? $"      Проба TLS 1.2: ОТКРЫЛСЯ — {tls12.Outcome}. Результат отличается; причина может быть в сети или временном состоянии сервера"
                         : $"      Проба TLS 1.2: тоже не открылся — {tls12.Outcome}");
                 }
 
@@ -544,7 +627,7 @@ public sealed class DiagnosticsRunner(
             }
         }));
 
-        Info($"итого: прошли {results.Count(r => r.Ok)}, отказ по сертификату {results.Count(r => r.TlsRejected)}, " +
+        Info($"итого: получен HTTP-ответ {results.Count(r => r.Ok)}, из них HTTP >= 400: {results.Count(r => r.HttpBlocked)}, отказ по сертификату {results.Count(r => r.TlsRejected)}, " +
              $"недоступны по сети {results.Count(r => !r.Ok && !r.TlsRejected)}, " +
              $"цепочку достроила политика {results.Count(r => r.ChainCompleted)}");
     }
@@ -596,79 +679,96 @@ public sealed class DiagnosticsRunner(
 
     private async Task StepTestDownloadAsync(CancellationToken ct)
     {
-        var text = string.IsNullOrWhiteSpace(settings.DebugTestUrl) ? DefaultTestUrl : settings.DebugTestUrl;
-        if (!Uri.TryCreate(text, UriKind.Absolute, out var url))
+        var selected = string.IsNullOrWhiteSpace(settings.DebugTestUrl) ? DefaultTestUrl : settings.DebugTestUrl;
+        var probes = new (string Label, string Url, int Start, int End)[]
         {
-            Fail($"ссылка «{text}» не разобрана");
+            ("Пробная книга", selected, 1, TestChapters),
+            ("Rulate: граница 100–101", "https://tl.rulate.ru/book/129557", 100, 101),
+            ("Bllate: постраничное оглавление и открытые главы", "https://bllate.org/book/23172", 1, 2),
+            ("Litmarket: названия и диапазон", "https://litmarket.ru/books/devochki-iz-proshloy-zhizni-1", 1, 2),
+            ("RanobeLib: содержимое глав", "https://ranobelib.me/ru/29609--mikkakan-no-koufuku", 1, 2)
+        };
+        Info("5 коротких примеров, до 10 глав; FB2 и EPUB из одного ответа. Полные книги не запрашиваются намеренно, но некоторые сайты возвращают весь текст одним ответом.");
+        Info("Bllate 23172: главы 100–101 закрыты без входа, поэтому проверяются открытые 1–2 после сбора оглавления. Диапазон 100–101 проверяется отдельно на Rulate.");
+        Info("Совпадение количества глав не доказывает их позиции в оглавлении: для анализа сохраняются сообщения загрузчика и последнее название главы. Пробы рассчитаны на текстовые книги.");
+        Info("Вход не выполняется. Ошибка доступа не доказывает дефект приложения; первые две главы не доказывают полноту всей книги. Через 3 минуты запрашивается отмена примера; завершение обработки может занять время.");
+        foreach (var probe in probes)
+        {
+            ct.ThrowIfCancellationRequested();
+            Status = probe.Label;
+            platform.UpdateBackgroundWork("Диагностика E2E — " + Status);
+            Changed?.Invoke();
+            await RunDownloadProbeAsync(probe.Label, probe.Url, probe.Start, probe.End, ct);
+        }
+    }
+
+    private async Task RunDownloadProbeAsync(string label, string text, int start, int end, CancellationToken ct)
+    {
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var url) || url.Scheme is not ("http" or "https") || url.UserInfo.Length > 0)
+        {
+            Fail($"{label}: нужна ссылка HTTP/HTTPS без логина и пароля в адресе");
             return;
         }
-
         if (!GetterResolver.IsSupported(url))
         {
-            Fail($"для {url.Host} нет загрузчика");
+            Skip($"{label}: для {url.Host} нет включённого загрузчика в этой сборке");
             return;
         }
 
-        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "download");
-        TryDelete(work);
+        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "download-" + Guid.NewGuid().ToString("N"));
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        limit.CancelAfter(TimeSpan.FromMinutes(3));
         var options = new Options
         {
-            Url = [url.ToString()],
-            Format = ["epub"],
-            Timeout = settings.Timeout,
-            Delay = settings.Delay,
+            Url = [url.ToString()], Format = ["fb2", "epub"],
+            Timeout = settings.Timeout, Delay = settings.Delay, DelayMode = settings.DelayMode,
+            CustomDelaySeconds = settings.CustomDelaySeconds,
             Proxy = string.IsNullOrWhiteSpace(settings.Proxy) ? null : settings.Proxy.Trim(),
-            End = TestChapters,
+            Start = start, End = end, NoImage = !settings.Images, Additional = false, Cover = false,
             BookNamePattern = settings.BookNamePattern,
-            SavePath = Path.Combine(work, "out"),
-            TempPath = Path.Combine(work, "tmp")
+            SavePath = Path.Combine(work, "out"), TempPath = Path.Combine(work, "tmp")
         };
-        Info($"книга {url}: первые {TestChapters} главы в EPUB, во временную папку (в загрузки не сохраняется), без входа на сайт");
-
+        Info($"{label}: {url}; позиции {start}–{end}, FB2 + EPUB, картинки {YesNo(settings.Images)}, без входа; файлы временные");
         Action<string> trace = line => Line("  tls | " + line);
         CertificatePolicy.Traced += trace;
         var sw = Stopwatch.StartNew();
         try
         {
-            var logger = new CallbackLogger(line => Line("  ядро | " + line));
-            var result = await BookPipeline.RunAsync(options, logger, preview =>
-            {
-                _cover = preview.Cover;
-                _coverMime = preview.CoverMime;
-                Info($"карточка через {sw.ElapsedMilliseconds} мс: «{preview.Title}» / {preview.Author}, серия «{preview.Seria}», " +
-                     $"обложка {(preview.Cover == null ? "нет" : $"{preview.Cover.Length} байт {preview.CoverMime}")}, " +
-                     $"аннотация {preview.Annotation?.Length ?? 0} симв.");
-            }, ct);
-
+            var logger = new CallbackLogger(line => Line("  ядро | " + line), message => Warn($"{label}: {message}"));
+            // Необязательное превью отключено: не запрашиваем оглавление и обложку второй раз.
+            var result = await BookPipeline.RunAsync(options, logger, null, limit.Token);
             _cover ??= result.Info.Cover;
-            Ok($"скачано за {sw.Elapsed.TotalSeconds:0.0} с: «{result.Title}» / {result.Author}, глав {result.Info.Chapters}, " +
-               $"последняя «{result.Info.LastChapter}», обложка {result.Info.Cover?.Length ?? 0} байт");
-            Check(result.Files.Count > 0, $"файлов: {result.Files.Count}");
-            foreach (var file in result.Files)
+            Info($"{label}: за {sw.Elapsed.TotalSeconds:0.0} с получено глав {result.Info.Chapters}, последняя «{result.Info.LastChapter}», обложка {result.Info.Cover?.Length ?? 0} байт");
+            Check(result.Info.Chapters > 0, $"{label}: есть непустые главы");
+            if (result.Info.Chapters != end - start + 1)
+                Warn($"{label}: запрошено {end - start + 1}, получено {result.Info.Chapters}; возможны короткая книга, закрытые главы или ошибка диапазона — см. журнал ядра");
+            else Ok($"{label}: количество глав соответствует диапазону {start}–{end}");
+            var books = result.Files.Where(f => f.EndsWith(".fb2", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase)).ToList();
+            Check(books.Count == 2 && books.Select(Path.GetExtension).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,
+                $"{label}: созданы оба формата, файлов книги {books.Count}, дополнительных {result.Files.Count - books.Count}");
+            foreach (var file in books)
             {
-                Info($"файл {Path.GetRelativePath(result.OutputDir, file)} — {new FileInfo(file).Length} байт");
-                if (file.EndsWith(".epub", StringComparison.OrdinalIgnoreCase))
-                {
-                    CheckEpub(file);
-                }
+                limit.Token.ThrowIfCancellationRequested();
+                Info($"{label}: {Path.GetExtension(file)} — {new FileInfo(file).Length} байт");
+                foreach (var check in DiagnosticBookChecks.CheckFile(file, result.Info.Chapters)) Report(check);
             }
+            limit.Token.ThrowIfCancellationRequested();
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException) when (limit.IsCancellationRequested)
         {
-            throw;
+            Warn($"{label}: проверка не завершена за 3 минуты; это ограничение диагностики, а не доказательство неработоспособности сайта");
         }
         catch (Exception ex)
         {
-            Fail($"скачивание не удалось за {sw.Elapsed.TotalSeconds:0.0} с: {ex}");
-            if (CertificatePolicy.LastRejection != null)
-            {
-                Info($"последний отказ по сертификату: {CertificatePolicy.LastRejection}");
-            }
+            Fail($"{label}: скачивание не удалось за {sw.Elapsed.TotalSeconds:0.0} с: {ex}");
+            if (CertificatePolicy.LastRejection != null) Info($"последний отказ по сертификату: {CertificatePolicy.LastRejection}");
         }
         finally
         {
             CertificatePolicy.Traced -= trace;
             TryDelete(work);
+            Check(!Directory.Exists(work), $"{label}: временные книги удалены");
         }
     }
 
@@ -723,7 +823,11 @@ public sealed class DiagnosticsRunner(
     /// <summary>Строки проверки — одним блоком (сайты проверяются параллельно) и в счётчики.</summary>
     private void Report(TlsProbeResult result)
     {
-        if (result.Ok)
+        if (result.HttpBlocked)
+        {
+            Interlocked.Increment(ref _warnings);
+        }
+        else if (result.Ok)
         {
             Interlocked.Increment(ref _ok);
         }
@@ -749,9 +853,10 @@ public sealed class DiagnosticsRunner(
     private IEnumerable<string> Header(string what)
     {
         yield return $"# E2E для Android — {what}";
+        yield return $"# Сценарий диагностики {ScenarioVersion}";
         yield return $"# Версия {platform.AppVersion} ({BuildInfo.Kind(platform.AppVersion)}), сборка {platform.BuildNumber}, " +
                      $"коммит {BuildInfo.Commit}, ядро Elib2Ebook {BuildInfo.CoreVersion}";
-        yield return $"# {BuildInfo.AgentNote}";
+        yield return $"# {BuildInfo.AgentNote(platform.AppVersion)}";
         yield return $"# Записано: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}";
     }
 
@@ -761,7 +866,7 @@ public sealed class DiagnosticsRunner(
         yield return $"Настройки: формат по умолчанию {s.TextFormat}, авто-CBZ {YesNo(s.AutoFormat)}, картинки {YesNo(s.Images)}, " +
                      $"обложка файлом {YesNo(s.Cover)}, доп. файлы {YesNo(s.Additional)} [{string.Join(",", s.AdditionalTypes)}], " +
                      $"шаблон имени «{s.BookNamePattern}»";
-        yield return $"Настройки: таймаут {s.Timeout} с, пауза {s.Delay} с, прокси {MaskProxy(s.Proxy)}, " +
+        yield return $"Настройки: таймаут {s.Timeout} с, режим задержки {s.DelayMode}, своя задержка {s.CustomDelaySeconds} с, прокси {MaskProxy(s.Proxy)}, " +
                      $"не проверять сертификаты {YesNo(s.AllowInsecureTls)}, подробный журнал {YesNo(s.DebugLog)}, " +
                      $"пропускать диалог скачивания {YesNo(s.AutoStartOnShare)}";
         yield return $"Сохранение: {storage.DestinationLabel}";
@@ -778,22 +883,6 @@ public sealed class DiagnosticsRunner(
         return Uri.TryCreate(proxy.Trim(), UriKind.Absolute, out var uri)
             ? $"{uri.Scheme}://{uri.Host}:{uri.Port}{(string.IsNullOrEmpty(uri.UserInfo) ? "" : " (с логином)")}"
             : "задан (не разобрать)";
-    }
-
-    private void CheckEpub(string path)
-    {
-        using var zip = ZipFile.OpenRead(path);
-        var mimetype = zip.GetEntry("mimetype");
-        string content = null;
-        if (mimetype != null)
-        {
-            using var reader = new StreamReader(mimetype.Open());
-            content = reader.ReadToEnd();
-        }
-
-        Check(content == "application/epub+zip", $"EPUB: mimetype «{content ?? "нет"}»");
-        var pages = zip.Entries.Count(e => e.FullName.EndsWith("html", StringComparison.OrdinalIgnoreCase));
-        Check(pages > 0, $"EPUB: страниц {pages}, всего записей {zip.Entries.Count}");
     }
 
     private async Task<SavedFile> SaveTextAsync(string fileName, IEnumerable<string> lines)
@@ -819,6 +908,8 @@ public sealed class DiagnosticsRunner(
     private void Ok(string text) => Mark("ok", text, ref _ok);
 
     private void Fail(string text) => Mark("FAIL", text, ref _failed);
+
+    private void Warn(string text) => Mark("warn", text, ref _warnings);
 
     private void Skip(string text) => Mark("skip", text, ref _skipped);
 
@@ -853,9 +944,18 @@ public sealed class DiagnosticsRunner(
     /// <summary>Строка с отметкой времени; вызывать под lock (_log).</summary>
     private void AddLine(string text)
     {
-        if (_log.Count < MaxLines)
+        text = LogText.Clean(text);
+        var line = text.Length == 0 || text.StartsWith('#') ? text : $"{DateTime.Now:HH:mm:ss.fff} {text}";
+        _runLog?.Append(line);
+        _log.Add(line);
+        _logChars += line.Length;
+        while (_log.Count > MaxLines || _logChars > MaxLogChars)
         {
-            _log.Add(text.Length == 0 || text.StartsWith('#') ? text : $"{DateTime.Now:HH:mm:ss.fff} {text}");
+            // Шапка остаётся, подробности вытесняются старыми вперёд; свежий итог не теряется.
+            var index = Math.Min(16, _log.Count - 1);
+            _logChars -= _log[index].Length;
+            _log.RemoveAt(index);
+            _logTruncated = true;
         }
     }
 

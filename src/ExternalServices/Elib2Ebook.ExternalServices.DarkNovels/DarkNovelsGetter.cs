@@ -8,6 +8,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.ExternalServices.DarkNovels.Types;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
@@ -164,11 +165,8 @@ public class DarkNovelsGetter : GetterBase
 
     private async Task FillChapter(string bookId, DarkNovelsChapter darkNovelsChapter, Chapter chapter)
     {
-        var data = await Config.Client.PostWithTriesAsync(_apiUrl.MakeRelativeUri("/v2/chapter/"), GetData(bookId, darkNovelsChapter.Id, "html"), TimeSpan.FromMilliseconds(200));
-        if (data.StatusCode == HttpStatusCode.BadRequest)
-        {
-            return;
-        }
+        using var data = await Config.Client.PostWithTriesAsync(_apiUrl.MakeRelativeUri("/v2/chapter/"), GetData(bookId, darkNovelsChapter.Id, "html"), TimeSpan.FromMilliseconds(200));
+        data.EnsureDownloadSuccess();
 
         using var zip = new ZipArchive(await data.Content.ReadAsStreamAsync());
         var sb = new StringBuilder();
@@ -182,7 +180,8 @@ public class DarkNovelsGetter : GetterBase
             }
         }
 
-        var chapterDoc = sb.AsHtmlDoc().RemoveNodes("h1");
+        var chapterDoc = sb.AsHtmlDoc();
+        ChapterContentCleaner.RemoveLeadingTitle(chapterDoc.DocumentNode, chapter.Title);
         chapter.Images = await GetImages(chapterDoc, SystemUrl);
         chapter.Content = chapterDoc.DocumentNode.InnerHtml;
     }

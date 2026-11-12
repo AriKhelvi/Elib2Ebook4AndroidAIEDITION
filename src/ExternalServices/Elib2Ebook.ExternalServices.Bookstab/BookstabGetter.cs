@@ -25,6 +25,7 @@ public class BookstabGetter(BookGetterConfig config) : GetterBase(config)
         var bookId = GetId(url);
         url = SystemUrl.MakeRelativeUri($"/book/{bookId}");
         using var response = await Config.Client.GetWithTriesAsync(_apiUrl.MakeRelativeUri($"/api/reader-get/{bookId}"));
+        response.EnsureDownloadSuccess();
         var data = await response.Content.ReadFromJsonAsync<ApiResponse>();
 
         var book = new Book(url)
@@ -84,19 +85,12 @@ public class BookstabGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<HtmlDocument> GetChapter(int chapterId, string bookId)
     {
-        while (true)
-        {
-            using var response = await Config.Client.GetAsync(_apiUrl.MakeRelativeUri($"/api/reader-get/{bookId}/{chapterId}"));
-            if (response.StatusCode == HttpStatusCode.Forbidden)
-            {
-                Config.Logger.LogInformation("Очень много запросов. Подождем...");
-                await Task.Delay(TimeSpan.FromSeconds(10));
-                continue;
-            }
-
-            var data = await response.Content.ReadFromJsonAsync<ApiResponse>();
-            return string.IsNullOrWhiteSpace(data?.Chapter.Body) ? null : data.Chapter.Body.AsHtmlDoc();
-        }
+        using var response = await Config.Client.GetWithTriesAsync(_apiUrl.MakeRelativeUri($"/api/reader-get/{bookId}/{chapterId}"));
+        response.EnsureDownloadSuccess();
+        var data = await response.Content.ReadFromJsonAsync<ApiResponse>();
+        if (!string.IsNullOrWhiteSpace(data?.Chapter?.Body)) return data.Chapter.Body.AsHtmlDoc();
+        Config.Logger.LogWarning($"Bookstab не вернул текст главы {chapterId}; глава не включена в книгу");
+        return null;
     }
 
     private Task<TempFile> GetCover(ApiResponse response)

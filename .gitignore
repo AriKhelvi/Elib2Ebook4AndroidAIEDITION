@@ -40,3 +40,7 @@ android/signing/
 *.keystore
 *.jks
 android/dist/
+
+# Проверки скриптов GitHub Actions
+__pycache__/
+*.pyc

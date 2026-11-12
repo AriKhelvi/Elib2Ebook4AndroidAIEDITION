@@ -129,6 +129,7 @@
 
             // OnAfterRender означает готовый DOM, но WebView мог ещё не показать его на экране.
             await Js.InvokeVoidAsync("e2e.afterFirstPaint");
+            StartupLog.MarkReady();
             MauiProgram.WarmUpAfterFirstRender();
         }
     }
