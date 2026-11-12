@@ -1,12 +1,43 @@
 name: .NET
 
-on: push
+on:
+  push:
+    # Теги Android-альф не требуют повторной упаковки консольной версии.
+    branches: ['**']
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Elib2Ebook.sln'
+      - 'Directory.Build.*'
+      - 'Directory.Packages.props'
+      - 'global.json'
+      - 'nuget.config'
+      - '.github/workflows/dotnet.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Elib2Ebook.sln'
+      - 'Directory.Build.*'
+      - 'Directory.Packages.props'
+      - 'global.json'
+      - 'nuget.config'
+      - '.github/workflows/dotnet.yml'
+  workflow_dispatch:
+    inputs:
+      check_macos:
+        description: 'Также проверить и упаковать CLI для macOS ARM64 (нужен свободный раннер GitHub)'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build:
     strategy:
+        fail-fast: false
         matrix:
-          os: [ubuntu-latest, macos-latest, windows-latest]
+          # В Android-форке macOS включается явно. В upstream сохраняется прежняя матрица.
+          os: ${{ fromJSON((github.repository == 'OnlyFart/Elib2Ebook' || inputs.check_macos) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -24,7 +55,7 @@ jobs:
       run: dotnet build --no-restore -c release Elib2Ebook.sln
 
   test:
-    needs: build
+    # Job сам восстанавливает и собирает решение: ему не нужны раннеры других ОС.
     runs-on: ubuntu-latest
 
     steps:
@@ -46,8 +77,9 @@ jobs:
   publish:
     needs: test
     strategy:
+        fail-fast: false
         matrix:
-          os: [ubuntu-latest, macos-latest, windows-latest]
+          os: ${{ fromJSON((github.repository == 'OnlyFart/Elib2Ebook' || inputs.check_macos) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -88,7 +120,7 @@ jobs:
 
   check_version:
     name: Check version
-    needs: test
+    needs: [build, test]
     runs-on: ubuntu-latest
     # Публикация upstream не относится к Android-форку: здесь stable готовит только владелец.
     if: github.repository == 'OnlyFart/Elib2Ebook' && github.ref == 'refs/heads/master'
@@ -185,8 +217,9 @@ jobs:
     needs: [create_release, publish]
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        os: [ ubuntu-latest, macos-latest, windows-latest ]
+        os: ${{ fromJSON((github.repository == 'OnlyFart/Elib2Ebook' || inputs.check_macos) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
         version: [ min, portable ]
 
     steps:

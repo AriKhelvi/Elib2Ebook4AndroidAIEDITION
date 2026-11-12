@@ -2,6 +2,22 @@
 
 Старые красные запуски имеют разные причины. В двух релизах APK уже был собран, но GitHub запретил менять опубликованный immutable-релиз. Отдельно срабатывал устаревший порог количества загрузчиков и не выделялся macOS runner.
 
+## Отмена macOS после слияния PR №7
+
+В [.NET на master `7734e26`](https://github.com/AriKhelvi/Elib2Ebook4AndroidAIEDITION/actions/runs/43237415335) Ubuntu и Windows собрали решение успешно. Job [macOS](https://github.com/AriKhelvi/Elib2Ebook4AndroidAIEDITION/actions/runs/43237415335/job/131248372643) отменён без единого выполненного шага. Его аннотации: `The job was not acquired by Runner of type hosted even after multiple attempts` и три уведомления о нехватке macOS ARM64 capacity. Это подтверждает сбой выделения раннера, а не компиляции.
+
+Дополнительная проблема была в зависимостях workflow: `test` ждал завершения всей матрицы `build`, хотя сам повторяет restore и build. Поэтому отсутствие macOS-раннера пропустило тесты и зависимую упаковку CLI.
+
+Исправление:
+
+- Тесты запускаются самостоятельно на Ubuntu. Упаковка CLI зависит от тестов, а не от ожидания всех ОС.
+- `fail-fast: false` сохраняет остальные элементы матрицы при ошибке одного. Ошибки не скрываются через `continue-on-error`.
+- Автоматический `.NET` в Android-форке проверяет Ubuntu/Windows при изменении ядра, тестов, solution, общих настроек сборки и самого workflow. Только Android, документация и альфа-теги больше не запускают повторную сборку CLI.
+- macOS ARM64 сохранён как явная опция `.NET → Run workflow → check_macos`. Ручной прогон с этой опцией остаётся красным при реальной ошибке или отказе раннера. Архитектура не подменяется Intel.
+- Для исходного `OnlyFart/Elib2Ebook` сохраняется матрица всех трёх ОС и зависимость публикации от сборок и тестов.
+
+Старые запуски привязаны к старой версии workflow: изменение не переписывает их результат. [Android master](https://github.com/AriKhelvi/Elib2Ebook4AndroidAIEDITION/actions/runs/43237415251) и [выпуск альфы](https://github.com/AriKhelvi/Elib2Ebook4AndroidAIEDITION/actions/runs/43237524181) успешны; опубликованный APK не затронут отказом macOS.
+
 | Запуск | Что подтверждено | Действие |
 |---|---|---|
 | [v0.0.1, run 40405667414](https://github.com/AriKhelvi/Elib2Ebook4AndroidAIEDITION/actions/runs/40405667414/job/121862642855) | APK проверен и сохранён в Actions. `gh release upload --clobber` завершился HTTP 422 `Validation Failed`, следом: `Cannot delete asset from an immutable release`. Замена пыталась удалить уже существующий файл. | Не заменять файлы опубликованного релиза. Для исправленной сборки использовать новый номер; APK прикреплять к draft до публикации. |
