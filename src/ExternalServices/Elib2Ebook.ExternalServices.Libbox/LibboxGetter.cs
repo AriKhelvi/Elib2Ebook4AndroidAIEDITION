@@ -1,4 +1,5 @@
 using System.Text;
+using System.Web;
 using Elib2Ebook.Domain.Book;
 using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
@@ -78,12 +79,26 @@ public class LibboxGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<int> GetPages(string bookId)
     {
-        var doc = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"/books/{bookId}"));
-        return doc
-            .QuerySelectorAll("ul.pagination a.page-numbers")
-            .Where(a => int.TryParse(a.GetText(), out _))
-            .Select(a => int.Parse(a.GetText()))
-            .Max();
+        var url = SystemUrl.MakeRelativeUri($"/books/{bookId}");
+        var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
+        if (doc.QuerySelector("div.entry-content") == null)
+            throw new InvalidOperationException("Libbox не вернул текст книги. Проверьте доступ к книге.");
+        return GetPageCount(doc, url);
+    }
+
+    private static int GetPageCount(HtmlDocument doc, Uri url)
+    {
+        var pages = 1;
+        foreach (var link in doc.QuerySelectorAll("ul.pagination a.page-numbers"))
+        {
+            if (int.TryParse(link.GetText(), out var number)) pages = Math.Max(pages, number);
+            if (Uri.TryCreate(url, link.GetAttributeValue("href", string.Empty), out var next)
+                && next.Authority == url.Authority && next.AbsolutePath.TrimEnd('/') == url.AbsolutePath.TrimEnd('/')
+                && int.TryParse(HttpUtility.ParseQueryString(next.Query)["page_book"], out number))
+                pages = Math.Max(pages, number);
+        }
+        if (pages > 10000) throw new InvalidOperationException("Libbox вернул слишком много страниц; загрузка остановлена.");
+        return pages;
     }
 
     private async Task<IEnumerable<Chapter>> FillChapters(string bookId, string title)
@@ -103,10 +118,13 @@ public class LibboxGetter(BookGetterConfig config) : GetterBase(config)
         {
             Config.Logger.LogInformation($"Получаю страницу {i}/{pages}");
             var page = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"/books/{bookId}?page_book={i}"));
+            pages = Math.Max(pages, GetPageCount(page, SystemUrl.MakeRelativeUri($"/books/{bookId}")));
 
             var content = page.QuerySelector("div.entry-content");
+            if (content == null) throw new InvalidOperationException($"Libbox не вернул текст страницы {i}. Неполная книга не будет сохранена.");
             var nodes = content.QuerySelectorAll("> h2, > p, > img");
             nodes = nodes.Count == 0 ? content.RemoveNodes("script, ins").ChildNodes : nodes;
+            if (nodes.Count == 0) throw new InvalidOperationException($"Libbox вернул пустую страницу {i}.");
             singleChapter = i == 1 ? IsSingleChapter(nodes) : singleChapter;
 
             foreach (var node in nodes)

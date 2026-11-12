@@ -117,12 +117,16 @@ public class LibkingGetter(BookGetterConfig config) : GetterBase(config)
 
         var fullText = new StringBuilder();
         var i = 1;
+        var visited = new HashSet<Uri>();
 
         for (var url = GetFirstPage(doc, baseUrl); url != null;)
         {
+            var pageUrl = new UriBuilder(url) { Fragment = string.Empty }.Uri;
+            if (!visited.Add(pageUrl) || visited.Count > 10000)
+                throw new InvalidOperationException("Libking повторяет страницу книги. Загрузка остановлена, чтобы не сохранить дублированный или неполный текст.");
             Config.Logger.LogInformation($"Получаю страницу {i}");
             doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
-            url = GetNextPage(doc, baseUrl);
+            url = GetNextPage(doc, url);
             fullText.Append(doc.QuerySelector("#book").RemoveNodes(".navigation, .cpab, .cpab1, .load_text, #twentypersent").InnerHtml);
             i++;
         }
