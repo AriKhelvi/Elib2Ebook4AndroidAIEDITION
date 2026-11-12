@@ -26,7 +26,7 @@
             <div class="card-header">
                 <span class="card-header-icon"><Icon Name="check-circle" /></span>
                 <div class="card-header-text">
-                    <h2 class="card-title">@(errors.Count == 0 ? "Готово" : "Готово, но не всё")</h2>
+                    <h2 class="card-title">@(errors.Count > 0 ? "Готово, но не всё" : Downloads.WarningCount > 0 ? "Сохранено с предупреждениями" : "Готово")</h2>
                     <p class="card-subtitle">Сохранено в «@Storage.DestinationLabel»@(extra > 0 ? $", плюс доп. файлов: {extra}" : "")</p>
                 </div>
                 <button type="button" class="icon-button" aria-label="Скрыть результат" @onclick="Downloads.Dismiss"><Icon Name="close" /></button>
@@ -69,6 +69,21 @@
                     <p class="error-text">@error</p>
                 }
                 <p class="card-subtitle">Подробности — в журнале ниже. Если сайт требует входа, заполните «Вход на сайт»; при таймаутах увеличьте таймаут в настройках.</p>
+            </div>
+        </section>
+    }
+
+    @if (finished && Downloads.WarningCount > 0)
+    {
+        <section class="card" aria-label="Предупреждения загрузки">
+            <div class="card-body">
+                <h2 class="card-title">Предупреждения: @Downloads.WarningCount</h2>
+                <p>Книга сохранена, но часть содержимого может отсутствовать. Проверьте её перед чтением.</p>
+                @foreach (var warning in Downloads.Warnings.Take(10))
+                {
+                    <p class="card-subtitle">@warning</p>
+                }
+                <p class="card-subtitle">Подробности — в журнале скачивания.</p>
             </div>
         </section>
     }

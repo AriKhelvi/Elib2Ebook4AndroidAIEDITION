@@ -203,7 +203,8 @@ public sealed class DiagnosticsRunner(
     /// <summary>Сохраняет журнал последнего скачивания файлом в папку загрузок (с шапкой о сборке).</summary>
     public async Task<SavedFile> SaveDownloadLogAsync()
     {
-        var lines = Header("журнал скачивания").Concat(downloads.Log);
+        var lines = Header("журнал скачивания").Concat(downloads.Log)
+            .Concat(StartupLog.FailedLines().Select(l => "# Предыдущий неудачный запуск: " + l));
         return await SaveTextAsync($"E2E-download-log-{DateTime.Now:yyyyMMdd-HHmmss}.txt", lines);
     }
 
@@ -617,6 +618,8 @@ public sealed class DiagnosticsRunner(
             Format = ["epub"],
             Timeout = settings.Timeout,
             Delay = settings.Delay,
+            DelayMode = settings.DelayMode,
+            CustomDelaySeconds = settings.CustomDelaySeconds,
             Proxy = string.IsNullOrWhiteSpace(settings.Proxy) ? null : settings.Proxy.Trim(),
             End = TestChapters,
             BookNamePattern = settings.BookNamePattern,
@@ -751,7 +754,7 @@ public sealed class DiagnosticsRunner(
         yield return $"# E2E для Android — {what}";
         yield return $"# Версия {platform.AppVersion} ({BuildInfo.Kind(platform.AppVersion)}), сборка {platform.BuildNumber}, " +
                      $"коммит {BuildInfo.Commit}, ядро Elib2Ebook {BuildInfo.CoreVersion}";
-        yield return $"# {BuildInfo.AgentNote}";
+        yield return $"# {BuildInfo.AgentNote(platform.AppVersion)}";
         yield return $"# Записано: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}";
     }
 
@@ -761,7 +764,7 @@ public sealed class DiagnosticsRunner(
         yield return $"Настройки: формат по умолчанию {s.TextFormat}, авто-CBZ {YesNo(s.AutoFormat)}, картинки {YesNo(s.Images)}, " +
                      $"обложка файлом {YesNo(s.Cover)}, доп. файлы {YesNo(s.Additional)} [{string.Join(",", s.AdditionalTypes)}], " +
                      $"шаблон имени «{s.BookNamePattern}»";
-        yield return $"Настройки: таймаут {s.Timeout} с, пауза {s.Delay} с, прокси {MaskProxy(s.Proxy)}, " +
+        yield return $"Настройки: таймаут {s.Timeout} с, режим задержки {s.DelayMode}, своя задержка {s.CustomDelaySeconds} с, прокси {MaskProxy(s.Proxy)}, " +
                      $"не проверять сертификаты {YesNo(s.AllowInsecureTls)}, подробный журнал {YesNo(s.DebugLog)}, " +
                      $"пропускать диалог скачивания {YesNo(s.AutoStartOnShare)}";
         yield return $"Сохранение: {storage.DestinationLabel}";

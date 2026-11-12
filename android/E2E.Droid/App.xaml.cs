@@ -15,6 +15,7 @@ public partial class App : Application
 
     protected override Window CreateWindow(IActivationState activationState)
     {
+        Services.StartupLog.Write("Создание окна и WebView");
         var window = new Window(new MainPage()) { Title = "E2E" };
 
         // Уведомление «Книга готова» показываем, только если приложение не на экране
