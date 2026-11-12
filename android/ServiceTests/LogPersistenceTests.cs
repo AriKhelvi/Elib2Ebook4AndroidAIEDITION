@@ -13,6 +13,7 @@ public sealed class LogPersistenceTests : IDisposable
         var line = LogText.Clean("Картинка data:image/png;base64," + new string('A', 5_000_000));
         Assert.True(line.Length < 100);
         Assert.DoesNotContain("AAAA", line);
+        Assert.DoesNotContain("AAAA", LogText.Clean("Картинка data:image/png;base64,AA\nAAAA AA"));
         Assert.True(LogText.Clean(new string('Ж', 30000)).Length <= LogText.MaxLineLength);
     }
 

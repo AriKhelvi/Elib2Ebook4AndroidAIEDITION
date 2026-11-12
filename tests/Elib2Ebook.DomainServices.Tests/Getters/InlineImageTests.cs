@@ -47,6 +47,27 @@ public sealed class InlineImageTests : IDisposable
         public override Task<Book> Get(Uri url) => throw new NotSupportedException();
     }
 
+    [Fact]
+    public async Task ContentTypeDeterminesExtensionForImageEndpoint()
+    {
+        Directory.CreateDirectory(_dir);
+        using var config = new BookGetterConfig(new Options(), new HttpClient(new PngHandler()), new CookieContainer(), new TempFolder(_dir), new CaptureLogger());
+        using var getter = new ImageGetter(config);
+        using var image = await getter.Image(new Uri("https://example.com/image?id=1"));
+        Assert.Equal(".png", image.Extension);
+        Assert.Equal(new byte[] { 137, 80, 78, 71 }, image.Content);
+    }
+
+    private sealed class PngHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var content = new ByteArrayContent([137, 80, 78, 71]);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content, RequestMessage = request });
+        }
+    }
+
     private sealed class ReplyHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
