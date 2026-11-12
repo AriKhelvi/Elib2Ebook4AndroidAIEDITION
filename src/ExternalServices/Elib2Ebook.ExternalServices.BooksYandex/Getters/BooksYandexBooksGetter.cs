@@ -15,6 +15,7 @@ public class BooksYandexBooksGetter(BookGetterConfig config) : BooksYandexGetter
 
     protected override async Task<IEnumerable<Chapter>> FillChapters(Book book, BooksYandexResponse response)
     {
+        if (Config.Options.NoChapters) return [];
         if (Config.Options.HasAdditionalType(AdditionalTypeEnum.Audio))
         {
             book.AdditionalFiles.Add(AdditionalTypeEnum.Audio, await GetAudio(response));
@@ -32,7 +33,8 @@ public class BooksYandexBooksGetter(BookGetterConfig config) : BooksYandexGetter
         }
 
         var requestUri = $"https://api.bookmate.ru/api/v5/books/{id}/content/v4".AsUri();
-        var epubResponse = await Config.Client.GetAsync(requestUri);
+        using var epubResponse = await Config.Client.GetAsync(requestUri);
+        epubResponse.EnsureDownloadSuccess();
         if (epubResponse.StatusCode == HttpStatusCode.OK)
         {
             var epubFile = await TempFile.Create(
@@ -58,16 +60,18 @@ public class BooksYandexBooksGetter(BookGetterConfig config) : BooksYandexGetter
 
         var result = new List<Chapter>();
 
-        foreach (var episode in episodes.Where(e => e.CanBeRead))
+        foreach (var episode in episodes)
         {
+            if (!episode.CanBeRead)
+            {
+                Config.Logger.LogWarning($"Эпизод «{episode.Title}» недоступен в Яндекс Книгах и не включён в книгу");
+                continue;
+            }
             Config.Logger.LogInformation($"Загружаю эпизод {episode.Title.CoverQuotes()}");
 
             var requestUri = $"https://api.bookmate.ru/api/v5/books/{episode.Uuid}/content/v4".AsUri();
-            var epubResponse = await Config.Client.GetAsync(requestUri);
-            if (epubResponse.StatusCode != HttpStatusCode.OK)
-            {
-                continue;
-            }
+            using var epubResponse = await Config.Client.GetAsync(requestUri);
+            epubResponse.EnsureDownloadSuccess();
 
             var epubFile = await TempFile.Create(
                 requestUri,
@@ -98,16 +102,29 @@ public class BooksYandexBooksGetter(BookGetterConfig config) : BooksYandexGetter
         try
         {
             var result = new List<BooksYandexEpisode>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
 
             for (var i = 1;; i++)
             {
                 var response = await Config.Client.GetFromJsonAsync<BooksYandexEpisodes>($"https://api.bookmate.ru/api/v5/books/{id}/episodes".AsUri().AppendQueryParameter("page", i));
+                if (response?.Episodes == null)
+                    throw new InvalidOperationException("Яндекс Книги не вернули список эпизодов. Неполная книга не будет сохранена.");
                 if (response.Episodes.Length == 0)
                 {
                     break;
                 }
 
-                result.AddRange(response.Episodes);
+                var added = 0;
+                foreach (var episode in response.Episodes)
+                {
+                    if (string.IsNullOrWhiteSpace(episode.Uuid))
+                        throw new InvalidOperationException("Яндекс Книги вернули эпизод без идентификатора");
+                    if (!seen.Add(episode.Uuid)) continue;
+                    result.Add(episode);
+                    added++;
+                }
+                if (added == 0)
+                    throw new InvalidOperationException("Яндекс Книги повторили страницу эпизодов. Неполная книга не будет сохранена.");
             }
 
             return result;

@@ -164,11 +164,8 @@ public class DarkNovelsGetter : GetterBase
 
     private async Task FillChapter(string bookId, DarkNovelsChapter darkNovelsChapter, Chapter chapter)
     {
-        var data = await Config.Client.PostWithTriesAsync(_apiUrl.MakeRelativeUri("/v2/chapter/"), GetData(bookId, darkNovelsChapter.Id, "html"), TimeSpan.FromMilliseconds(200));
-        if (data.StatusCode == HttpStatusCode.BadRequest)
-        {
-            return;
-        }
+        using var data = await Config.Client.PostWithTriesAsync(_apiUrl.MakeRelativeUri("/v2/chapter/"), GetData(bookId, darkNovelsChapter.Id, "html"), TimeSpan.FromMilliseconds(200));
+        data.EnsureDownloadSuccess();
 
         using var zip = new ZipArchive(await data.Content.ReadAsStreamAsync());
         var sb = new StringBuilder();

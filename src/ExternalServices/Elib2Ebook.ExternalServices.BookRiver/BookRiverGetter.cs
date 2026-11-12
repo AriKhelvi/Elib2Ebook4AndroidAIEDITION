@@ -166,11 +166,8 @@ public class BookriverGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<HtmlDocument> GetChapter(long bookChapterId)
     {
-        var response = await Config.Client.SendAsync(GetMessage(_apiUrl.MakeRelativeUri($"/api/v1/books/chapter/text/{bookChapterId}")));
-        if (response.StatusCode == HttpStatusCode.Forbidden)
-        {
-            return null;
-        }
+        using var response = await Config.Client.SendAsync(GetMessage(_apiUrl.MakeRelativeUri($"/api/v1/books/chapter/text/{bookChapterId}")));
+        response.EnsureDownloadSuccess();
 
         var content = await response.Content.ReadAsStringAsync();
         return content.Deserialize<ApiResponse<ChapterContent>>().Data.Content.AsHtmlDoc();
@@ -178,7 +175,8 @@ public class BookriverGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<IEnumerable<BookRiverChapter>> GetToc(string bookId)
     {
-        var response = await Config.Client.GetWithTriesAsync(_apiUrl.MakeRelativeUri($"/api/v1/books/chapters/text/published?bookId={bookId}"));
+        using var response = await Config.Client.GetWithTriesAsync(_apiUrl.MakeRelativeUri($"/api/v1/books/chapters/text/published?bookId={bookId}"));
+        response.EnsureDownloadSuccess();
         var content = await response.Content.ReadAsStringAsync();
         return SliceToc(content.Deserialize<ApiResponse<BookRiverChapter[]>>().Data, c => c.Name);
     }
