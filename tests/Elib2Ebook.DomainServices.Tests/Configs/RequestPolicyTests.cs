@@ -52,7 +52,7 @@ public class RequestPolicyTests
             }
             // Ответы ещё не получены: проверяется интервал начал, а не пауза после загрузки.
             await allStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), token);
-            return new HttpResponseMessage(HttpStatusCode.OK);
+            return TestHttpResponse.Create(HttpStatusCode.OK);
         }
         using var first = Client(pacer, Send);
         using var second = Client(pacer, Send);
@@ -92,12 +92,12 @@ public class RequestPolicyTests
             if (paths.Count == 1)
             {
                 Assert.NotNull(request.Headers.Authorization);
-                var moved = new HttpResponseMessage(HttpStatusCode.Redirect);
+                var moved = TestHttpResponse.Create(HttpStatusCode.Redirect);
                 moved.Headers.Location = new Uri("next", UriKind.Relative);
                 return Task.FromResult(moved);
             }
             Assert.Null(request.Headers.Authorization);
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK));
         });
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test");
 
@@ -119,12 +119,12 @@ public class RequestPolicyTests
             if (++calls == 1)
             {
                 Assert.Equal("example.org", request.Headers.Host);
-                var moved = new HttpResponseMessage(HttpStatusCode.Redirect);
+                var moved = TestHttpResponse.Create(HttpStatusCode.Redirect);
                 moved.Headers.Location = new Uri(target, UriKind.RelativeOrAbsolute);
                 return Task.FromResult(moved);
             }
             Assert.Equal(expectedHost, request.Headers.Host);
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK));
         });
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://127.0.0.1/start");
         request.Headers.Host = "example.org";
@@ -142,7 +142,7 @@ public class RequestPolicyTests
         {
             if (++calls == 1)
             {
-                var moved = new HttpResponseMessage(redirectStatus);
+                var moved = TestHttpResponse.Create(redirectStatus);
                 moved.Headers.Location = new Uri("/next", UriKind.Relative);
                 return moved;
             }
@@ -150,7 +150,7 @@ public class RequestPolicyTests
             Assert.Equal(hasContent, request.Content != null);
             Assert.Equal(hasContent, request.Headers.TransferEncodingChunked == true);
             if (hasContent) Assert.Equal("body", await request.Content.ReadAsStringAsync());
-            return new HttpResponseMessage(HttpStatusCode.OK);
+            return TestHttpResponse.Create(HttpStatusCode.OK);
         });
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://example.org/start") { Content = new StringContent("body") };
         request.Headers.TransferEncodingChunked = true;
@@ -168,7 +168,7 @@ public class RequestPolicyTests
         using var client = Client(new Clock().Pacer(), (_, _) =>
         {
             calls++;
-            var response = new HttpResponseMessage(status) { Content = new StringContent("<html>access denied</html>") };
+            var response = TestHttpResponse.Create(status, content: new StringContent("<html>access denied</html>"));
             response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(30));
             return Task.FromResult(response);
         });
@@ -188,7 +188,7 @@ public class RequestPolicyTests
         using var client = Client(pacer, (_, _) =>
         {
             calls++;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK));
         });
         using var first = await client.GetAsync("https://example.org/first");
         using var cancellation = new CancellationTokenSource();

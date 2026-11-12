@@ -45,10 +45,7 @@ public class LitgorodGetterTests
                 : "<div class='b-book_item__name'><h1>Книга</h1></div>" +
                   "<div class='b-book_item__author'><a href='/authors/1'>Автор</a></div>" +
                   "<div class='b-tab__content'><ul class='list-unstyled'><li><a href='/reader/64003/1'>Глава 1</a></li></ul></div>";
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(content), RequestMessage = request
-            });
+            return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK, request, new StringContent(content)));
         }
     }
 }

@@ -98,10 +98,7 @@ public class LitnetBatchTests
                     throw new InvalidOperationException($"Неожиданный путь {uri.AbsolutePath}");
             }
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(JsonSerializer.Serialize(result)), RequestMessage = request
-            });
+            return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK, request, new StringContent(JsonSerializer.Serialize(result))));
         }
     }
 }

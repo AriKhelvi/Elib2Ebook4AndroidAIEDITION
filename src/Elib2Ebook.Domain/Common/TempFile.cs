@@ -51,21 +51,23 @@ public class TempFile : IDisposable
         }
 
         var tempFile = new TempFile(url, directory, name, extension);
-
+        var completed = false;
         try
         {
+            long length;
             await using (var file = File.Create(tempFile.FilePath))
             {
                 await stream.CopyToAsync(file);
-                if (file.Length > 0) return tempFile;
+                length = file.Length;
             }
-            tempFile.Dispose();
-            return null;
+            if (length == 0) return null;
+            // Владение передаётся вызывающему только после успешного закрытия потока.
+            completed = true;
+            return tempFile;
         }
-        catch
+        finally
         {
-            tempFile.Dispose();
-            throw;
+            if (!completed) tempFile.Dispose();
         }
     }
 

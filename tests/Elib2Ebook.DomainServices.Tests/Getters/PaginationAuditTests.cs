@@ -142,7 +142,7 @@ public class PaginationAuditTests
     private sealed class Handler(Func<Uri, string> response) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(response(request.RequestUri!)), RequestMessage = request });
+            => Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK, request, new StringContent(response(request.RequestUri!))));
     }
 
     private sealed class AuditLogger : ILogger

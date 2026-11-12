@@ -164,10 +164,8 @@ public class RulatePaginationTests
             var content = chapter
                 ? JsonSerializer.Serialize(new { can_read = true, content = "<div class='content-text'><p>Текст</p></div>" })
                 : page(uri);
-            return Task.FromResult(new HttpResponseMessage(uri.Query.Length > 0 ? nextPageStatus : HttpStatusCode.OK)
-            {
-                Content = new StringContent(content), RequestMessage = request
-            });
+            return Task.FromResult(TestHttpResponse.Create(uri.Query.Length > 0 ? nextPageStatus : HttpStatusCode.OK,
+                request, new StringContent(content)));
         }
     }
 }

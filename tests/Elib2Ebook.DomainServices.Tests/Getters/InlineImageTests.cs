@@ -64,14 +64,14 @@ public sealed class InlineImageTests : IDisposable
         {
             var content = new ByteArrayContent([137, 80, 78, 71]);
             content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/png");
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = content, RequestMessage = request });
+            return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK, request, content));
         }
     }
 
     private sealed class ReplyHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound) { RequestMessage = request, Content = new StringContent("not found") });
+            => Task.FromResult(TestHttpResponse.Create(HttpStatusCode.NotFound, request, new StringContent("not found")));
     }
 
     private sealed class CaptureLogger : ILogger
