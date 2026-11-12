@@ -38,7 +38,7 @@ public class MyBookGetter(BookGetterConfig config) : GetterBase(config)
 
     public override Task Init()
     {
-        _apiClient = new HttpClient();
+        _apiClient = Config.CreateAdditionalClient();
         _apiClient.Timeout = Config.Client.Timeout;
         _apiClient.DefaultRequestHeaders.Add("User-Agent", "MyBook/6.6.0 (iPhone; iOS 16.0.3; Scale/3.00)");
         _apiClient.DefaultRequestHeaders.Add("Accept", "application/json; version=4");

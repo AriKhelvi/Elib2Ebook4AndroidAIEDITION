@@ -1,0 +1,178 @@
+using System.Net;
+using System.Net.Http.Headers;
+using Elib2Ebook.DomainServices.Configs;
+using Elib2Ebook.DomainServices.Extensions;
+
+namespace Elib2Ebook.DomainServices.Tests.Configs;
+
+public class RequestPolicyTests
+{
+    [Theory]
+    [InlineData(1, 0, 0)]
+    [InlineData(1, 1, 0)]
+    [InlineData(2, 0, 0.6)]
+    [InlineData(2, 1, 1.5)]
+    [InlineData(3, 0, 5)]
+    [InlineData(3, 1, 10)]
+    public void PresetIntervalsStayWithinChosenRange(int mode, double sample, double expected)
+    {
+        Assert.Equal(TimeSpan.FromSeconds(expected), RequestPacer.GetInterval(new Options { DelayMode = mode }, sample));
+    }
+
+    [Theory]
+    [InlineData(0, 0.01)]
+    [InlineData(0.25, 0.25)]
+    [InlineData(121, 120)]
+    public void CustomIntervalSupportsFractionsAndBounds(double seconds, double expected)
+    {
+        Assert.Equal(TimeSpan.FromSeconds(expected), RequestPacer.GetInterval(new Options { DelayMode = 4, CustomDelaySeconds = seconds }, 0.5));
+    }
+
+    [Fact]
+    public void CommandLineDelayRemainsCompatible()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(7), RequestPacer.GetInterval(new Options { Delay = 7 }, 0));
+        Assert.Equal(TimeSpan.Zero, RequestPacer.GetInterval(new Options(), 0));
+    }
+
+    [Fact]
+    public async Task ParallelRequestsAcrossTwoClientsHaveSpacedStarts()
+    {
+        var clock = new Clock();
+        var pacer = clock.Pacer();
+        var starts = new List<TimeSpan>();
+        var allStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async Task<HttpResponseMessage> Send(HttpRequestMessage _, CancellationToken token)
+        {
+            lock (starts)
+            {
+                starts.Add(clock.Now);
+                if (starts.Count == 3) allStarted.SetResult();
+            }
+            // Ответы ещё не получены: проверяется интервал начал, а не пауза после загрузки.
+            await allStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), token);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }
+        using var first = Client(pacer, Send);
+        using var second = Client(pacer, Send);
+
+        var responses = await Task.WhenAll(first.GetAsync("https://example.org/1"), second.GetAsync("https://example.org/2"), first.GetAsync("https://example.org/3"));
+        foreach (var response in responses) response.Dispose();
+
+        Assert.Equal(new[] { TimeSpan.Zero, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2) }, starts);
+    }
+
+    [Fact]
+    public async Task RelativeRedirectIsPacedAndDoesNotForwardAuthorization()
+    {
+        var clock = new Clock();
+        var paths = new List<string>();
+        var starts = new List<TimeSpan>();
+        using var client = Client(clock.Pacer(), (request, _) =>
+        {
+            paths.Add(request.RequestUri.AbsolutePath);
+            starts.Add(clock.Now);
+            if (paths.Count == 1)
+            {
+                Assert.NotNull(request.Headers.Authorization);
+                var moved = new HttpResponseMessage(HttpStatusCode.Redirect);
+                moved.Headers.Location = new Uri("next", UriKind.Relative);
+                return Task.FromResult(moved);
+            }
+            Assert.Null(request.Headers.Authorization);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "test");
+
+        using var response = await client.GetAsync("https://example.org/book/start");
+
+        Assert.Equal(new[] { "/book/start", "/book/next" }, paths);
+        Assert.Equal(new[] { TimeSpan.Zero, TimeSpan.FromSeconds(1) }, starts);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.SeeOther, "GET", false)]
+    [InlineData(HttpStatusCode.TemporaryRedirect, "POST", true)]
+    public async Task RedirectRespectsMethodAndContent(HttpStatusCode redirectStatus, string expectedMethod, bool hasContent)
+    {
+        var calls = 0;
+        using var client = Client(new Clock().Pacer(), async (request, _) =>
+        {
+            if (++calls == 1)
+            {
+                var moved = new HttpResponseMessage(redirectStatus);
+                moved.Headers.Location = new Uri("/next", UriKind.Relative);
+                return moved;
+            }
+            Assert.Equal(expectedMethod, request.Method.Method);
+            Assert.Equal(hasContent, request.Content != null);
+            if (hasContent) Assert.Equal("body", await request.Content.ReadAsStringAsync());
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var body = new StringContent("body");
+        using var response = await client.PostAsync("https://example.org/start", body);
+        Assert.Equal(2, calls);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task AccessErrorsAreNotRetriedOrParsedAsBookHtml(HttpStatusCode status)
+    {
+        var calls = 0;
+        using var client = Client(new Clock().Pacer(), (_, _) =>
+        {
+            calls++;
+            var response = new HttpResponseMessage(status) { Content = new StringContent("<html>access denied</html>") };
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(30));
+            return Task.FromResult(response);
+        });
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetHtmlDocWithTriesAsync(new Uri("https://example.org/book")));
+        Assert.Equal(status, error.StatusCode);
+        Assert.Equal(1, calls);
+        if (status == HttpStatusCode.TooManyRequests) Assert.Contains("30 сек", error.Message);
+    }
+
+    [Fact]
+    public async Task CancellationWhileWaitingDoesNotSendAnotherRequest()
+    {
+        var calls = 0;
+        var pacer = new RequestPacer(() => TimeSpan.FromSeconds(1), () => TimeSpan.Zero,
+            (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token));
+        using var client = Client(pacer, (_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        using var first = await client.GetAsync("https://example.org/first");
+        using var cancellation = new CancellationTokenSource();
+        var waiting = client.GetAsync("https://example.org/second", cancellation.Token);
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        Assert.Equal(1, calls);
+    }
+
+    private static HttpClient Client(RequestPacer pacer, Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send)
+        => new(new RequestPolicyHandler(pacer, null, new FakeHandler(send)));
+
+    private sealed class FakeHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => send(request, cancellationToken);
+    }
+
+    private sealed class Clock
+    {
+        public TimeSpan Now;
+        public RequestPacer Pacer() => new(() => TimeSpan.FromSeconds(1), () => Now, async (duration, token) =>
+        {
+            await Task.Yield();
+            token.ThrowIfCancellationRequested();
+            Now += duration;
+        });
+    }
+}
