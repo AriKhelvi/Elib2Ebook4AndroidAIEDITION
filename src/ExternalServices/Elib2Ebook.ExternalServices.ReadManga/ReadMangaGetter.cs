@@ -82,6 +82,7 @@ public class ReadMangaGetter(BookGetterConfig config) : GetterBase(config)
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(urlChapter.Url.AppendQueryParameter("mtr", "1"));
         if (doc.QuerySelector("div.buy-button") != null)
         {
+            Config.Logger.LogWarning($"Глава {urlChapter.Title.CoverQuotes()} не загружена: сайт требует покупки. {urlChapter.Url}");
             return null;
         }
 

@@ -87,17 +87,30 @@ public class YounettranslateGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<IEnumerable<UrlChapter>> GetToc(Uri url)
     {
         var result = new List<UrlChapter>();
+        var chapterUrls = new HashSet<Uri>();
 
         for (var i = 1;; i++)
         {
             var doc = await Config.Client.GetHtmlDocWithTriesAsync(url.AppendQueryParameter("page", i));
+            if (doc.QuerySelector("table.catposts-table") == null)
+            {
+                if (i == 1)
+                    throw new InvalidOperationException("Не найдено оглавление Younettranslate на первой странице. Возможно, сайт ограничил доступ.");
+                // Сайт может убирать таблицу после последней страницы. Без подтверждённого
+                // признака конца нельзя ни считать книгу полной, ни отбрасывать собранные главы.
+                Config.Logger.LogWarning($"Не удалось подтвердить полноту оглавления Younettranslate: на странице {i} нет таблицы глав. Получено {result.Count} глав; проверьте их количество на сайте.");
+                break;
+            }
             var links = doc.QuerySelectorAll("table.catposts-table td.hidden-sm a[href]").Select(a => new UrlChapter(url.MakeRelativeUri(a.Attributes["href"].Value), a.GetText())).ToList();
             if (links.Count == 0)
             {
                 break;
             }
 
-            result.AddRange(links);
+            var newLinks = links.Where(chapter => chapterUrls.Add(chapter.Url)).ToList();
+            if (newLinks.Count == 0 || i > 10000)
+                throw new InvalidOperationException($"Оглавление Younettranslate повторяется или содержит слишком много страниц (страница {i}). Загрузка остановлена.");
+            result.AddRange(newLinks);
         }
 
         return SliceToc(result, c => c.Title);

@@ -156,7 +156,15 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
     private async Task<HtmlDocument> GetChapter(string bookId, string chapterId)
     {
         var s = await Config.Client.GetFromJsonWithTriesAsync<RulateChapter>(SystemUrl.MakeRelativeUri($"/book/{bookId}/{chapterId}/readyajax"));
-        return (s.CanRead ? s.Content.AsHtmlDoc().QuerySelector("div.content-text")?.InnerHtml ?? string.Empty : string.Empty).AsHtmlDoc();
+        if (!s.CanRead)
+        {
+            Config.Logger.LogWarning($"Глава {chapterId} не загружена: сайт не предоставил доступ к тексту. {SystemUrl.MakeRelativeUri($"/book/{bookId}/{chapterId}")}");
+            return string.Empty.AsHtmlDoc();
+        }
+        var content = s.Content?.AsHtmlDoc().QuerySelector("div.content-text");
+        if (content == null)
+            throw new InvalidOperationException($"Не найден текст доступной главы {chapterId}. Неполная книга не будет сохранена.");
+        return content.InnerHtml.AsHtmlDoc();
     }
 
     private async Task<HtmlDocument> GetBookPage(Uri url)

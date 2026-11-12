@@ -197,20 +197,33 @@ public class RanobesComGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<IEnumerable<UrlChapter>> GetToc(Uri tocUri)
     {
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(tocUri);
-        var lastA = doc.QuerySelector("div.pages a:last-child")?.InnerText;
-        var pages = string.IsNullOrWhiteSpace(lastA) ? 1 : int.Parse(lastA);
-
         Config.Logger.LogInformation("Получаю оглавление");
         var result = new List<UrlChapter>();
+        var urls = new HashSet<Uri>();
+        var pages = 1;
         for (var i = 1; i <= pages; i++)
         {
-            doc = await Config.Client.GetHtmlDocWithTriesAsync(tocUri.AppendSegment($"/page/{i}"));
+            if (i > 1) doc = await Config.Client.GetHtmlDocWithTriesAsync(tocUri.AppendSegment($"/page/{i}"));
+            foreach (var link in doc.QuerySelectorAll("div.pages a[href]"))
+            {
+                if (!Uri.TryCreate(tocUri, link.GetAttributeValue("href", string.Empty), out var next) ||
+                    next.Scheme != tocUri.Scheme || next.Authority != tocUri.Authority) continue;
+                var match = Regex.Match(next.AbsolutePath,
+                    "^" + Regex.Escape(tocUri.AbsolutePath.TrimEnd('/')) + @"/page/(?<page>\d+)/?$");
+                if (!match.Success || !int.TryParse(match.Groups["page"].Value, out var page)) continue;
+                if (page > 10000) throw new InvalidOperationException("Слишком много страниц оглавления Ranobes. Загрузка остановлена.");
+                pages = Math.Max(pages, page);
+            }
+
             var chapters = doc
                 .QuerySelectorAll("#dle-content > .cat_block.cat_line a[title]")
-                .Select(a => new UrlChapter(a.Attributes["href"].Value.AsUri(), string.IsNullOrWhiteSpace(a.Attributes["title"].Value) ? "Без названия" : a.Attributes["title"].Value))
+                .Select(a => new UrlChapter(new Uri(tocUri, a.Attributes["href"].Value), string.IsNullOrWhiteSpace(a.Attributes["title"].Value) ? "Без названия" : a.Attributes["title"].Value))
                 .ToList();
 
-            result.AddRange(chapters);
+            var newChapters = chapters.Where(chapter => urls.Add(chapter.Url)).ToList();
+            if (newChapters.Count == 0)
+                throw new InvalidOperationException($"Оглавление Ranobes на странице {i} пусто или повторяется. Неполная книга не будет сохранена.");
+            result.AddRange(newChapters);
         }
 
         Config.Logger.LogInformation($"Получено {result.Count} глав");

@@ -13,6 +13,22 @@ public class RulatePaginationTests
     private static readonly Uri BookUri = new("https://bllate.org/book/23172");
 
     [Theory]
+    [InlineData("bllate.org")]
+    [InlineData("tl.rulate.ru")]
+    public async Task BothReportedDomainsDownloadPastChapter100(string host)
+    {
+        var handler = new FakeHandler(uri => uri.Query.Length == 0
+            ? Page(1, 100, "?Chapter_page=2") : Page(101, 102));
+        var config = Config(new Options { NoImage = true }, handler);
+        using RulateGetterBase getter = host == "bllate.org" ? new BllateGetter(config) : new RulateGetter(config);
+        using var book = await getter.Get(new Uri($"https://{host}/book/23172?bt_page=home"));
+
+        Assert.Equal(102, book.Chapters.Count());
+        Assert.Equal("Глава 102", book.Chapters.Last().Title);
+        Assert.All(handler.Requests, request => Assert.Equal(host, request.Host));
+    }
+
+    [Theory]
     [InlineData("all", 1, 205)]
     [InlineData("range", 99, 102)]
     [InlineData("tail", 204, 205)]
