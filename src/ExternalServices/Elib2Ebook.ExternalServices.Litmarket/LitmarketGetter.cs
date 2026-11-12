@@ -197,18 +197,20 @@ public class LitmarketGetter(BookGetterConfig config) : GetterBase(config)
 
             foreach (var block in blocks.Where(b => b.Index >= range.Block.Index && (!range.NextIndex.HasValue || b.Index < range.NextIndex.Value)))
             {
+                var mods = block.Chunk?.Mods
+                    ?? throw new InvalidOperationException($"Литмаркет не вернул содержимое блока {block.Index}. Неполная книга не будет сохранена.");
                 // Название уже выводит сборщик книги. Убираем только совпавший
                 // блок типа chapter на его позиции в оглавлении; обычную прозу
                 // и блоки с изображением сохраняем, даже если их текст совпал.
                 if (block.Index == range.Block.Index && block.Chunk.Type == "chapter"
-                    && BlockTitle(block) == chapterTitle && !(block.Chunk.Mods?.Any(ContainsImage) ?? false))
+                    && BlockTitle(block) == chapterTitle && !mods.Any(ContainsImage))
                 {
                     continue;
                 }
 
                 var p = new StringBuilder();
 
-                foreach (var mod in block.Chunk.Mods)
+                foreach (var mod in mods)
                 {
                     switch (mod.Type)
                     {

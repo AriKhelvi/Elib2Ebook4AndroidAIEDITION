@@ -98,6 +98,19 @@ public class LitmarketGetterTests
     private static object Text(string text, params string[] styles)
         => new { type = "INLINE", text, styles };
 
+    [Fact]
+    public async Task MissingBlockContentStopsDownloadInsteadOfProducingPartialChapter()
+    {
+        var heading = Block(0, "chapter", Text("Глава 1"));
+        var broken = new { index = 2, chunk = new { type = "unstyled", mods = default(object[]) } };
+        using var getter = CreateGetter([heading], [heading, Block(1, "unstyled", Text("Начало главы")), broken]);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => getter.Get(BookUri));
+
+        Assert.Contains("содержимое блока 2", error.Message);
+        Assert.Contains("Неполная книга не будет сохранена", error.Message);
+    }
+
     private static object Block(int index, string type, params object[] mods)
         => new { index, chunk = new { type, mods } };
 
