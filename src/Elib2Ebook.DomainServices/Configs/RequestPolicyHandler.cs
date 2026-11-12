@@ -18,8 +18,7 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
 
             for (var redirects = 0; ; redirects++)
             {
-                await pacer.WaitAsync(cancellationToken);
-                var response = await base.SendAsync(request, cancellationToken);
+                var response = await pacer.SendAsync(() => base.SendAsync(request, cancellationToken), cancellationToken);
                 if (!IsRedirect(response.StatusCode) || response.Headers.Location == null)
                 {
                     if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
@@ -35,7 +34,7 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
 
                 var method = request.Method;
                 var content = request.Content;
-                if ((response.StatusCode == HttpStatusCode.SeeOther && method != HttpMethod.Head) ||
+                if ((response.StatusCode == HttpStatusCode.SeeOther && method != HttpMethod.Get && method != HttpMethod.Head) ||
                     (response.StatusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Redirect && method == HttpMethod.Post))
                 {
                     method = HttpMethod.Get;
@@ -43,14 +42,17 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
                 }
 
                 var next = new HttpRequestMessage(method, location) { Content = content };
+                var sameAuthority = request.RequestUri.Authority.Equals(location.Authority, StringComparison.OrdinalIgnoreCase);
                 foreach (var header in request.Headers)
                 {
                     if (header.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase) ||
-                        header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase) ||
-                        (request.RequestUri.Authority != location.Authority && header.Key.Equals("Cookie", StringComparison.OrdinalIgnoreCase)))
+                        (!sameAuthority && (header.Key.Equals("Host", StringComparison.OrdinalIgnoreCase) ||
+                                            header.Key.Equals("Cookie", StringComparison.OrdinalIgnoreCase))))
                         continue;
                     next.Headers.TryAddWithoutValidation(header.Key, header.Value);
                 }
+                if (method == HttpMethod.Get && method != request.Method)
+                    next.Headers.TransferEncodingChunked = false;
 
                 response.Dispose();
                 // Content принадлежит исходному запросу и может понадобиться для следующего 307/308.

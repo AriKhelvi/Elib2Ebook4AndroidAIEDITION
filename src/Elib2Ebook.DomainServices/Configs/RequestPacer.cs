@@ -38,24 +38,31 @@ public sealed class RequestPacer
         return TimeSpan.FromSeconds(seconds);
     }
 
-    public async Task WaitAsync(CancellationToken cancellationToken)
+    /// <summary>Начинает отправку под блокировкой, но ожидает сетевой ответ уже без неё.</summary>
+    public async Task<T> SendAsync<T>(Func<Task<T>> send, CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken);
+        ArgumentNullException.ThrowIfNull(send);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Task<T> pending;
         try
         {
             if (_lastStart.HasValue)
             {
                 var remaining = _interval() - (_now() - _lastStart.Value);
                 if (remaining > TimeSpan.Zero)
-                    await _wait(remaining, cancellationToken);
+                    await _wait(remaining, cancellationToken).ConfigureAwait(false);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
             _lastStart = _now();
+            // Следующий ожидающий не должен получить слот до фактического вызова отправки.
+            // Сам Task ответа остаётся вне блокировки: запросы могут выполняться параллельно.
+            pending = send();
         }
         finally
         {
             _gate.Release();
         }
+        return await pending.ConfigureAwait(false);
     }
 }

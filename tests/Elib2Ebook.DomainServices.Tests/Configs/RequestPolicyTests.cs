@@ -38,6 +38,7 @@ public class RequestPolicyTests
     [Fact]
     public async Task ParallelRequestsAcrossTwoClientsHaveSpacedStarts()
     {
+        const int requestCount = 20;
         var clock = new Clock();
         var pacer = clock.Pacer();
         var starts = new List<TimeSpan>();
@@ -47,7 +48,7 @@ public class RequestPolicyTests
             lock (starts)
             {
                 starts.Add(clock.Now);
-                if (starts.Count == 3) allStarted.SetResult();
+                if (starts.Count == requestCount) allStarted.SetResult();
             }
             // Ответы ещё не получены: проверяется интервал начал, а не пауза после загрузки.
             await allStarted.Task.WaitAsync(TimeSpan.FromSeconds(3), token);
@@ -56,10 +57,26 @@ public class RequestPolicyTests
         using var first = Client(pacer, Send);
         using var second = Client(pacer, Send);
 
-        var responses = await Task.WhenAll(first.GetAsync("https://example.org/1"), second.GetAsync("https://example.org/2"), first.GetAsync("https://example.org/3"));
+        var responses = await Task.WhenAll(Enumerable.Range(0, requestCount)
+            .Select(i => (i % 2 == 0 ? first : second).GetAsync($"https://example.org/{i}")));
         foreach (var response in responses) response.Dispose();
 
-        Assert.Equal(new[] { TimeSpan.Zero, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2) }, starts);
+        Assert.Equal(Enumerable.Range(0, requestCount).Select(i => TimeSpan.FromSeconds(i)), starts);
+    }
+
+    [Fact]
+    public async Task SynchronousDispatchFailureReleasesTheNextRequest()
+    {
+        var clock = new Clock();
+        var pacer = clock.Pacer();
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            pacer.SendAsync<int>(() => throw new InvalidOperationException("Ошибка отправки"), CancellationToken.None));
+
+        var result = await pacer.SendAsync(() => Task.FromResult(42), CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(3));
+
+        Assert.Equal(42, result);
+        Assert.Equal(TimeSpan.FromSeconds(1), clock.Now);
     }
 
     [Fact]
@@ -92,6 +109,30 @@ public class RequestPolicyTests
     }
 
     [Theory]
+    [InlineData("/next", "example.org")]
+    [InlineData("https://other.example/next", null)]
+    public async Task RedirectPreservesManualHostOnlyForSameAddress(string target, string expectedHost)
+    {
+        var calls = 0;
+        using var client = Client(new Clock().Pacer(), (request, _) =>
+        {
+            if (++calls == 1)
+            {
+                Assert.Equal("example.org", request.Headers.Host);
+                var moved = new HttpResponseMessage(HttpStatusCode.Redirect);
+                moved.Headers.Location = new Uri(target, UriKind.RelativeOrAbsolute);
+                return Task.FromResult(moved);
+            }
+            Assert.Equal(expectedHost, request.Headers.Host);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://127.0.0.1/start");
+        request.Headers.Host = "example.org";
+        using var response = await client.SendAsync(request);
+        Assert.Equal(2, calls);
+    }
+
+    [Theory]
     [InlineData(HttpStatusCode.SeeOther, "GET", false)]
     [InlineData(HttpStatusCode.TemporaryRedirect, "POST", true)]
     public async Task RedirectRespectsMethodAndContent(HttpStatusCode redirectStatus, string expectedMethod, bool hasContent)
@@ -107,11 +148,13 @@ public class RequestPolicyTests
             }
             Assert.Equal(expectedMethod, request.Method.Method);
             Assert.Equal(hasContent, request.Content != null);
+            Assert.Equal(hasContent, request.Headers.TransferEncodingChunked == true);
             if (hasContent) Assert.Equal("body", await request.Content.ReadAsStringAsync());
             return new HttpResponseMessage(HttpStatusCode.OK);
         });
-        using var body = new StringContent("body");
-        using var response = await client.PostAsync("https://example.org/start", body);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://example.org/start") { Content = new StringContent("body") };
+        request.Headers.TransferEncodingChunked = true;
+        using var response = await client.SendAsync(request);
         Assert.Equal(2, calls);
     }
 
