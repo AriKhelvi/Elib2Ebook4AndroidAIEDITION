@@ -19,15 +19,17 @@ public class LitgorodGetterTests
         var bookUri = new Uri("https://litgorod.ru/books/view/64003");
 
         using var preview = await getter.Get(bookUri);
+        using var repeatedPreview = await getter.Get(bookUri);
         options.NoChapters = false;
         using var book = await getter.Get(bookUri);
         options.NoChapters = true;
         using var another = await getter.Get(new Uri("https://litgorod.ru/books/view/64004"));
 
         Assert.Empty(preview.Chapters);
+        Assert.Empty(repeatedPreview.Chapters);
         Assert.Single(book.Chapters);
         Assert.Contains("Текст главы", book.Chapters.Single().Content);
-        Assert.Equal(new[] { bookUri.ToString(), bookUri.ToString(), bookUri.ToString(), "https://litgorod.ru/books/view/64004" }, handler.Referers);
+        Assert.Equal(new[] { bookUri.ToString(), bookUri.ToString(), bookUri.ToString(), bookUri.ToString(), "https://litgorod.ru/books/view/64004" }, handler.Referers);
     }
 
     private sealed class FakeHandler : HttpMessageHandler

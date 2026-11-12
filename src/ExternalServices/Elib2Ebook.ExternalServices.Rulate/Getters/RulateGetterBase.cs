@@ -15,6 +15,8 @@ namespace Elib2Ebook.ExternalServices.Rulate.Getters;
 
 public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(config)
 {
+    private const int MaxTocPages = 10000;
+
     protected override string GetId(Uri url)
         => url.Segments.Length == 3 ? base.GetId(url) : url.GetSegment(2);
 
@@ -176,6 +178,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
         var chapterIds = new HashSet<string>(StringComparer.Ordinal);
         var visitedPages = new HashSet<int>();
         var pendingPages = new SortedSet<int> { 1 };
+        var lastScheduledPage = 1;
 
         while (pendingPages.Count > 0)
         {
@@ -183,7 +186,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
             pendingPages.Remove(page);
             visitedPages.Add(page);
             // Ограничение защищает от бесконечного оглавления при ошибке сайта.
-            if (visitedPages.Count > 10000)
+            if (visitedPages.Count > MaxTocPages)
             {
                 throw new InvalidOperationException("Оглавление содержит слишком много страниц. Загрузка остановлена, чтобы не сохранить неполную книгу.");
             }
@@ -228,10 +231,23 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
                 }
 
                 var value = HttpUtility.ParseQueryString(next.Query)["Chapter_page"];
-                if (int.TryParse(value, out var nextPage) && nextPage > 0 && !visitedPages.Contains(nextPage))
+                if (!int.TryParse(value, out var nextPage) || nextPage <= lastScheduledPage)
                 {
-                    pendingPages.Add(nextPage);
+                    continue;
                 }
+
+                if (nextPage > MaxTocPages)
+                {
+                    throw new InvalidOperationException("Оглавление содержит слишком много страниц. Загрузка остановлена, чтобы не сохранить неполную книгу.");
+                }
+
+                // Ссылка на последнюю страницу подтверждает и промежуточные номера,
+                // даже если сайт скрывает их в сокращённом пагинаторе.
+                for (var number = lastScheduledPage + 1; number <= nextPage; number++)
+                {
+                    pendingPages.Add(number);
+                }
+                lastScheduledPage = nextPage;
             }
         }
 

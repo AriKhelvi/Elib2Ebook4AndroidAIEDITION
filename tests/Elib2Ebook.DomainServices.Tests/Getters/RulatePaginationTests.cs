@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Web;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Misc.TempFolder;
 using Elib2Ebook.ExternalServices.Rulate.Getters;
@@ -22,7 +23,9 @@ public class RulatePaginationTests
         {
             "" => Page(1, 100,
                 "?Chapter_page=3", "?Chapter_page=2", "?Chapter_page=1",
-                "https://other.example/book/23172?Chapter_page=4", "/book/999?Chapter_page=4"),
+                "https://other.example/book/23172?Chapter_page=4", "/book/999?Chapter_page=4",
+                "https://bllate.org.other.example/book/23172?Chapter_page=4",
+                "https://bllate.org:8443/book/23172?Chapter_page=4", "http://bllate.org/book/23172?Chapter_page=4"),
             "?Chapter_page=2" => Page(100, 200, "?Chapter_page=3", "?Chapter_page=1"),
             "?Chapter_page=3" => Page(201, 205, "?Chapter_page=2"),
             _ => throw new InvalidOperationException($"Неожиданный запрос {uri}")
@@ -36,7 +39,7 @@ public class RulatePaginationTests
         }
 
         using var getter = new BllateGetter(Config(options, handler));
-        using var book = await getter.Get(BookUri);
+        using var book = await getter.Get(new Uri(BookUri + "?bt_page=home&bt_block=ad"));
 
         Assert.Equal(Enumerable.Range(first, last - first + 1).Select(i => $"Глава {i}"), book.Chapters.Select(c => c.Title));
         Assert.Equal(new[] { "", "?Chapter_page=2", "?Chapter_page=3" }, handler.Requests.Take(3).Select(u => u.Query));
@@ -46,7 +49,7 @@ public class RulatePaginationTests
     }
 
     [Fact]
-    public async Task ChaptersStayOrderedWhenEarlierPageIsDiscoveredLater()
+    public async Task LastPageLinkAlsoSchedulesIntermediatePages()
     {
         var handler = new FakeHandler(uri => uri.Query switch
         {
@@ -59,6 +62,34 @@ public class RulatePaginationTests
         using var book = await getter.Get(BookUri);
 
         Assert.Equal(new[] { "Глава 1", "Глава 2", "Глава 3" }, book.Chapters.Select(chapter => chapter.Title));
+        Assert.Equal(new[] { "", "?Chapter_page=2", "?Chapter_page=3" }, handler.Requests.Take(3).Select(uri => uri.Query));
+    }
+
+    [Theory]
+    [InlineData("first-next-last")]
+    [InlineData("window")]
+    [InlineData("first-last")]
+    public async Task ShortenedPagerCollectsEveryPageInOrder(string pager)
+    {
+        const int lastPage = 23;
+        var handler = new FakeHandler(uri =>
+        {
+            var value = HttpUtility.ParseQueryString(uri.Query)["Chapter_page"];
+            var page = value == null ? 1 : int.Parse(value);
+            var links = pager switch
+            {
+                "first-next-last" => new[] { 1, Math.Min(page + 1, lastPage), lastPage },
+                "window" => Enumerable.Range(Math.Max(1, page - 4), Math.Min(10, lastPage - Math.Max(1, page - 4) + 1)).ToArray(),
+                _ => new[] { 1, lastPage }
+            };
+            return Page(page, page, links.Reverse().Select(number => $"?Chapter_page={number}").ToArray());
+        });
+        using var getter = new BllateGetter(Config(new Options(), handler));
+        using var book = await getter.Get(BookUri);
+
+        Assert.Equal(Enumerable.Range(1, lastPage).Select(page => $"Глава {page}"), book.Chapters.Select(chapter => chapter.Title));
+        Assert.Equal(Enumerable.Range(1, lastPage).Select(page => page == 1 ? "" : $"?Chapter_page={page}"), handler.Requests.Take(lastPage).Select(uri => uri.Query));
+        Assert.Equal(lastPage * 2, handler.Requests.Count);
     }
 
     [Fact]
