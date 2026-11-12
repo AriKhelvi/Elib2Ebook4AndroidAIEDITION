@@ -23,59 +23,12 @@ public class Fb2Builder : BuilderBase
     private readonly XElement _documentInfo;
     private readonly List<TempFile> _images = [];
 
-    private readonly Dictionary<string, string> _map = new()
+    private static readonly Dictionary<string, string> InlineTags = new()
     {
-        {
-            "strong", "strong"
-        },
-        {
-            "b", "strong"
-        },
-        {
-            "i", "emphasis"
-        },
-        {
-            "em", "emphasis"
-        },
-        {
-            "emphasis", "emphasis"
-        },
-        {
-            "del", "strikethrough"
-        },
-        {
-            "strikethrough", "strikethrough"
-        },
-        {
-            "blockquote", "cite"
-        },
-        {
-            "h1", "subtitle"
-        },
-        {
-            "h2", "subtitle"
-        },
-        {
-            "h3", "subtitle"
-        },
-        {
-            "h4", "subtitle"
-        },
-        {
-            "h5", "subtitle"
-        },
-        {
-            "h6", "subtitle"
-        },
-        {
-            "p", "p"
-        },
-        {
-            "div", "p"
-        },
-        {
-            "u", "u"
-        },
+        ["strong"] = "strong", ["b"] = "strong",
+        ["i"] = "emphasis", ["em"] = "emphasis", ["emphasis"] = "emphasis",
+        ["del"] = "strikethrough", ["s"] = "strikethrough", ["strikethrough"] = "strikethrough",
+        ["sub"] = "sub", ["sup"] = "sup", ["code"] = "code",
     };
 
     public Fb2Builder(Options options, ILogger logger) : base(options, logger)
@@ -95,7 +48,8 @@ public class Fb2Builder : BuilderBase
     {
         var authorElem = CreateXElement("author");
 
-        var parts = author.Name.Split(" ");
+        var name = CleanText(author?.Name ?? "Автор не указан");
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 2)
         {
             var firstName = CreateXElement("first-name");
@@ -108,12 +62,11 @@ public class Fb2Builder : BuilderBase
         }
         else
         {
-            var firstName = CreateXElement("first-name");
-            firstName.Value = author.Name;
-            authorElem.Add(firstName);
+            // Псевдоним не требует обязательной пары first-name / last-name.
+            authorElem.Add(new XElement(_ns + "nickname", name));
         }
 
-        if (author.Url != null)
+        if (author?.Url != null)
         {
             var homePageElem = CreateXElement("home-page");
             homePageElem.Value = author.Url.ToString();
@@ -126,13 +79,15 @@ public class Fb2Builder : BuilderBase
     private XElement CreateTitle(string text)
     {
         var p = CreateXElement("p");
-        p.Value = text.HtmlDecode().ReplaceNewLine();
+        p.Value = CleanText(text).ReplaceNewLine();
 
         var title = CreateXElement("title");
 
         title.Add(p);
         return title;
     }
+
+    private static string ImageId(string fileName) => "image_" + XmlConvert.EncodeLocalName(fileName);
 
     private static async Task WriteBinary(XmlWriter writer, TempFile tempFile)
     {
@@ -142,8 +97,14 @@ public class Fb2Builder : BuilderBase
 
         await using var inputFile = tempFile.GetStream();
         await writer.WriteStartElementAsync(null, "binary", null);
-        await writer.WriteAttributeStringAsync(null, "id", null, tempFile.FullName);
-        await writer.WriteAttributeStringAsync(null, "content-type", null, "image/" + tempFile.Extension.TrimStart('.'));
+        await writer.WriteAttributeStringAsync(null, "id", null, ImageId(tempFile.FullName));
+        var imageType = tempFile.Extension.TrimStart('.').ToLowerInvariant() switch
+        {
+            "jpg" => "jpeg",
+            "svg" => "svg+xml",
+            var extension => extension,
+        };
+        await writer.WriteAttributeStringAsync(null, "content-type", null, "image/" + imageType);
         using var br = new BinaryReader(inputFile);
 
         do
@@ -190,7 +151,7 @@ public class Fb2Builder : BuilderBase
     private void WithTitle(string title)
     {
         var bookTitle = CreateXElement("book-title");
-        bookTitle.Value = title.ReplaceNewLine();
+        bookTitle.Value = CleanText(title).ReplaceNewLine();
 
         _titleInfo.Add(bookTitle);
         _body.Add(CreateTitle(title));
@@ -208,7 +169,7 @@ public class Fb2Builder : BuilderBase
             var coverPage = CreateXElement("coverpage");
 
             var imageElem = CreateXElement("image");
-            imageElem.SetAttributeValue(_xlink + "href", "#" + cover.FullName);
+            imageElem.SetAttributeValue(_xlink + "href", "#" + ImageId(cover.FullName));
 
             coverPage.Add(imageElem);
             _titleInfo.Add(coverPage);
@@ -221,7 +182,7 @@ public class Fb2Builder : BuilderBase
         if (url != null)
         {
             var srcUrlElem = CreateXElement("src-url");
-            srcUrlElem.Value = url.ToString().CleanInvalidXmlChars();
+            srcUrlElem.Value = CleanText(url.ToString());
             _documentInfo.Add(srcUrlElem);
         }
     }
@@ -238,14 +199,9 @@ public class Fb2Builder : BuilderBase
     {
         var a = CreateXElement("annotation");
 
-        var doc = annotation.AsHtmlDoc();
-        foreach (var node in doc.DocumentNode.ChildNodes)
-        {
-            if (!string.IsNullOrWhiteSpace(node.InnerText))
-            {
-                ProcessSection(a, node, "p");
-            }
-        }
+        var doc = new HtmlDocument();
+        doc.LoadHtml(annotation);
+        AppendFlow(a, doc.DocumentNode.ChildNodes);
 
         return a;
     }
@@ -262,11 +218,11 @@ public class Fb2Builder : BuilderBase
             var section = CreateXElement("section");
             section.Add(CreateTitle(chapter.Title));
 
-            var doc = chapter.Content.AsHtmlDoc();
-            foreach (var node in doc.DocumentNode.ChildNodes)
-            {
-                ProcessSection(section, node);
-            }
+            var doc = new HtmlDocument();
+            doc.LoadHtml(chapter.Content);
+            AppendFlow(section, doc.DocumentNode.ChildNodes);
+            if (section.Elements().Count() == 1)
+                section.Add(CreateXElement("empty-line"));
 
             _body.Add(section);
 
@@ -282,141 +238,148 @@ public class Fb2Builder : BuilderBase
         if (seria != null)
         {
             var sequenceElem = CreateXElement("sequence");
-            sequenceElem.SetAttributeValue("name", seria.Name.CleanInvalidXmlChars());
-            sequenceElem.SetAttributeValue("number", seria.Number.CleanInvalidXmlChars());
+            sequenceElem.SetAttributeValue("name", CleanText(seria.Name));
+            if (System.Numerics.BigInteger.TryParse(seria.Number, out var number))
+                sequenceElem.SetAttributeValue("number", number.ToString(System.Globalization.CultureInfo.InvariantCulture));
             _titleInfo.Add(sequenceElem);
         }
     }
 
     private void WithLang(string lang)
     {
-        if (!string.IsNullOrWhiteSpace(lang))
-        {
-            var langElem = CreateXElement("lang");
-            langElem.Value = lang;
-            _titleInfo.Add(langElem);
-        }
+        var langElem = CreateXElement("lang");
+        langElem.Value = string.IsNullOrWhiteSpace(lang) ? "und" : lang;
+        _titleInfo.Add(langElem);
     }
 
-    private static bool IsTextNode(HtmlNode node)
+    private static string CleanText(string text)
     {
-        return node.Name is "#text" or "span";
+        // XElement сам экранирует &, < и >. Удаляем только недопустимые XML-символы.
+        var result = new StringBuilder();
+        foreach (var rune in (text ?? string.Empty).EnumerateRunes())
+        {
+            if (rune.Value is 0x9 or 0xA or 0xD or >= 0x20 and <= 0xD7FF
+                or >= 0xE000 and <= 0xFFFD or >= 0x10000 and <= 0x10FFFF)
+                result.Append(rune.ToString());
+        }
+        return result.ToString();
     }
 
-    private void ProcessSection(XElement parent, HtmlNode node, string textNode = "")
+    private void AppendFlow(XElement parent, IEnumerable<HtmlNode> nodes, string paragraphTag = "p")
     {
-        if (node.Name == "br")
+        XElement paragraph = null;
+        var formats = new List<XElement>();
+        var outputFormats = new List<XElement>();
+
+        XElement InlineParent()
         {
-            parent.Add(CreateXElement("br"));
-            return;
+            paragraph ??= CreateXElement(paragraphTag);
+            var target = outputFormats.Count == 0 ? paragraph : outputFormats[^1];
+            while (outputFormats.Count < formats.Count)
+            {
+                var template = formats[outputFormats.Count];
+                var copy = new XElement(template.Name, template.Attributes());
+                target.Add(copy);
+                outputFormats.Add(copy);
+                target = copy;
+            }
+            return target;
         }
 
-        if (node.Name == "a")
+        void Flush(bool emptyLine = false)
         {
-            var href = node.Attributes["href"]?.Value ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(href))
-            {
-                if (string.IsNullOrWhiteSpace(textNode))
-                {
-                    parent.Add(node.InnerText);
-                }
-                else
-                {
-                    var tag = CreateXElement(textNode);
-                    tag.Value = node.InnerText;
-                    parent.Add(tag);
-                }
-            }
-            else
-            {
-                var a = CreateXElement("a");
-                a.SetAttributeValue(_xlink + "href", href);
-                a.Value = node.InnerText;
-
-                if (string.IsNullOrWhiteSpace(textNode))
-                {
-                    parent.Add(a);
-                }
-                else
-                {
-                    var tag = CreateXElement(textNode);
-                    tag.Add(a);
-                    parent.Add(tag);
-                }
-            }
-
-            return;
+            if (paragraph != null && (!string.IsNullOrWhiteSpace(paragraph.Value)
+                || paragraph.Descendants(_ns + "image").Any()))
+                parent.Add(paragraph);
+            else if (emptyLine)
+                parent.Add(CreateXElement("empty-line"));
+            paragraph = null;
+            outputFormats.Clear();
         }
 
-        if (node.ChildNodes.Count > 0)
+        void Visit(HtmlNode node)
         {
-            var section = CreateXElement(_map.GetValueOrDefault(node.Name, "p"));
+            if (node.NodeType == HtmlNodeType.Comment || node.Name is "script" or "style")
+                return;
 
-            foreach (var child in node.ChildNodes)
+            if (node.NodeType == HtmlNodeType.Text)
             {
-                ProcessSection(IsTextNode(node) ? parent : section, child);
-            }
-
-            if (!section.IsEmpty)
-            {
-                parent.Add(section);
-            }
-
-            return;
-        }
-
-        if (node.Name == "img")
-        {
-            if (node.Attributes["src"] == null)
-            {
+                var text = CleanText(HtmlEntity.DeEntitize(node.InnerText));
+                if (text.Length > 0)
+                    InlineParent().Add(new XText(text));
                 return;
             }
 
-            var imageElem = CreateXElement("image");
-            imageElem.SetAttributeValue(_xlink + "href", "#" + node.Attributes["src"].Value);
-            parent.Add(imageElem);
-
-            return;
-        }
-
-        var nodeText = node.InnerText.HtmlDecode().CleanInvalidXmlChars();
-        if (node.InnerText.StartsWith(" "))
-        {
-            nodeText = " " + nodeText;
-        }
-
-        if (node.InnerText.EndsWith(" "))
-        {
-            nodeText += " ";
-        }
-
-        if (IsTextNode(node))
-        {
-            if (string.IsNullOrWhiteSpace(textNode))
+            if (node.Name is "br" or "hr")
             {
-                parent.Add(new XText(nodeText));
-            }
-            else
-            {
-                var tag = CreateXElement(textNode);
-                tag.Value = nodeText;
-                parent.Add(tag);
+                // Перенос разрывает абзац, а следующий перенос даёт пустую строку.
+                // Шаблоны inline-элементов сохраняются для следующего абзаца.
+                Flush(emptyLine: true);
+                return;
             }
 
-            return;
+            if (node.Name == "img")
+            {
+                var src = node.GetAttributeValue("src", string.Empty);
+                if (!string.IsNullOrWhiteSpace(src))
+                    InlineParent().Add(new XElement(_ns + "image",
+                        new XAttribute(_xlink + "href", "#" + ImageId(src))));
+                return;
+            }
+
+            if (node.Name == "blockquote" && parent.Name.LocalName != "cite")
+            {
+                Flush();
+                var cite = CreateXElement("cite");
+                AppendFlow(cite, node.ChildNodes);
+                parent.Add(cite);
+                return;
+            }
+
+            if (node.Name is "h1" or "h2" or "h3" or "h4" or "h5" or "h6")
+            {
+                Flush();
+                AppendFlow(parent, node.ChildNodes, "subtitle");
+                return;
+            }
+
+            if (node.Name is "p" or "div" or "section" or "article" or "li" or "ul" or "ol"
+                or "blockquote" or "table" or "tr" or "td" or "th")
+            {
+                Flush();
+                foreach (var child in node.ChildNodes)
+                    Visit(child);
+                Flush(emptyLine: node.Name == "p" && !node.HasChildNodes);
+                return;
+            }
+
+            XElement format = null;
+            if (InlineTags.TryGetValue(node.Name, out var tag))
+                format = CreateXElement(tag);
+            else if (node.Name == "a" && !formats.Any(f => f.Name.LocalName == "a"))
+            {
+                var href = node.GetAttributeValue("href", string.Empty);
+                if (!string.IsNullOrWhiteSpace(href))
+                    format = new XElement(_ns + "a",
+                        new XAttribute(_xlink + "href", CleanText(HtmlEntity.DeEntitize(href))));
+            }
+
+            // У неподдерживаемых тегов (включая u) сохраняем всё содержимое.
+            if (format != null)
+                formats.Add(format);
+            foreach (var child in node.ChildNodes)
+                Visit(child);
+            if (format != null)
+            {
+                formats.RemoveAt(formats.Count - 1);
+                if (outputFormats.Count > formats.Count)
+                    outputFormats.RemoveRange(formats.Count, outputFormats.Count - formats.Count);
+            }
         }
 
-        if (_map.TryGetValue(node.Name, out var fb2Tag))
-        {
-            var tag = CreateXElement(fb2Tag);
-            tag.Value = nodeText;
-            parent.Add(tag);
-        }
-        else
-        {
-            parent.Add(nodeText);
-            Logger.LogInformation(node.Name);
-        }
+        foreach (var node in nodes)
+            Visit(node);
+        Flush();
     }
 
     private XElement GetDateElement(DateTime date)
@@ -434,21 +397,32 @@ public class Fb2Builder : BuilderBase
     {
         await using var file = File.Create(fileName);
 
+        _description.RemoveNodes();
+        _titleInfo.RemoveNodes();
+        _documentInfo.RemoveNodes();
+        _body.RemoveNodes();
+        _images.Clear();
+
+        // Модель книги пока не содержит жанр, но FB2 требует хотя бы один.
+        _titleInfo.Add(new XElement(_ns + "genre", "unrecognised"));
         AddAuthor(book.Author);
         AddCoAuthors(book.CoAuthors);
-        WithBookUrl(book.Url);
         WithTitle(book.Title);
         WithAnnotation(book.Annotation);
         WithCover(book.Cover);
         WithLang(book.Lang);
         WithSeria(book.Seria);
         WithChapters(book.Chapters);
-
-        _documentInfo.Add(GetDateElement(DateTime.Today));
+        if (!_body.Elements(_ns + "section").Any())
+            _body.Add(new XElement(_ns + "section", CreateXElement("empty-line")));
 
         var programUsed = CreateXElement("program-used");
         programUsed.Value = "Elib2Ebook";
         _documentInfo.Add(programUsed);
+        _documentInfo.Add(GetDateElement(DateTime.Today));
+        WithBookUrl(book.Url);
+        _documentInfo.Add(new XElement(_ns + "id", book.Url?.ToString() ?? Guid.NewGuid().ToString()));
+        _documentInfo.Add(new XElement(_ns + "version", "1.0"));
 
         _description.Add(_titleInfo);
         _description.Add(_documentInfo);
@@ -470,7 +444,7 @@ public class Fb2Builder : BuilderBase
 
         await _description.WriteToAsync(writer, cancellationToken);
         await _body.WriteToAsync(writer, cancellationToken);
-        foreach (var image in _images)
+        foreach (var image in _images.DistinctBy(image => ImageId(image.FullName)))
         {
             await WriteBinary(writer, image);
         }
