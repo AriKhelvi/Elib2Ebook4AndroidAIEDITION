@@ -18,6 +18,32 @@ public sealed class DownloadManagerTests : IDisposable
     }
 
     [Fact]
+    public void SavedFilesSummaryDistinguishesBookFromItsCover()
+    {
+        SavedFile[] files =
+        [
+            new() { Name = "Книга.epub" },
+            new() { Name = "Cover.jpg", Folder = "Книга/Images" },
+        ];
+
+        Assert.Equal("файлов книги: 1; дополнительных файлов: 1", DownloadManager.DescribeSavedFiles(files));
+    }
+
+    [Fact]
+    public void SavedFilesSummaryCountsFormatsButNotRootCoverOrNestedText()
+    {
+        SavedFile[] files =
+        [
+            new() { Name = "Книга.epub" },
+            new() { Name = "Книга.fb2" },
+            new() { Name = "Книга_cover.jpg" },
+            new() { Name = "Примечания.txt", Folder = "Книга/Other" },
+        ];
+
+        Assert.Equal("файлов книги: 2; дополнительных файлов: 2", DownloadManager.DescribeSavedFiles(files));
+    }
+
+    [Fact]
     public async Task CancelledWorkerStartingLateKeepsNewJobsPreview()
     {
         var manager = CreateManager();

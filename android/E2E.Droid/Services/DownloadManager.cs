@@ -82,6 +82,12 @@ public sealed class DownloadManager(
     /// <summary>Журнал ограничен, чтобы книга на тысячу глав не съела память.</summary>
     private const int MaxLogLines = 3000;
 
+    internal static string DescribeSavedFiles(IReadOnlyCollection<SavedFile> files)
+    {
+        var books = files.Count(file => file.IsBook);
+        return $"файлов книги: {books}; дополнительных файлов: {files.Count - books}";
+    }
+
     /// <summary>С «Подробным журналом» строк куда больше (каждое TLS-соединение) — и предел выше.</summary>
     private const int MaxDebugLogLines = 20000;
 
@@ -440,7 +446,7 @@ public sealed class DownloadManager(
                         history.Add(record);
                         lock (job.Saved) job.Saved.AddRange(saved);
                         DebugLine(job, $"Сохранено за {stage.ElapsedMilliseconds} мс: {string.Join("; ", saved.Select(f => $"{f.Folder}/{f.Name} {f.Size} байт {f.Mime} → {f.Uri}"))}");
-                        Write(job, $"Готово: {result.Title} ({saved.Count} файл(ов))");
+                        Write(job, $"Готово: {result.Title} ({DescribeSavedFiles(saved)})");
                     }
                     finally
                     {

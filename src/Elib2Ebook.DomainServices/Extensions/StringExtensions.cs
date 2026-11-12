@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Web;
@@ -75,7 +76,19 @@ public static class StringExtensions
     /// <returns></returns>
     public static string Crop(this string self, int lenght)
     {
-        return self.Length > lenght ? self[..lenght] : self;
+        ArgumentOutOfRangeException.ThrowIfNegative(lenght);
+        if (self.Length <= lenght) return self;
+
+        // Имя файла ограничено длиной в UTF-16, но граница должна сохранять
+        // целый символ, включая emoji с модификатором, флагом или ZWJ.
+        var end = 0;
+        while (end < lenght)
+        {
+            var next = end + StringInfo.GetNextTextElementLength(self.AsSpan(end));
+            if (next > lenght) break;
+            end = next;
+        }
+        return self[..end];
     }
 
     /// <summary>
