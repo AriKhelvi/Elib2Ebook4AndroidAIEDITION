@@ -19,6 +19,12 @@ public sealed class TlsProbeResult
     /// <summary>Сервер ответил (любой HTTP-статус) и сертификат принят политикой.</summary>
     public bool Ok { get; internal set; }
 
+    /// <summary>HTTP-статус ответа; null, если до ответа сервера не дошло.</summary>
+    public int? HttpStatusCode { get; internal set; }
+
+    /// <summary>Сервер ответил отказом или ошибкой; успешный TLS не означает доступность содержимого.</summary>
+    public bool HttpBlocked => HttpStatusCode >= 400;
+
     /// <summary>Рукопожатие дошло до проверки сертификата.</summary>
     public bool TlsSeen { get; internal set; }
 
@@ -142,9 +148,13 @@ public static class TlsProbe
         {
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
             result.Ok = true;
-            result.Outcome = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}, HTTP/{response.Version}, {sw.ElapsedMilliseconds} мс" +
+            result.HttpStatusCode = (int)response.StatusCode;
+            result.Outcome = (result.TlsSeen ? "TLS прошёл; " : string.Empty) +
+                             $"HTTP {result.HttpStatusCode} {response.ReasonPhrase}, HTTP/{response.Version}, {sw.ElapsedMilliseconds} мс" +
                              (response.Headers.Location != null ? $", перенаправляет на {response.Headers.Location}" : "") +
-                             (response.Headers.Server.Count > 0 ? $", сервер {response.Headers.Server}" : "");
+                             (response.Headers.Server.Count > 0 ? $", сервер {response.Headers.Server}" : "") +
+                             (result.HttpBlocked ? "; сервер отказал в доступе или вернул ошибку" : string.Empty) +
+                             "; этот HTTP-ответ не подтверждает работу загрузчика";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -169,7 +179,8 @@ public static class TlsProbe
         }
 
         result.ChainCompleted = result.Ok && result.SystemErrors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors);
-        result.Lines.Add($"[{(result.Ok ? "ok" : "FAIL")}] {url.IdnHost}{(hostHeader != null ? $" (Host: {hostHeader})" : "")} — {result.Outcome}");
+        var marker = !result.Ok ? "FAIL" : result.HttpBlocked ? "warn" : "ok";
+        result.Lines.Add($"[{marker}] {url.IdnHost}{(hostHeader != null ? $" (Host: {hostHeader})" : "")} — {result.Outcome}");
         if (dns != null)
         {
             result.Lines.Add($"      DNS: {dns}");

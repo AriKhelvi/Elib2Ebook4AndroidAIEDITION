@@ -331,8 +331,11 @@
 
                     <h3 class="section-label">Диагностика</h3>
                     <p class="supporting-text flush">
-                        Проверит устройство, сертификаты всех сайтов, обход блокировок по IP, прогресс сохранения, отмену и очистку файлов после ошибки. Скачает @DiagnosticsTestChapters главы пробной книги.
-                        Идёт в фоне — приложение можно свернуть. Журнал сохранится в «@Storage.DestinationLabel».
+                        Проверит устройство, сеть, сохранение файлов, FB2/EPUB, заголовки и прошлые журналы ошибок.
+                        Запросит до 10 глав: пробную текстовую книгу и примеры Rulate (100–101), Bllate, Litmarket и RanobeLib.
+                        Некоторые сайты возвращают весь текст одним ответом.
+                        Потребуется интернет. Через 3 минуты пример отменяется; завершение обработки может занять время. Временные книги удаляются.
+                        Идёт в фоне — приложение можно свернуть. Файл отчёта сохранится в «@Storage.DestinationLabel».
                     </p>
                     <div class="text-field">
                         <label class="text-field-label" for="debug-url">Пробная книга</label>
@@ -453,7 +456,6 @@
         ("socks5", "SOCKS5")
     ];
 
-    private const int DiagnosticsTestChapters = 2;
 
     private bool _showDebug;
     private static bool HasStartupLog => StartupLog.FailedLines().Count > 0;
