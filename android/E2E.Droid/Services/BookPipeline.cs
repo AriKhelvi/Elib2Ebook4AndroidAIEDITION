@@ -217,6 +217,7 @@ public static class BookPipeline
             // Полная загрузка: главы, картинки (если не выбрано «без картинок»), диапазон глав из options.Start/End
             using var book = await getter.Get(url);
             ct.ThrowIfCancellationRequested();
+            if (!options.NoChapters) CheckDownloadedContent(book, logger);
 
             // Один и тот же Book собирается во все выбранные форматы; файлы пишутся в options.SavePath
             foreach (var format in options.Format)
@@ -247,11 +248,18 @@ public static class BookPipeline
         }
     }
 
-    /// <summary>
-    /// Как в веб-версии: сначала быстрый проход без глав, чтобы сразу показать карточку книги.
-    /// Карточка — только украшение: любая её ошибка (сайт не отдал обложку, таймаут, сбой разбора) пишется
-    /// в журнал, а книга скачивается дальше. Пробрасывается только отмена.
-    /// </summary>
+    /// <summary>Возвращённые пустые главы не должны исчезать без предупреждения.</summary>
+    internal static void CheckDownloadedContent(Book book, ILogger logger)
+    {
+        var chapters = book.Chapters.ToList();
+        var missing = chapters.Where(c => !c.IsValid && !c.Images.Any()).ToList();
+        if (chapters.Count == missing.Count)
+            throw new InvalidOperationException("Не получено ни одной главы. Проверьте доступ к книге, выбранный диапазон и журнал; пустой файл не будет сохранён.");
+        foreach (var chapter in missing)
+            logger.LogWarning("Не получен текст главы «{Title}». Она не войдёт в книгу; возможно, требуется доступ на сайте.", chapter.Title ?? "без названия");
+    }
+
+    /// <summary>Ошибку необязательной карточки пишем в журнал, затем пробуем полную загрузку.</summary>
     private static async Task TryPreviewAsync(GetterBase getter, Uri url, Options options, ILogger logger, Action<BookPreview> onPreview, CancellationToken ct)
     {
         // Доп. файлы (иллюстрации, аудио, оригиналы) карточке не нужны, а часть загрузчиков качает их,
