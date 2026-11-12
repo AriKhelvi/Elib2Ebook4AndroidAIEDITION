@@ -6,6 +6,7 @@ using Elib2Ebook.Domain.Book;
 using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
+using Elib2Ebook.DomainServices.Misc;
 using EpubSharp;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
@@ -47,27 +48,58 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
     /// <returns></returns>
     protected async Task<TempFile> SaveImage(Uri uri)
     {
+        var label = uri.Scheme == "data" ? "встроенное изображение" : LogText.Clean(uri.ToString());
         try
         {
-            Config.Logger.LogInformation($"Загружаю картинку {uri}");
-            using var response = await Config.Client.SendWithTriesAsync(() => GetImageRequestMessage(uri));
-            Config.Logger.LogInformation($"Загружена картинка {response.RequestMessage!.RequestUri}");
-            if (response is not { StatusCode: HttpStatusCode.OK })
+            Config.Logger.LogInformation($"Загружаю картинку {label}");
+            if (uri.Scheme == "data")
             {
-                Console.WriteLine(response.StatusCode);
-                return null;
+                var data = uri.OriginalString;
+                var comma = data.IndexOf(',');
+                if (comma < 0 || comma > 128) throw new FormatException("Некорректный заголовок встроенного изображения");
+                var header = data[5..comma];
+                var mime = header.Split(';')[0].ToLowerInvariant();
+                var embeddedExtension = mime switch
+                {
+                    "image/jpeg" => ".jpg", "image/png" => ".png", "image/gif" => ".gif",
+                    "image/webp" => ".webp", "image/svg+xml" => ".svg", "image/bmp" => ".bmp",
+                    _ => throw new FormatException("Неподдерживаемый тип встроенного изображения")
+                };
+                if (!header.EndsWith(";base64", StringComparison.OrdinalIgnoreCase))
+                    throw new FormatException("Встроенное изображение должно быть в формате base64");
+                // Предохраняет от чрезмерного выделения памяти при повреждённой странице.
+                if (data.Length - comma > 32 * 1024 * 1024) throw new FormatException("Встроенное изображение слишком большое (более 24 МБ)");
+                var bytes = Convert.FromBase64String(data[(comma + 1)..]);
+                if (bytes.Length == 0) throw new FormatException("Пустое встроенное изображение");
+                var embedded = await TempFile.Create(uri, Config.TempFolder.Path, Guid.NewGuid() + embeddedExtension, bytes);
+                Config.Logger.LogInformation($"Загружена картинка: {label} ({bytes.Length} байт)");
+                return embedded;
             }
+            if (uri.Scheme is not ("http" or "https")) throw new FormatException("Неподдерживаемая схема адреса изображения");
+            using var response = await Config.Client.SendWithTriesAsync(() => GetImageRequestMessage(uri));
+            response.EnsureDownloadSuccess();
+            if (response.Content.Headers.ContentType?.MediaType is "text/html" or "application/json")
+                throw new FormatException("Сайт вернул страницу ошибки вместо изображения");
 
             await using var stream = await response.Content.ReadAsStreamAsync();
 
-            var extension = Path.GetExtension(uri.GetFileName());
+            var extension = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() switch
+            {
+                "image/jpeg" => ".jpg", "image/png" => ".png", "image/gif" => ".gif",
+                "image/webp" => ".webp", "image/svg+xml" => ".svg", "image/bmp" => ".bmp",
+                _ => Path.GetExtension(uri.GetFileName())
+            };
             var fullName = Guid.NewGuid() + (string.IsNullOrWhiteSpace(extension) ? ".jpg" : extension);
 
-            return await TempFile.Create(uri, Config.TempFolder.Path, fullName, stream);
+            var image = await TempFile.Create(uri, Config.TempFolder.Path, fullName, stream);
+            if (image == null) throw new FormatException("Сайт вернул пустое изображение");
+            Config.Logger.LogInformation($"Загружена картинка {label}");
+            return image;
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Console.WriteLine(ex);
+            Config.Logger.LogWarning($"Не удалось загрузить изображение {label}: {LogText.Clean(ex.Message)}");
             return null;
         }
     }
@@ -103,6 +135,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
 
                 if (!Uri.TryCreate(baseUri, path, out var uri))
                 {
+                    Config.Logger.LogWarning("Не удалось загрузить изображение: некорректный адрес");
                     toRemove.Add(img);
                     return;
                 }

@@ -45,17 +45,21 @@ public class TempFile : IDisposable
 
     public static async Task<TempFile> Create(Uri url, string directory, string name, string extension, Stream stream)
     {
-        if (stream.Length == 0)
+        if (stream.CanSeek && stream.Length == 0)
         {
             return null;
         }
 
         var tempFile = new TempFile(url, directory, name, extension);
 
-        await using var file = File.OpenWrite(tempFile.FilePath);
-        await stream.CopyToAsync(file);
+        await using (var file = File.Create(tempFile.FilePath))
+        {
+            await stream.CopyToAsync(file);
+            if (file.Length > 0) return tempFile;
+        }
+        tempFile.Dispose();
 
-        return tempFile;
+        return null;
     }
 
     public Stream GetStream()
