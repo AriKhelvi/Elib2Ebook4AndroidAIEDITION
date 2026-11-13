@@ -48,7 +48,7 @@ public class ChapterTextCacheTests : IDisposable
     }
 
     [Fact]
-    public async Task AlteredContentAndExpiredEntryAreNotReturned()
+    public async Task AlteredContentAndUnsupportedFormatAreNotReturned()
     {
         await Cache.WriteAsync(Book, "1", null, "исходный текст");
         var path = Assert.Single(Directory.GetFiles(_directory));
@@ -59,9 +59,25 @@ public class ChapterTextCacheTests : IDisposable
 
         await Cache.WriteAsync(Book, "1", null, "новый текст");
         entry = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
-        entry["Created"] = DateTimeOffset.UtcNow - ChapterTextCache.Lifetime - TimeSpan.FromMinutes(1);
+        entry["Version"] = 2;
         await File.WriteAllTextAsync(path, entry.ToJsonString());
         Assert.Null(await Cache.ReadAsync(Book, "1", null));
+    }
+
+    [Fact]
+    public async Task OldValidFormatSurvivesUpgradeAndReadRefreshesLru()
+    {
+        await Cache.WriteAsync(Book, "1", null, "готовая глава");
+        var path = Assert.Single(Directory.GetFiles(_directory));
+        var entry = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        entry["Created"] = DateTimeOffset.UtcNow.AddYears(-1);
+        await File.WriteAllTextAsync(path, entry.ToJsonString());
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddYears(-1));
+        var before = DateTime.UtcNow.AddSeconds(-1);
+
+        Assert.Equal("готовая глава", await new ChapterTextCache(_directory, NullLogger.Instance).ReadAsync(Book, "1", null));
+        Assert.True(File.GetLastWriteTimeUtc(path) >= before);
+        Assert.Equal(1, JsonNode.Parse(await File.ReadAllTextAsync(path))!["Version"]!.GetValue<int>());
     }
 
     [Fact]
@@ -74,15 +90,16 @@ public class ChapterTextCacheTests : IDisposable
     }
 
     [Fact]
-    public async Task OversizedTextIsNotStoredAndExpiredFilesArePruned()
+    public async Task OversizedTextIsNotStoredButOldUsefulTextIsRetained()
     {
         await Cache.WriteAsync(Book, "1", null, new string('x', ChapterTextCache.MaxEntryBytes + 1));
         Assert.False(Directory.Exists(_directory));
         await Cache.WriteAsync(Book, "1", null, "старый текст");
         var old = Assert.Single(Directory.GetFiles(_directory));
-        File.SetLastWriteTimeUtc(old, DateTime.UtcNow - ChapterTextCache.Lifetime - TimeSpan.FromDays(1));
+        File.SetLastWriteTimeUtc(old, DateTime.UtcNow.AddYears(-1));
         await Cache.WriteAsync(Book, "2", null, "новый текст");
-        Assert.False(File.Exists(old));
+        Assert.True(File.Exists(old));
+        Assert.Equal("старый текст", await Cache.ReadAsync(Book, "1", null));
         Assert.Equal("новый текст", await Cache.ReadAsync(Book, "2", null));
         Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
     }
@@ -116,6 +133,82 @@ public class ChapterTextCacheTests : IDisposable
         await cache.WriteAsync(Book, "1", null, "текст");
         Assert.Null(await cache.ReadAsync(Book, "1", null));
         Assert.Equal("занято", await File.ReadAllTextAsync(notDirectory));
+    }
+
+    [Fact]
+    public async Task EntryLimitEvictsLeastRecentlyUsedAndKeepsJustReadText()
+    {
+        await Cache.WriteAsync(Book, "1", null, "прочитанная глава");
+        var readPath = Assert.Single(Directory.GetFiles(_directory));
+        await Cache.WriteAsync(Book, "2", null, "давно не использованная глава");
+        var oldPath = Directory.GetFiles(_directory).Single(path => path != readPath);
+        File.SetLastWriteTimeUtc(readPath, DateTime.UtcNow.AddYears(-2));
+        File.SetLastWriteTimeUtc(oldPath, DateTime.UtcNow.AddYears(-1));
+        for (var i = 2; i < ChapterTextCache.MaxEntries; i++)
+            await File.WriteAllTextAsync(Path.Combine(_directory, $"filler-{i}.chapter.json"), "x");
+        Assert.NotNull(await Cache.ReadAsync(Book, "1", null));
+
+        await Cache.WriteAsync(Book, "3", null, "новая глава");
+
+        Assert.Null(await Cache.ReadAsync(Book, "2", null));
+        Assert.Equal("прочитанная глава", await Cache.ReadAsync(Book, "1", null));
+        Assert.Equal("новая глава", await Cache.ReadAsync(Book, "3", null));
+        Assert.Equal(ChapterTextCache.MaxEntries, Directory.GetFiles(_directory).Length);
+    }
+
+    [Fact]
+    public async Task MigrationKeepsNewValidEntryAndMovesOtherLegacyEntries()
+    {
+        var legacy = Path.Combine(_directory, "legacy");
+        var oldCache = new ChapterTextCache(legacy, NullLogger.Instance);
+        await oldCache.WriteAsync(Book, "1", null, "старая версия главы");
+        await oldCache.WriteAsync(Book, "2", null, "завершённая глава до обновления");
+        await Cache.WriteAsync(Book, "1", null, "новая версия главы");
+        await File.WriteAllTextAsync(Path.Combine(legacy, "unrelated.txt"), "не трогать");
+        await File.WriteAllTextAsync(Path.Combine(legacy, "unfinished.tmp"), "неполная запись");
+
+        await ChapterTextCache.MigrateAsync(legacy, _directory, NullLogger.Instance);
+
+        Assert.Equal("новая версия главы", await Cache.ReadAsync(Book, "1", null));
+        Assert.Equal("завершённая глава до обновления", await Cache.ReadAsync(Book, "2", null));
+        Assert.Empty(Directory.GetFiles(legacy, "*.chapter.json"));
+        Assert.Equal("не трогать", await File.ReadAllTextAsync(Path.Combine(legacy, "unrelated.txt")));
+        Assert.True(File.Exists(Path.Combine(legacy, "unfinished.tmp")));
+    }
+
+    [Fact]
+    public async Task InterruptedOrUnavailableMigrationPreservesLegacyData()
+    {
+        var legacy = Path.Combine(_directory, "legacy");
+        var oldCache = new ChapterTextCache(legacy, NullLogger.Instance);
+        await oldCache.WriteAsync(Book, "1", null, "завершённая глава");
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ChapterTextCache.MigrateAsync(legacy, _directory, NullLogger.Instance, cancellation.Token));
+        var blocked = Path.Combine(_directory, "blocked");
+        await File.WriteAllTextAsync(blocked, "занято");
+        await ChapterTextCache.MigrateAsync(legacy, blocked, NullLogger.Instance);
+        Assert.Equal("завершённая глава", await oldCache.ReadAsync(Book, "1", null));
+    }
+
+    [Fact]
+    public async Task MigrationRejectsDamagedLegacyEntryAndRepairsDamagedDestination()
+    {
+        var legacy = Path.Combine(_directory, "legacy");
+        var oldCache = new ChapterTextCache(legacy, NullLogger.Instance);
+        await oldCache.WriteAsync(Book, "1", null, "готовая глава");
+        var source = Assert.Single(Directory.GetFiles(legacy));
+        var target = Path.Combine(_directory, Path.GetFileName(source));
+        await File.WriteAllTextAsync(target, "{broken");
+        await ChapterTextCache.MigrateAsync(legacy, _directory, NullLogger.Instance);
+        Assert.Equal("готовая глава", await Cache.ReadAsync(Book, "1", null));
+
+        await oldCache.WriteAsync(Book, "2", null, "повреждённый источник");
+        source = Assert.Single(Directory.GetFiles(legacy));
+        await File.WriteAllTextAsync(source, "{broken");
+        await ChapterTextCache.MigrateAsync(legacy, _directory, NullLogger.Instance);
+        Assert.Null(await Cache.ReadAsync(Book, "2", null));
+        Assert.True(File.Exists(source));
     }
 
     public void Dispose()

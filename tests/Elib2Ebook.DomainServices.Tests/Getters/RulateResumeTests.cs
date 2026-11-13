@@ -31,6 +31,13 @@ public class RulateResumeTests : IDisposable
         Assert.Equal(new[] { "2", "3" }, second.Chapters);
         Assert.Equal(new[] { "Глава 1", "Глава 2", "Глава 3" }, book.Chapters.Select(chapter => chapter.Title));
         Assert.All(book.Chapters, chapter => Assert.Contains("Текст", chapter.Content));
+
+        var completed = new FakeHandler();
+        using var nextLaunch = Getter(completed, host: host);
+        using var repeatedBook = await nextLaunch.Get(bookUri);
+        Assert.Equal(1, completed.TocRequests);
+        Assert.Empty(completed.Chapters);
+        Assert.Equal(3, repeatedBook.Chapters.Count());
     }
 
     [Fact]

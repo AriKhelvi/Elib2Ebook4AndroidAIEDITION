@@ -11,7 +11,7 @@ public sealed class ChapterTextCache(string directory, ILogger logger)
     public const long MaxBytes = 64 * 1024 * 1024;
     public const int MaxEntryBytes = 2 * 1024 * 1024;
     public const int MaxEntries = 2048;
-    public static readonly TimeSpan Lifetime = TimeSpan.FromDays(7);
+    private const string Suffix = ".chapter.json";
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     public bool Enabled => !string.IsNullOrWhiteSpace(directory);
@@ -24,20 +24,14 @@ public sealed class ChapterTextCache(string directory, ILogger logger)
         try
         {
             var key = Key(book, chapterId, account);
-            var path = Path.Combine(directory, key + ".chapter.json");
+            var path = Path.Combine(directory, key + Suffix);
             if (!File.Exists(path)) return null;
-            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-            if (stream.Length <= 0 || stream.Length > MaxEntryBytes)
-                throw new InvalidDataException("неверный размер записи");
-            var bytes = new byte[(int)stream.Length];
-            await stream.ReadExactlyAsync(bytes, ct);
-            var entry = JsonSerializer.Deserialize<Entry>(bytes);
-            if (entry == null || entry.Version != 1 || entry.Key != key || string.IsNullOrWhiteSpace(entry.Html) ||
-                entry.Hash != Hash(entry.Html))
-                throw new InvalidDataException("повреждённая запись");
-            if (DateTimeOffset.UtcNow - entry.Created > Lifetime || entry.Created > DateTimeOffset.UtcNow.AddMinutes(5))
-                return null;
+            var entry = await ReadEntryAsync(path, key, ct);
             ct.ThrowIfCancellationRequested();
+            // Возраст сам по себе не требует повторного скачивания; вытесняются давно не использованные главы.
+            try { File.SetLastWriteTimeUtc(path, DateTime.UtcNow); }
+            catch (Exception ex) when (IsCacheError(ex))
+            { logger.LogDebug("Не обновлено время использования кэша ({Reason}).", ex.GetType().Name); }
             return entry.Html;
         }
         catch (OperationCanceledException) { throw; }
@@ -70,7 +64,7 @@ public sealed class ChapterTextCache(string directory, ILogger logger)
                 return;
             }
             Directory.CreateDirectory(directory);
-            var path = Path.Combine(directory, key + ".chapter.json");
+            var path = Path.Combine(directory, key + Suffix);
             // Резервируем место до записи: если старые файлы удалить нельзя, кэш не растёт без предела.
             Prune(bytes.Length, path);
             temporary = Path.Combine(directory, key + "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -96,29 +90,115 @@ public sealed class ChapterTextCache(string directory, ILogger logger)
         }
     }
 
-    private void Prune(int incomingBytes, string replacementPath)
+    private bool Prune(int incomingBytes, string replacementPath, DateTime? incomingLastUsed = null)
     {
-        var cutoff = DateTime.UtcNow - Lifetime;
         var files = new List<FileInfo>();
-        foreach (var file in new DirectoryInfo(directory).EnumerateFiles("*.chapter.json"))
+        foreach (var file in new DirectoryInfo(directory).EnumerateFiles("*" + Suffix))
         {
-            if (file.LastWriteTimeUtc < cutoff || file.Length > MaxEntryBytes) file.Delete();
+            if (file.Length > MaxEntryBytes) file.Delete();
             else if (!string.Equals(file.FullName, Path.GetFullPath(replacementPath), StringComparison.OrdinalIgnoreCase)) files.Add(file);
         }
         long size = files.Sum(file => file.Length) + incomingBytes;
         var count = files.Count + 1;
+        var remove = new List<FileInfo>();
         foreach (var file in files.OrderBy(file => file.LastWriteTimeUtc))
         {
             if (size <= MaxBytes && count <= MaxEntries) break;
+            // Старый кэш не вытесняет более свежие главы, уже перенесённые/скачанные новой версией.
+            if (incomingLastUsed.HasValue && file.LastWriteTimeUtc >= incomingLastUsed.Value) return false;
             size -= file.Length;
             count--;
-            file.Delete();
+            remove.Add(file);
         }
+        foreach (var file in remove) file.Delete();
         // Gate не допускает параллельных записей этого приложения; это остатки прерванных попыток.
         foreach (var file in new DirectoryInfo(directory).EnumerateFiles("*.tmp")) file.Delete();
+        return true;
     }
 
-    /// <summary>Вызывать после успешного копирования книги. account — логин либо null для скачивания без входа.</summary>
+    /// <summary>Переносит валидные записи v1 из прежней папки; формат и ключи не зависят от версии приложения.</summary>
+    public static async Task MigrateAsync(string previousDirectory, string directory, ILogger logger, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(previousDirectory) || string.IsNullOrWhiteSpace(directory)) return;
+        await Gate.WaitAsync(ct);
+        try
+        {
+            if (!Directory.Exists(previousDirectory) ||
+                string.Equals(Path.GetFullPath(previousDirectory), Path.GetFullPath(directory), StringComparison.OrdinalIgnoreCase)) return;
+            Directory.CreateDirectory(directory);
+            var cache = new ChapterTextCache(directory, logger);
+            foreach (var source in new DirectoryInfo(previousDirectory).EnumerateFiles("*" + Suffix).OrderByDescending(file => file.LastWriteTimeUtc))
+            {
+                ct.ThrowIfCancellationRequested();
+                string temporary = null;
+                try
+                {
+                    if ((source.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    var key = source.Name[..^Suffix.Length];
+                    var parts = key.Split('-');
+                    if (parts.Length != 2 || parts.Any(part => part.Length != 64 || part.Any(character => !Uri.IsHexDigit(character)))) continue;
+                    var entry = await ReadEntryAsync(source.FullName, key, ct);
+                    var path = Path.Combine(directory, source.Name);
+                    if (File.Exists(path))
+                    {
+                        try
+                        {
+                            await ReadEntryAsync(path, key, ct);
+                            source.Delete(); // Действующая запись назначения всегда имеет приоритет.
+                            continue;
+                        }
+                        catch (Exception ex) when (ex is InvalidDataException or JsonException) { }
+                    }
+                    var bytes = JsonSerializer.SerializeToUtf8Bytes(entry);
+                    if (bytes.Length > MaxEntryBytes) throw new InvalidDataException("неверный размер записи после переноса");
+                    var lastUsed = source.LastWriteTimeUtc > DateTime.UtcNow ? DateTime.UtcNow : source.LastWriteTimeUtc;
+                    if (!cache.Prune(bytes.Length, path, lastUsed))
+                    {
+                        source.Delete(); // Вытеснение по лимиту: более свежие главы остаются в новой папке.
+                        continue;
+                    }
+                    temporary = Path.Combine(directory, key + "." + Guid.NewGuid().ToString("N") + ".tmp");
+                    await File.WriteAllBytesAsync(temporary, bytes, ct);
+                    ct.ThrowIfCancellationRequested();
+                    File.Move(temporary, path, true);
+                    temporary = null;
+                    File.SetLastWriteTimeUtc(path, lastUsed);
+                    source.Delete();
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) when (IsCacheError(ex))
+                { logger.LogWarning("Старая запись кэша не перенесена ({Reason}); скачивание продолжается.", ex.GetType().Name); }
+                finally
+                {
+                    if (temporary != null)
+                    {
+                        try { File.Delete(temporary); }
+                        catch (Exception ex) when (IsCacheError(ex)) { }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (IsCacheError(ex))
+        { logger.LogWarning("Старый кэш не перенесён ({Reason}); скачивание продолжается.", ex.GetType().Name); }
+        finally { Gate.Release(); }
+    }
+
+    private static async Task<Entry> ReadEntryAsync(string path, string key, CancellationToken ct)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (stream.Length <= 0 || stream.Length > MaxEntryBytes) throw new InvalidDataException("неверный размер записи");
+        var bytes = new byte[(int)stream.Length];
+        await stream.ReadExactlyAsync(bytes, ct);
+        var entry = JsonSerializer.Deserialize<Entry>(bytes);
+        if (entry == null || entry.Version != 1 || entry.Key != key || string.IsNullOrWhiteSpace(entry.Html) ||
+            entry.Hash != Hash(entry.Html) || entry.Created > DateTimeOffset.UtcNow.AddMinutes(5))
+            throw new InvalidDataException("повреждённая запись");
+        return entry;
+    }
+
+    /// <summary>Явная инвалидация книги. account — логин либо null; успешное сохранение книги кэш не удаляет.</summary>
     public static async Task ClearBookAsync(string directory, Uri book, string account, ILogger logger, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();

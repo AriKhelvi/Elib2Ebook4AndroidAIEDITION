@@ -415,6 +415,8 @@ public sealed class DownloadManager(
                         if (job.Warnings.Count < 50) job.Warnings.Add(LogText.Clean($"{url}: {line}"));
                     }
                 });
+                await ChapterTextCache.MigrateAsync(Path.Combine(FileSystem.CacheDirectory, "chapter-cache"),
+                    options.ChapterCachePath, logger, ct);
                 DebugLine(job, $"Параметры ядра: формат {string.Join(",", options.Format)}, главы {options.Start?.ToString() ?? "-"}..{options.End?.ToString() ?? "-"}" +
                                $" ({options.StartName ?? "-"}..{options.EndName ?? "-"}), без картинок {options.NoImage}, обложка {options.Cover}, " +
                                $"доп. файлы {options.Additional} [{string.Join(",", options.AdditionalTypes ?? [])}], таймаут {options.Timeout} с, " +
@@ -478,11 +480,6 @@ public sealed class DownloadManager(
                         lock (job.Saved) job.Saved.AddRange(saved);
                         DebugLine(job, $"Сохранено за {stage.ElapsedMilliseconds} мс: {string.Join("; ", saved.Select(f => $"{f.Folder}/{f.Name} {f.Size} байт {f.Mime} → {f.Uri}"))}");
                         Write(job, $"Готово: {result.Title} ({DescribeSavedFiles(saved)})");
-                        if (Uri.TryCreate(result.Info.Url, UriKind.Absolute, out var canonicalUrl))
-                            await Elib2Ebook.DomainServices.Misc.ChapterTextCache.ClearBookAsync(
-                                options.ChapterCachePath, canonicalUrl,
-                                !string.IsNullOrWhiteSpace(options.Login) && !string.IsNullOrWhiteSpace(options.Password)
-                                    ? options.Login : null, logger);
                     }
                     finally
                     {
@@ -707,7 +704,7 @@ public sealed class DownloadManager(
             Additional = settings.Additional,
             AdditionalTypes = additionalTypes,
             BookNamePattern = settings.BookNamePattern,
-            ChapterCachePath = settings.ResumeDownloads ? Path.Combine(FileSystem.CacheDirectory, "chapter-cache") : null,
+            ChapterCachePath = Path.Combine(FileSystem.AppDataDirectory, "chapter-cache"),
             SavePath = Path.Combine(workDir, "out"), // сюда билдеры пишут готовые файлы
             TempPath = Path.Combine(workDir, "tmp")  // сюда ядро складывает скачанные картинки
         };
