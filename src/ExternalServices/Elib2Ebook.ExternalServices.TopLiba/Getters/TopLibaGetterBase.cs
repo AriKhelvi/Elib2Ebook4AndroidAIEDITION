@@ -93,7 +93,7 @@ public abstract class TopLibaGetterBase(BookGetterConfig config) : GetterBase(co
             var content = await GetChapter(bookId, id, token);
             if (content.StartsWith("{\"status\":\"error\""))
             {
-                Config.Logger.LogInformation($"Часть {id} заблокирована");
+                Config.Logger.LogWarning($"Часть {id} не загружена: сайт вернул ошибку вместо текста. Книга сохранится без этой части.");
                 continue;
             }
 
@@ -115,7 +115,8 @@ public abstract class TopLibaGetterBase(BookGetterConfig config) : GetterBase(co
 
     private async Task<string> GetChapter(string bookId, string id, string token)
     {
-        var data = await Config.Client.PostWithTriesAsync(SystemUrl.MakeRelativeUri($"/reader/{bookId}/chapter"), GetData(id, token));
+        using var data = await Config.Client.PostWithTriesAsync(SystemUrl.MakeRelativeUri($"/reader/{bookId}/chapter"), GetData(id, token));
+        data.EnsureDownloadSuccess();
         return await data.Content.ReadAsStringAsync();
     }
 

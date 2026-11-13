@@ -57,13 +57,19 @@ public abstract class NovelxoGetterBase(BookGetterConfig config) : GetterBase(co
         }
 
         var start = url.MakeRelativeUri(doc.QuerySelector("div.actions a.read").Attributes["href"].Value);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
 
         while (true)
         {
+            var pageKey = start.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
+            if (!visited.Add(pageKey))
+                throw new InvalidOperationException($"Novelxo повторил ссылку на главу {start}. Загрузка остановлена, чтобы не сохранить дубли и неполную книгу.");
             var sb = new StringBuilder();
             doc = await Config.Client.GetHtmlDocWithTriesAsync(start);
 
             var container = doc.QuerySelector("div.readerbody-wg");
+            if (container == null)
+                throw new InvalidOperationException($"Novelxo не вернул содержимое главы {start}. Возможно, доступ ограничен или формат страницы изменился.");
             foreach (var node in container.QuerySelectorAll("p, div.ctp"))
             {
                 if (node.Name == "p")
@@ -96,7 +102,8 @@ public abstract class NovelxoGetterBase(BookGetterConfig config) : GetterBase(co
             var next = doc.QuerySelector("div.readernav-wg a.next");
             if (next == null)
             {
-                return result;
+                // Отдельного оглавления нет: порядок известен после обхода цепочки.
+                return SliceToc(result, chapter => chapter.Title).ToList();
             }
 
             start = start.MakeRelativeUri(next.Attributes["href"].Value);

@@ -54,9 +54,50 @@ public sealed class AppSettings
     /// <summary>Таймаут одного запроса в секундах (--timeout, по умолчанию 120).</summary>
     public int Timeout
     {
-        get => P.Get(nameof(Timeout), 120);
-        set => Set(nameof(Timeout), Math.Clamp(value, 5, 3600));
+        get => Math.Clamp(P.Get(nameof(Timeout), 120), 5, 3600);
+        set
+        {
+            var seconds = Math.Clamp(value, 5, 3600);
+            var mode = TimeoutPreset(seconds);
+            var custom = mode == 4 ? seconds : CustomTimeoutSeconds;
+            P.Set(nameof(TimeoutMode), mode);
+            P.Set(nameof(CustomTimeoutSeconds), custom);
+            Set(nameof(Timeout), seconds);
+        }
     }
+
+    /// <summary>60, 120, 240 секунд или своё значение. Старый Timeout определяет режим без сброса.</summary>
+    public int TimeoutMode
+    {
+        get => P.Get(nameof(TimeoutMode), 0) == 4 ? 4 : TimeoutPreset(Timeout);
+        set
+        {
+            var mode = Math.Clamp(value, 1, 4);
+            // При первом переключении сохраняем прежний произвольный Timeout отдельно.
+            var custom = CustomTimeoutSeconds;
+            P.Set(nameof(CustomTimeoutSeconds), custom);
+            P.Set(nameof(TimeoutMode), mode);
+            Set(nameof(Timeout), mode switch { 1 => 60, 2 => 120, 3 => 240, _ => custom });
+        }
+    }
+
+    /// <summary>Своя длительность ожидания запроса; сохраняется при переключении на стандартные режимы.</summary>
+    public int CustomTimeoutSeconds
+    {
+        get => Math.Clamp(P.Get(nameof(CustomTimeoutSeconds), Timeout), 5, 3600);
+        set
+        {
+            var seconds = Math.Clamp(value, 5, 3600);
+            if (TimeoutMode == 4)
+            {
+                P.Set(nameof(TimeoutMode), 4);
+                P.Set(nameof(Timeout), seconds);
+            }
+            Set(nameof(CustomTimeoutSeconds), seconds);
+        }
+    }
+
+    private static int TimeoutPreset(int seconds) => seconds switch { 60 => 1, 120 => 2, 240 => 3, _ => 4 };
 
     /// <summary>Пауза между запросами в секундах (--delay) — для сайтов, которые не любят частые запросы.</summary>
     public int Delay

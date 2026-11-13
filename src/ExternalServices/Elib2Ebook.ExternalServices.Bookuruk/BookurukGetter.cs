@@ -63,12 +63,15 @@ public class BookurukGetter(BookGetterConfig config) : GetterBase(config)
         url = await GetMainUrl(url);
         url = SystemUrl.MakeRelativeUri($"/book/{GetId(url)}");
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
+        var title = doc.GetTextBySelector("h1");
+        if (string.IsNullOrWhiteSpace(title))
+            throw new InvalidOperationException($"Bookuruk не вернул карточку книги ({url}); не найдено название.");
 
         var book = new Book(url)
         {
             Cover = await GetCover(doc, url),
             Chapters = await FillChapters(doc, url),
-            Title = doc.GetTextBySelector("h1"),
+            Title = title,
             Author = GetAuthor(doc),
             Annotation = doc.QuerySelector("div.single-prew__desc_anot")?.RemoveNodes(" > b")?.InnerHtml
         };
@@ -78,7 +81,12 @@ public class BookurukGetter(BookGetterConfig config) : GetterBase(config)
 
     private Author GetAuthor(HtmlDocument doc)
     {
-        var a = doc.QuerySelector("a.bookcard_author + a");
+        var a = doc.QuerySelector("a.bookcard_author + a") ?? doc.QuerySelector("a.bookcard_author[href]");
+        if (a == null || string.IsNullOrWhiteSpace(a.GetText()))
+        {
+            Config.Logger.LogWarning("Bookuruk не указал автора в ожидаемом блоке; в метаданных использовано название сайта");
+            return new Author("Bookuruk");
+        }
         var href = a.Attributes["href"]?.Value;
         return string.IsNullOrWhiteSpace(href) ?
             new Author(a.GetText()) :
@@ -98,13 +106,19 @@ public class BookurukGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<IEnumerable<UrlChapter>> GetToc(HtmlDocument doc, Uri url)
     {
-        var internalId = SystemUrl.MakeRelativeUri(doc.QuerySelectorAll("div.content.aside-right li a")[1].Attributes["href"].Value).GetSegment(2);
+        var links = doc.QuerySelectorAll("div.content.aside-right li a[href]");
+        if (links.Count < 2)
+            throw new InvalidOperationException($"Bookuruk не вернул ссылку на оглавление ({url}); возможно изменение разметки или ограничение доступа.");
+        var internalId = SystemUrl.MakeRelativeUri(links[1].Attributes["href"].Value).GetSegment(2);
         doc = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"/book/chapters/{internalId}"));
 
         var result = doc
             .QuerySelectorAll("a.read-chapters-item")
             .Select(a => new UrlChapter(url.MakeRelativeUri(a.Attributes["href"].Value), a.GetText()))
             .ToList();
+
+        if (result.Count == 0)
+            throw new InvalidOperationException($"Bookuruk не вернул доступных глав ({url}); пустая книга не будет сохранена.");
 
         return SliceToc(result, c => c.Title);
     }
@@ -142,7 +156,9 @@ public class BookurukGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HtmlDocument> GetChapter(Uri url)
     {
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
-        return doc.QuerySelector("div.read-area").InnerHtml.AsHtmlDoc();
+        var content = doc.QuerySelector("div.read-area")
+            ?? throw new InvalidOperationException($"Bookuruk не вернул текст главы ({url}); возможно ограничение доступа или изменение разметки.");
+        return content.InnerHtml.AsHtmlDoc();
     }
 
     private Task<TempFile> GetCover(HtmlDocument doc, Uri uri)

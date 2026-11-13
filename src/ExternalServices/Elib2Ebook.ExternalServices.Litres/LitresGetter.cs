@@ -9,6 +9,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.ExternalServices.Litres.Types;
 using Elib2Ebook.ExternalServices.Litres.Types.Requests;
 using Elib2Ebook.ExternalServices.Litres.Types.Response;
@@ -390,7 +391,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                     var response = await Config.Client.GetAsync(uri);
                     if (response.StatusCode == HttpStatusCode.OK && response.Headers.AcceptRanges.Count != 0)
                     {
-                        Config.Logger.LogInformation($"Дополнительный файл доступен по ссылке {uri}");
+                        Config.Logger.LogInformation(LogText.Clean($"Дополнительный файл доступен по ссылке {uri}"));
                         return response;
                     }
                 }
@@ -403,7 +404,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HttpResponseMessage> GetShortBook(LitresArt art)
     {
         var shortUri = GetShortUri(art);
-        Config.Logger.LogInformation($"Дополнительный файл доступен по ссылке {shortUri}");
+        Config.Logger.LogInformation(LogText.Clean($"Дополнительный файл доступен по ссылке {shortUri}"));
         return await Config.Client.GetAsync(shortUri);
     }
 

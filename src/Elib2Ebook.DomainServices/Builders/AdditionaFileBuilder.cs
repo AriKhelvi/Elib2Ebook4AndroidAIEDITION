@@ -52,7 +52,9 @@ public class AdditionaFileBuilder(Options options, ILogger logger)
 
             logger.LogInformation("Сохранение изображений из книги завешено");
 
-            if (book.Cover != null)
+            // Флаг отдельной обложки действует и на экспорт дополнительных изображений.
+            // Встроенную обложку EPUB/FB2 он не меняет.
+            if (options.Cover && book.Cover != null)
             {
                 var subPath = Path.Combine(additionalPath, AdditionalTypeEnum.Images.ToString());
                 CreateDirectory(subPath);

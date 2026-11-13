@@ -623,6 +623,23 @@ button.assist-chip:active::after,
     border-radius: 24px;
 }
 
+/* Подписи действий в настройках читаются целиком и при крупном системном шрифте. */
+.settings-page .btn {
+    min-height: 40px;
+    height: auto;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    white-space: normal;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.settings-page .btn-block {
+    min-height: 48px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
 .icon-button {
     position: relative;
     overflow: hidden;
@@ -739,6 +756,146 @@ button.assist-chip:active::after,
 
 .text-field.has-trailing .text-field-input {
     padding-right: 4px;
+}
+
+/* Обычный M3 slider: трек 4 px, круглый ползунок 20 px, область касания 48 px.
+   Отдельный input без padding текстового поля: центр крайних положений совпадает
+   с концами трека. Старый WebView не зависит от accent-color или нового range API. */
+.slider-field {
+    min-width: 0;
+}
+
+.slider-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+}
+
+.slider-heading span {
+    flex-shrink: 0;
+    color: var(--md-on-surface-variant);
+    font-weight: 400;
+}
+
+.slider-control {
+    position: relative;
+    height: 48px;
+}
+
+.slider-track {
+    position: absolute;
+    top: 22px;
+    left: 10px;
+    right: 10px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--md-surface-container-highest);
+    pointer-events: none;
+}
+
+.slider-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: var(--slider-progress, 0%);
+    border-radius: inherit;
+    background: var(--md-primary);
+}
+
+.slider-track::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: var(--slider-progress, 0%);
+    width: 40px;
+    height: 40px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: var(--md-primary);
+    opacity: 0;
+}
+
+.slider-control:focus-within .slider-track::after {
+    opacity: 0.12;
+}
+
+.slider-tick {
+    position: absolute;
+    top: 50%;
+    width: 2px;
+    height: 2px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: var(--md-on-surface-variant);
+}
+
+.slider-tick.active {
+    background: var(--md-on-primary);
+}
+
+.slider-input {
+    position: relative;
+    display: block;
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 48px;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    border-radius: 24px;
+    background: transparent;
+    cursor: pointer;
+    touch-action: pan-y;
+}
+
+.slider-input::-webkit-slider-runnable-track {
+    height: 4px;
+    background: transparent;
+    border: 0;
+}
+
+.slider-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    margin-top: -8px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--md-primary);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.slider-input::-moz-range-track {
+    height: 4px;
+    background: transparent;
+    border: 0;
+}
+
+.slider-input::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--md-primary);
+}
+
+.slider-input:focus-visible {
+    outline-offset: 0;
+}
+
+:root[data-theme="eink"] .slider-track {
+    box-shadow: 0 0 0 1px var(--md-outline);
+}
+
+:root[data-theme="eink"] .slider-input::-webkit-slider-thumb {
+    box-shadow: none;
 }
 
 /* --- Карточки и списки ---------------------------------------------------- */
@@ -911,6 +1068,11 @@ label.list-item {
     overflow-wrap: anywhere;
 }
 
+.settings-page .list-item-headline {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
 .list-item-supporting {
     font-size: 14px;
     line-height: 20px;
@@ -961,6 +1123,27 @@ label.list-item {
     gap: 16px;
 }
 
+/* Вложенные строки и разделители уже имеют16px от родительского блока. */
+.settings-page .card-body > .list-item,
+.settings-page .expand-body > .list-item {
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.settings-page .card-body > .divider,
+.settings-page .expand-body > .divider {
+    margin-left: 0;
+    margin-right: 0;
+}
+
+.settings-page .expand-body {
+    padding-top: 16px;
+}
+
+.settings-page .expand-body > .card-actions {
+    padding: 0;
+}
+
 /* --- Переключатель, флажок, чипы, сегменты -------------------------------- */
 
 /* Переключатель Material 3 из обычного <input type="checkbox" role="switch"> */
@@ -1002,6 +1185,27 @@ label.list-item {
     width: 24px;
     height: 24px;
     background: var(--md-on-primary);
+}
+
+/* Обычные состояния M3 switch; весь окружающий label.list-item кликабелен (>=48px). */
+.switch:focus-visible:not(:checked)::before {
+    background: var(--md-on-surface-variant);
+}
+
+.switch:checked:focus-visible::before {
+    background: var(--md-primary-container);
+}
+
+.switch:not(:disabled):active::before {
+    top: 0;
+    left: 0;
+    width: 28px;
+    height: 28px;
+}
+
+.switch:checked:not(:disabled):active::before {
+    left: 20px;
+    background: var(--md-primary-container);
 }
 
 .checkbox-row {
@@ -1551,6 +1755,55 @@ a.book-host {
     color: var(--md-on-surface);
 }
 
+/* Нативный details сохраняет доступные Enter/Space и состояние expanded в WebView94. */
+.setting-help > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 48px;
+    list-style: none;
+    cursor: pointer;
+    border-radius: 8px;
+}
+
+.setting-help > summary::-webkit-details-marker {
+    display: none;
+}
+
+.setting-help .setting-title {
+    flex: 1;
+}
+
+.setting-help-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 48px;
+    height: 48px;
+    border-radius: 24px;
+    color: var(--md-on-surface-variant);
+}
+
+.setting-help-button > span {
+    width: 20px;
+    height: 20px;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 17px;
+    text-align: center;
+}
+
+.setting-help > summary:active .setting-help-button {
+    background: var(--md-surface-container-highest);
+}
+
+.setting-help .setting-explain {
+    padding-top: 8px;
+}
+
 .setting-explain {
     font-size: 14px;
     line-height: 20px;
@@ -1583,6 +1836,11 @@ a.book-host {
     color: var(--md-on-tertiary-container);
     font-size: 14px;
     line-height: 20px;
+}
+
+.ai-note > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 /* --- Всплывающие сообщения (snackbar) ------------------------------------- */

@@ -138,13 +138,38 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
         }
 
         var toc = await GetToc(doc, bookUri);
-        foreach (var (id, name) in SliceToc(toc, c => c.Title))
+        var cache = new ChapterTextCache(Config.Options.ChapterCachePath, Config.Logger);
+        var account = Config.HasCredentials ? Config.Options.Login : null;
+        var ct = Config.CancellationToken;
+        foreach (var entry in SliceToc(toc, c => c.Title))
         {
-            Config.Logger.LogInformation($"Загружаю главу {name.CoverQuotes()}");
-            var chapter = new Chapter();
+            ct.ThrowIfCancellationRequested();
+            var (id, name, unavailable, available) = entry;
+            if (unavailable)
+            {
+                Config.Logger.LogWarning($"Глава «{name}» не загружена: оглавление сайта явно запрещает скачивание для текущей сессии. {SystemUrl.MakeRelativeUri($"/book/{bookId}/{id}")}");
+                continue;
+            }
 
-            var chapterDoc = await GetChapter(bookId, id);
+            var chapter = new Chapter();
+            // Кэш не заменяет проверку текущего доступа: неизвестная разметка идёт через API.
+            var cached = available ? await cache.ReadAsync(bookUri, id, account, ct) : null;
+            HtmlDocument chapterDoc;
+            if (cached != null)
+            {
+                Config.Logger.LogInformation($"Использую сохранённый текст главы {name.CoverQuotes()}; изображения проверяются заново");
+                chapterDoc = cached.AsHtmlDoc();
+            }
+            else
+            {
+                Config.Logger.LogInformation($"Загружаю главу {name.CoverQuotes()}");
+                chapterDoc = await GetChapter(bookId, id);
+                ct.ThrowIfCancellationRequested();
+                if (available)
+                    await cache.WriteAsync(bookUri, id, account, chapterDoc.DocumentNode.InnerHtml, ct);
+            }
             chapter.Images = await GetImages(chapterDoc, bookUri);
+            ct.ThrowIfCancellationRequested();
             chapter.Content = chapterDoc.DocumentNode.InnerHtml;
             chapter.Title = name;
 
@@ -186,9 +211,32 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
         return stream.AsHtmlDoc();
     }
 
-    private async Task<List<IdChapter>> GetToc(HtmlDocument firstPage, Uri bookUri)
+    private sealed record TocChapter(string Id, string Title, bool Unavailable, bool Available);
+
+    private static bool HasExplicitDenial(HtmlNode row)
     {
-        var chaptersByPage = new SortedDictionary<int, List<IdChapter>>();
+        // Ссылка в названии и цена есть и у закрытых, и у доступных глав.
+        // Пропускаем запрос только по явному сообщению сайта об отсутствии доступа.
+        return row.QuerySelectorAll(".disabled[title]").Any(node =>
+            string.Equals(HttpUtility.HtmlDecode(node.GetAttributeValue("title", "")).Trim(),
+                "Вы не можете скачивать перевод этой главы.", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool HasEnabledReadAction(HtmlNode row)
+        => row.QuerySelectorAll("input[name]").Any(node => IsEnabled(node) &&
+                   node.GetAttributeValue("name", "") == "download_chapter[]") ||
+               row.QuerySelectorAll("a[title]").Any(node => IsEnabled(node) &&
+                   string.Equals(HttpUtility.HtmlDecode(node.GetAttributeValue("title", "")).Trim(),
+                       "Получить готовый перевод.", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsEnabled(HtmlNode node)
+        => node.Attributes["disabled"] == null &&
+           !node.GetClasses().Contains("disabled", StringComparer.OrdinalIgnoreCase) &&
+           !string.Equals(node.GetAttributeValue("aria-disabled", ""), "true", StringComparison.OrdinalIgnoreCase);
+
+    private async Task<List<TocChapter>> GetToc(HtmlDocument firstPage, Uri bookUri)
+    {
+        var chaptersByPage = new SortedDictionary<int, List<TocChapter>>();
         var chapterIds = new HashSet<string>(StringComparer.Ordinal);
         var visitedPages = new HashSet<int>();
         var pendingPages = new SortedSet<int> { 1 };
@@ -196,6 +244,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
 
         while (pendingPages.Count > 0)
         {
+            Config.CancellationToken.ThrowIfCancellationRequested();
             var page = pendingPages.Min;
             pendingPages.Remove(page);
             visitedPages.Add(page);
@@ -213,7 +262,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
             }
 
             var countBefore = chapterIds.Count;
-            var pageChapters = new List<IdChapter>();
+            var pageChapters = new List<TocChapter>();
             foreach (var row in doc.QuerySelectorAll("#Chapters tr[data-id]"))
             {
                 var id = row.Attributes["data-id"].Value.Trim();
@@ -223,7 +272,10 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
                 }
 
                 chapterIds.Add(id);
-                pageChapters.Add(new IdChapter(id, row.GetTextBySelector("td.t")));
+                var denied = HasExplicitDenial(row);
+                var enabled = HasEnabledReadAction(row);
+                // Конфликт проверяем через API: нельзя ни пропустить текст, ни взять старый из кэша.
+                pageChapters.Add(new TocChapter(id, row.GetTextBySelector("td.t"), denied && !enabled, enabled && !denied));
             }
 
             if (page != 1 && chapterIds.Count == countBefore)
@@ -265,6 +317,15 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
             }
         }
 
-        return chaptersByPage.Values.SelectMany(chapters => chapters).DistinctBy(chapter => chapter.Id).ToList();
+        // На пересекающихся страницах признаки доступа могут расходиться.
+        // Сохраняем первое название и порядок, но пропускаем только однозначно закрытую главу.
+        return chaptersByPage.Values.SelectMany(chapters => chapters)
+            .GroupBy(chapter => chapter.Id, StringComparer.Ordinal)
+            .Select(group => group.First() with
+            {
+                Unavailable = group.All(chapter => chapter.Unavailable),
+                Available = group.All(chapter => chapter.Available)
+            })
+            .ToList();
     }
 }

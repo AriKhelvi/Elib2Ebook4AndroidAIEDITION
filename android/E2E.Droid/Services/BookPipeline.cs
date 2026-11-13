@@ -183,6 +183,7 @@ public static class BookPipeline
         // Стандартная конфигурация ядра: HttpClient с CookieContainer, распаковкой gzip/brotli,
         // прокси из настроек и таймаутом options.Timeout (ВАЖНО: 0 в Options = ошибка, задаём явно)
         var config = BookGetterConfig.GetDefault(options, logger);
+        config.CancellationToken = ct;
 
         // Ядро не принимает CancellationToken — обрываем запросы, освобождая HttpClient.
         // Текущий запрос упадёт с исключением, а дальше мы превратим его в OperationCanceledException.

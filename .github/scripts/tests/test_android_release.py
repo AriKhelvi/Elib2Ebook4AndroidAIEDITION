@@ -182,6 +182,32 @@ class ReleaseTests(unittest.TestCase):
         self.attach(api)
         self.assertEqual(api.mutations, [])
 
+    def test_alpha_checks_publication_state_after_patch(self):
+        class StillDraft(FakeGitHub):
+            def api(self, route, method="GET", data=None):
+                result = super().api(route, method, data)
+                if method == "PATCH" and data.get("draft") is False:
+                    self.current["draft"] = True
+                return result
+
+        api = StillDraft()
+        with self.assertRaises(release.ReleaseError):
+            self.attach(api, RELEASE_INPUT="", ALPHA_INPUT="v1.2.4-alpha.codex.1")
+        self.assertEqual([entry[0] for entry in api.mutations], ["POST", "UPLOAD", "PATCH"])
+
+    def test_alpha_checks_uploaded_apk_after_publication(self):
+        class MissingPublishedAsset(FakeGitHub):
+            def api(self, route, method="GET", data=None):
+                result = super().api(route, method, data)
+                if method == "PATCH" and data.get("draft") is False:
+                    self.current["assets"] = []
+                return result
+
+        api = MissingPublishedAsset()
+        with self.assertRaises(release.ReleaseError):
+            self.attach(api, RELEASE_INPUT="", ALPHA_INPUT="v1.2.4-alpha.codex.1")
+        self.assertEqual([entry[0] for entry in api.mutations], ["POST", "UPLOAD", "PATCH"])
+
     def test_existing_alpha_draft_resumes_without_replacing_asset(self):
         tag = "v1.2.4-alpha.codex.1"
         api = FakeGitHub(draft(assets=[asset(tag)]))

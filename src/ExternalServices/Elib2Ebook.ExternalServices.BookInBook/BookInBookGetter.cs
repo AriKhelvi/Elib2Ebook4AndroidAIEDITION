@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Cryptography;
 using Elib2Ebook.Domain.Book;
 using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
@@ -63,6 +64,7 @@ public class BookInBookGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HtmlDocument> GetChapter(Uri url)
     {
         var sb = new StringBuilder();
+        var pages = new HashSet<string>(StringComparer.Ordinal);
 
         for (var i = 1;; i++)
         {
@@ -70,11 +72,17 @@ public class BookInBookGetter(BookGetterConfig config) : GetterBase(config)
             using var response = await Config.Client.GetWithTriesAsync(uri, TimeSpan.FromMilliseconds(100));
             if (response == null)
             {
-                return sb.AsHtmlDoc();
+                throw new InvalidOperationException($"BookInBook не вернул страницу главы {uri}. Неполная глава не будет сохранена.");
             }
 
+            response.EnsureDownloadSuccess();
             var doc = await response.Content.ReadAsStreamAsync().ContinueWith(t => t.Result.AsHtmlDoc());
             var text = doc.GetTextBySelector("#PAGE_TEXT").Deserialize<string>().HtmlDecode();
+            if (string.IsNullOrWhiteSpace(text))
+                throw new InvalidOperationException($"BookInBook вернул страницу без текста главы {uri}. Конец главы не подтверждён; загрузка остановлена.");
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
+            if (!pages.Add(fingerprint))
+                throw new InvalidOperationException($"BookInBook повторил текст страницы главы {uri}. Загрузка остановлена, чтобы не сохранить дубли и неполную книгу.");
             using var sr = new StringReader(text);
 
             while (true)

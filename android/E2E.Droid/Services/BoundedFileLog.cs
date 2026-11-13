@@ -18,6 +18,12 @@ public sealed class BoundedFileLog(string path, int maxBytes = 1024 * 1024)
         }
     }
 
+    /// <summary>Удаляет только этот внутренний журнал; ошибку получает вызывающий экран.</summary>
+    public void Delete()
+    {
+        lock (_sync) File.Delete(Path);
+    }
+
     public void Append(string text)
     {
         lock (_sync)
@@ -57,8 +63,8 @@ public sealed class BoundedFileLog(string path, int maxBytes = 1024 * 1024)
                 using var reader = new StreamReader(stream, Encoding.UTF8);
                 if (stream.Position > 0) reader.ReadLine();
                 var lines = new List<string>();
-                while (reader.ReadLine() is { } line) lines.Add(LogText.Clean(line));
-                return lines;
+                while (reader.ReadLine() is { } line) lines.Add(line);
+                return LogText.CleanLines(lines).ToList();
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return []; }
         }
