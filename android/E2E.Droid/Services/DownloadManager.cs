@@ -447,6 +447,11 @@ public sealed class DownloadManager(
                         lock (job.Saved) job.Saved.AddRange(saved);
                         DebugLine(job, $"Сохранено за {stage.ElapsedMilliseconds} мс: {string.Join("; ", saved.Select(f => $"{f.Folder}/{f.Name} {f.Size} байт {f.Mime} → {f.Uri}"))}");
                         Write(job, $"Готово: {result.Title} ({DescribeSavedFiles(saved)})");
+                        if (Uri.TryCreate(result.Info.Url, UriKind.Absolute, out var canonicalUrl))
+                            await Elib2Ebook.DomainServices.Misc.ChapterTextCache.ClearBookAsync(
+                                options.ChapterCachePath, canonicalUrl,
+                                !string.IsNullOrWhiteSpace(options.Login) && !string.IsNullOrWhiteSpace(options.Password)
+                                    ? options.Login : null, logger);
                     }
                     finally
                     {
@@ -670,6 +675,7 @@ public sealed class DownloadManager(
             Additional = settings.Additional,
             AdditionalTypes = additionalTypes,
             BookNamePattern = settings.BookNamePattern,
+            ChapterCachePath = settings.ResumeDownloads ? Path.Combine(FileSystem.CacheDirectory, "chapter-cache") : null,
             SavePath = Path.Combine(workDir, "out"), // сюда билдеры пишут готовые файлы
             TempPath = Path.Combine(workDir, "tmp")  // сюда ядро складывает скачанные картинки
         };
@@ -727,7 +733,8 @@ public sealed class DownloadManager(
         line = LogText.Clean(line);
         AppendLog(job, line);
         job.Status = line.Length > 300 ? line[..300] + "…" : line;
-        if (line.StartsWith("Загружаю главу", StringComparison.Ordinal))
+        if (line.StartsWith("Загружаю главу", StringComparison.Ordinal) ||
+            line.StartsWith("Использую сохранённый текст главы", StringComparison.Ordinal))
         {
             Interlocked.Increment(ref job.Chapters);
         }

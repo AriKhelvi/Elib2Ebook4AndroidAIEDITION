@@ -66,6 +66,9 @@ public class Options
     [Option("temp", Required = false, HelpText = "Папка для временного хранения картинок")]
     public string TempPath { get; set; }
 
+    /// <summary>Необязательная постоянная папка текстов глав для повторной загрузки. По умолчанию кэш выключен.</summary>
+    public string ChapterCachePath { get; set; }
+
     [Option("save-temp", Required = false, HelpText = "Сохранять временные файлы", Default = false)]
     public bool SaveTemp { get; set; }
 

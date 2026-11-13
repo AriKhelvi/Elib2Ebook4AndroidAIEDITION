@@ -25,6 +25,9 @@ public class BookGetterConfig : IDisposable
 
     public Options Options { get; }
 
+    /// <summary>Отмена для поддерживающих её загрузчиков и операций постоянного кэша.</summary>
+    public CancellationToken CancellationToken { get; set; }
+
     public CookieContainer CookieContainer { get; }
 
     public bool HasCredentials => !string.IsNullOrWhiteSpace(Options.Login) && !string.IsNullOrWhiteSpace(Options.Password);

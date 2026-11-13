@@ -91,6 +91,14 @@
     <section class="section">
         <h2 class="section-title">Скачивание</h2>
         <div class="card">
+            <label class="list-item two-line">
+                <span class="list-item-text">
+                    <span class="list-item-headline wrap">Продолжать прерванное скачивание Rulate/Bllate</span>
+                    <span class="list-item-supporting">После ошибки нажмите «Скачать заново»: готовые тексты используются повторно, изображения могут загрузиться снова. Кэш ограничен 64 МБ; тексты старше 7 дней не используются. После сохранения книги её кэш удаляется</span>
+                </span>
+                <input type="checkbox" role="switch" class="switch" checked="@Settings.ResumeDownloads" @onchange="e => Settings.ResumeDownloads = (bool)e.Value!" />
+            </label>
+            <hr class="divider" />
             <div class="card-body">
                 <h3 class="setting-title">Текстовый формат по умолчанию</h3>
                 <div class="segmented" role="radiogroup" aria-label="Текстовый формат по умолчанию">

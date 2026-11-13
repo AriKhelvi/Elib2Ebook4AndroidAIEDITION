@@ -51,6 +51,13 @@ public sealed class AppSettings
         set => Set(nameof(AutoFormat), value);
     }
 
+    /// <summary>Повторно использовать готовые тексты после обрыва Rulate/Bllate.</summary>
+    public bool ResumeDownloads
+    {
+        get => P.Get(nameof(ResumeDownloads), true);
+        set => Set(nameof(ResumeDownloads), value);
+    }
+
     /// <summary>Таймаут одного запроса в секундах (--timeout, по умолчанию 120).</summary>
     public int Timeout
     {
