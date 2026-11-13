@@ -102,6 +102,8 @@ if (git -C $repo status --porcelain) {
 Write-Host "    E2E $version (ядро Elib2Ebook $coreVersion, коммит $commit)"
 
 # --- 2. Ключ подписи (вне репозитория!) ------------------------------------
+$previousSigningPassword = [Environment]::GetEnvironmentVariable('E2E_KS_PASS', 'Process')
+try {
 $keystore = Join-Path $SigningDir 'e2e.keystore'
 $passwordFile = Join-Path $SigningDir 'password.txt'
 if (-not (Test-Path $keystore)) {
@@ -114,13 +116,14 @@ if (-not (Test-Path $keystore)) {
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
     $password = -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
     [System.IO.File]::WriteAllText($passwordFile, $password)
+    $env:E2E_KS_PASS = $password
     & (Join-Path $jdk 'bin\keytool.exe') -genkeypair -keystore $keystore -alias e2e -keyalg RSA -keysize 2048 `
-        -validity 10000 -storepass $password -keypass $password -dname 'CN=E2E for Android' -noprompt
+        -validity 10000 -storepass:env E2E_KS_PASS -keypass:env E2E_KS_PASS -dname 'CN=E2E for Android' -noprompt
     if ($LASTEXITCODE -ne 0) { throw 'keytool не смог создать ключ' }
 }
 
 # apksigner не переваривает пробелы в пути «file:...» (например, C:\Users\Cave Cat), поэтому пароль —
-# через переменную окружения, которая живёт только в этом процессе
+# через переменную окружения. Прежнее значение восстанавливается в finally, в том числе при ошибке.
 $env:E2E_KS_PASS = (Get-Content $passwordFile -Raw).Trim()
 
 # --- 3. Сборка --------------------------------------------------------------
@@ -132,8 +135,10 @@ $versionCode = [int](([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - 1767225600)
 # пропустить подпись после упавшего прогона — чистим промежуточные файлы самого приложения
 # (библиотеки ядра остаются в кэше, пересобирается только APK).
 foreach ($dir in @('E2E.Droid\obj\Release', 'E2E.Droid\bin\Release')) {
-    $full = Join-Path $android $dir
-    if (Test-Path $full) { Remove-Item -Recurse -Force $full }
+    $full = [IO.Path]::GetFullPath((Join-Path $android $dir))
+    $buildRoot = [IO.Path]::GetFullPath((Join-Path $android 'E2E.Droid')) + [IO.Path]::DirectorySeparatorChar
+    if (-not $full.StartsWith($buildRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Путь очистки вне проекта Android' }
+    if (Test-Path -LiteralPath $full) { Remove-Item -LiteralPath $full -Recurse -Force }
 }
 
 # -Abi можно передать списком (a,b), строкой "a,b" или по-старому "a;b". В -p: и «;», и «,» MSBuild считает
@@ -172,3 +177,8 @@ $target = Join-Path $dist $fileName
 Copy-Item $apk.FullName $target -Force
 Write-Host ''
 Write-Host "Готово: $target ($([math]::Round($apk.Length / 1MB, 1)) МБ)" -ForegroundColor Green
+}
+finally {
+    [Environment]::SetEnvironmentVariable('E2E_KS_PASS', $previousSigningPassword, 'Process')
+    $password = $null
+}

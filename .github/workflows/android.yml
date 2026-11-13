@@ -20,8 +20,8 @@
 # что и раньше. Ключ хранится в секретах репозитория (Settings → Secrets and variables → Actions):
 #   E2E_KEYSTORE_BASE64   — файл e2e.keystore в base64;
 #   E2E_KEYSTORE_PASSWORD — пароль из password.txt.
-# Без секретов обычная сборка подписывается одноразовым ключом (с предупреждением) — такой APK можно
-# поставить только «с нуля». Сборка для релиза и альфы без секретов намеренно падает.
+# Компиляция и PR используют только одноразовый ключ. Отдельное задание на свежем runner
+# переподписывает APK ключом владельца; PR туда не допускаются. Без секретов релиз останавливается.
 
 name: Android APK
 
@@ -117,7 +117,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      artifact: ${{ steps.artifact.outputs.artifact-id }}
+      version: ${{ steps.version.outputs.version }}
+      core: ${{ steps.version.outputs.core }}
+      code: ${{ steps.version.outputs.code }}
+      sha: ${{ steps.version.outputs.sha }}
+      name: ${{ steps.version.outputs.name }}
+      alpha: ${{ steps.version.outputs.alpha }}
+      stable: ${{ steps.version.outputs.stable }}
 
     env:
       RELEASE_INPUT: ${{ inputs.release_tag }}
@@ -138,6 +147,7 @@ jobs:
         with:
           # Вся история с тегами: версия приложения считается от последнего тега vX.Y.Z (git describe)
           fetch-depth: 0
+          persist-credentials: false
 
       - name: .NET 10
         uses: actions/setup-dotnet@v5
@@ -159,6 +169,9 @@ jobs:
 
       - name: Сервисные тесты
         run: dotnet test android/ServiceTests/ServiceTests.csproj -c Release --nologo -v:minimal
+
+      - name: Темы, цвета и фокус элементов
+        run: node --test android/UiTests/*.test.cjs
 
       - name: Workload MAUI для Android
         run: dotnet workload install maui-android
@@ -226,32 +239,17 @@ jobs:
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "E2E $VERSION (ядро Elib2Ebook $CORE), коммит $SHA, versionCode $CODE"
 
-      - name: Ключ подписи
+      # Проект и тесты выполняются без ключа владельца, в том числе на same-repo PR.
+      - name: Временный ключ сборки
         id: signing
-        env:
-          KEYSTORE_BASE64: ${{ secrets.E2E_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.E2E_KEYSTORE_PASSWORD }}
         run: |
           KS="$RUNNER_TEMP/e2e.keystore"
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
-            # Пароль — только через переменную окружения (как в build.ps1); в логах GitHub его маскирует
-            echo "E2E_KS_PASS=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "kind=owner" >> "$GITHUB_OUTPUT"
-            echo "Подпись: ключ владельца из секретов репозитория"
-          else
-            if [ -n "${{ needs.prepare.outputs.tag }}" ]; then
-              echo "::error::Для релиза и альфы нужен ключ подписи: добавьте секреты E2E_KEYSTORE_BASE64 и E2E_KEYSTORE_PASSWORD (см. android/README.md)"
-              exit 1
-            fi
-            PASS=$(openssl rand -hex 16)
-            echo "::add-mask::$PASS"
-            keytool -genkeypair -keystore "$KS" -alias e2e -keyalg RSA -keysize 2048 -validity 30 \
-              -storepass "$PASS" -keypass "$PASS" -dname "CN=E2E temporary CI key" -noprompt
-            echo "E2E_KS_PASS=$PASS" >> "$GITHUB_ENV"
-            echo "kind=temporary" >> "$GITHUB_OUTPUT"
-            echo "::warning::Секреты подписи не заданы — APK подписан ВРЕМЕННЫМ ключом и не встанет поверх уже установленного приложения"
-          fi
+          export E2E_KS_PASS=$(openssl rand -hex 16)
+          echo "::add-mask::$E2E_KS_PASS"
+          keytool -genkeypair -keystore "$KS" -alias e2e -keyalg RSA -keysize 2048 -validity 30 \
+            -storepass:env E2E_KS_PASS -keypass:env E2E_KS_PASS -dname "CN=E2E temporary CI key" -noprompt
+          echo "E2E_KS_PASS=$E2E_KS_PASS" >> "$GITHUB_ENV"
+          echo "kind=temporary" >> "$GITHUB_OUTPUT"
           echo "keystore=$KS" >> "$GITHUB_OUTPUT"
 
       # Те же параметры, что в android/build.ps1. Важно: без -o и без -p:RuntimeIdentifiers —
@@ -310,17 +308,100 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Артефакт
+        id: artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.version.outputs.name }}${{ steps.signing.outputs.kind == 'temporary' && '-temp-key' || '' }}
           path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
 
+      - name: Удаление временного ключа сборки
+        if: always()
+        run: |
+          rm -f -- "$RUNNER_TEMP/e2e.keystore"
+          echo "E2E_KS_PASS=" >> "$GITHUB_ENV"
+
+  sign:
+    name: Подпись и публикация APK
+    needs: [prepare, apk]
+    # В PR нет задания с ключом владельца или токеном записи.
+    if: github.event_name != 'pull_request' && needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RELEASE_INPUT: ${{ inputs.release_tag }}
+      ALPHA_INPUT: ${{ inputs.alpha_tag }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+    steps:
+      # Отдельный свежий runner: не выполняем здесь MSBuild, тесты или код приложения.
+      - name: Данные для описания релиза
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: microsoft
+          java-version: '21'
+      - name: APK текущего запуска
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.apk.outputs.artifact }}
+          path: ${{ runner.temp }}/apk-input
+          merge-multiple: true
+      - name: Подпись ключом владельца и проверка
+        id: signed
+        env:
+          KEYSTORE_BASE64: ${{ secrets.E2E_KEYSTORE_BASE64 }}
+          E2E_KS_PASS: ${{ secrets.E2E_KEYSTORE_PASSWORD }}
+          APK_NAME: ${{ needs.apk.outputs.name }}
+          PUBLISH_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          KS="$RUNNER_TEMP/owner.keystore"
+          trap 'rm -f -- "$KS"; unset KEYSTORE_BASE64 E2E_KS_PASS' EXIT
+          [[ "$APK_NAME" =~ ^E2E-[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.-]*$ ]] || { echo '::error::Некорректное имя APK'; exit 1; }
+          mapfile -t INPUTS < <(find "$RUNNER_TEMP/apk-input" -type f -name '*.apk')
+          [ "${#INPUTS[@]}" -eq 1 ] || { echo '::error::Ожидался один APK текущей сборки'; exit 1; }
+          SRC="${INPUTS[0]}"
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$E2E_KS_PASS" ]; then
+            if [ -n "$PUBLISH_TAG" ]; then
+              echo '::error::Для релиза нужен ключ владельца: E2E_KEYSTORE_BASE64 и E2E_KEYSTORE_PASSWORD'
+              exit 1
+            fi
+            echo '::warning::Ключ владельца не задан; доступен только APK с временной подписью из задания сборки'
+            exit 0
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$KS"
+          unset KEYSTORE_BASE64
+          BT=$(ls -d "$ANDROID_SDK_ROOT"/build-tools/* | sort -V | tail -1)
+          APK="$RUNNER_TEMP/$APK_NAME.apk"
+          # apksigner удаляет прежнюю временную подпись. Пароль не попадает в argv/GITHUB_ENV.
+          "$BT/apksigner" sign --ks "$KS" --ks-key-alias e2e \
+            --ks-pass env:E2E_KS_PASS --key-pass env:E2E_KS_PASS --out "$APK" "$SRC"
+          "$BT/apksigner" verify --verbose --print-certs "$APK"
+          # API 26/27 — Android 8.0/8.1; проверка подписи не заменяет запуск на устройстве.
+          "$BT/apksigner" verify --min-sdk-version 26 --max-sdk-version 27 "$APK"
+          "$BT/zipalign" -c -P 16 4 "$APK"
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "### APK с подписью владельца: $APK_NAME" >> "$GITHUB_STEP_SUMMARY"
+      - name: APK с подписью владельца
+        if: steps.signed.outputs.path != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.apk.outputs.name }}
+          path: ${{ steps.signed.outputs.path }}
+          if-no-files-found: error
+
       - name: Черновик стабильного релиза с APK
-        if: steps.version.outputs.stable != ''
+        if: needs.apk.outputs.stable != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          APK: ${{ steps.apk.outputs.path }}
+          APK: ${{ steps.signed.outputs.path }}
         run: python3 .github/scripts/android_release.py attach
 
       # Тестовый (альфа) релиз: pre-release с APK, списком изменений и скрытой пометкой для ИИ-агентов.
@@ -328,14 +409,14 @@ jobs:
       # При отказе Workflows:write helper объясняет действия владельца; PAT не используется.
       # Релиз и тег, созданные токеном Actions, не запускают этот workflow ещё раз.
       - name: Альфа-релиз
-        if: steps.version.outputs.alpha != ''
+        if: needs.apk.outputs.alpha != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.alpha }}
-          APK: ${{ steps.apk.outputs.path }}
-          VERSION: ${{ steps.version.outputs.version }}
-          CORE: ${{ steps.version.outputs.core }}
-          SHA: ${{ steps.version.outputs.sha }}
+          TAG: ${{ needs.apk.outputs.alpha }}
+          APK: ${{ steps.signed.outputs.path }}
+          VERSION: ${{ needs.apk.outputs.version }}
+          CORE: ${{ needs.apk.outputs.core }}
+          SHA: ${{ needs.apk.outputs.sha }}
         run: |
           AGENT=$(echo "$TAG" | sed -E 's/^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.([a-z0-9]+)\..*/\1/')
           BRANCHES=$(git branch -r --contains "$GITHUB_SHA" --format='%(refname:short)' | sed 's#^origin/##' | grep -v '^HEAD$' | paste -sd ',' - | sed 's/,/, /g')
