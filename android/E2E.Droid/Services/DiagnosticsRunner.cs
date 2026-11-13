@@ -81,6 +81,9 @@ public sealed class DiagnosticsRunner(
 
     public bool IsRunning => Volatile.Read(ref _busy) == 1;
 
+    /// <summary>Очистка недоступна, в том числе пока скачивание ожидает разрешения Android.</summary>
+    public bool CanClearLogs => !IsRunning && !downloads.IsBusy;
+
     /// <summary>Какой шаг идёт сейчас.</summary>
     public string Status { get; private set; }
 
@@ -217,6 +220,43 @@ public sealed class DiagnosticsRunner(
     {
         try { _cts?.Cancel(); }
         catch (ObjectDisposedException) { /* Сценарий успел завершиться до нажатия. */ }
+    }
+
+    /// <summary>Очищает только внутренние журналы. Книги, история и экспортированные TXT остаются.</summary>
+    public bool TryClearLogs(out string error)
+    {
+        error = "Дождитесь окончания скачивания или диагностики";
+        if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0) return false;
+        try
+        {
+            if (!downloads.TryClearLogs(() =>
+                {
+                    new BoundedFileLog(Path.Combine(FileSystem.AppDataDirectory, "logs", "diagnostics-last.log")).Delete();
+                    StartupLog.Clear();
+                    lock (_log)
+                    {
+                        _runLog = null;
+                        _log.Clear();
+                        _previousDiagnostic = [];
+                        _ok = _failed = _skipped = _warnings = _logChars = 0;
+                        _logTruncated = _completed = false;
+                        Summary = Status = null;
+                        Result = null;
+                    }
+                })) return false;
+            error = null;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            error = "Не удалось удалить все внутренние журналы. Попробуйте ещё раз";
+            return false;
+        }
+        finally
+        {
+            Volatile.Write(ref _busy, 0);
+            Changed?.Invoke();
+        }
     }
 
     /// <summary>Сохраняет журнал последнего скачивания файлом в папку загрузок (с шапкой о сборке).</summary>
@@ -893,7 +933,7 @@ public sealed class DiagnosticsRunner(
         Directory.CreateDirectory(dir);
         try
         {
-            await File.WriteAllLinesAsync(Path.Combine(dir, fileName), lines, new UTF8Encoding(false));
+            await File.WriteAllLinesAsync(Path.Combine(dir, fileName), LogText.CleanLines(lines), new UTF8Encoding(false));
             var saved = await storage.SaveTreeAsync(dir, f =>
             {
                 f.BookTitle = Path.GetFileNameWithoutExtension(fileName);

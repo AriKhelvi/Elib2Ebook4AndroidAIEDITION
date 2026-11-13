@@ -126,6 +126,9 @@ public sealed class DownloadManager(
 
     public bool IsRunning => State == DownloadState.Running;
 
+    /// <summary>Включает ожидание системных разрешений до начала скачивания.</summary>
+    public bool IsBusy => IsRunning || Volatile.Read(ref _starting) != 0;
+
     /// <summary>Последняя строка журнала — показывается в блоке прогресса, как на кнопке веб-версии.</summary>
     public string Status => _job.Status;
 
@@ -299,6 +302,34 @@ public sealed class DownloadManager(
         Changed?.Invoke();
     }
 
+    /// <summary>Резервирует паузу между заданиями для общей очистки журналов.</summary>
+    internal bool TryClearLogs(Action clearOtherLogs)
+    {
+        if (Interlocked.CompareExchange(ref _starting, 1, 0) != 0) return false;
+        try
+        {
+            lock (_sync)
+            {
+                if (IsRunning) return false;
+                // Отменённое ядро может ещё выдать запоздалую строку: она не должна вернуть очищенный лог.
+                _job.LogCleared = true;
+                lock (_job.Log)
+                {
+                    _job.Log.Clear();
+                    _job.LogCharacters = 0;
+                }
+                _persistentLog.Delete();
+                clearOtherLogs();
+                return true;
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _starting, 0);
+            Changed?.Invoke();
+        }
+    }
+
     /// <summary>Фоновая часть задания. Что бы ни случилось, заканчивается Finish — «вечного» скачивания не будет.</summary>
     private async Task RunAsync(Job job)
     {
@@ -328,7 +359,7 @@ public sealed class DownloadManager(
             // Ошибки отдельных книг ловятся в DownloadAllAsync; сюда попадает только непредвиденное
             if (!job.Cancelled)
             {
-                lock (job.Errors) job.Errors.Add(ex.Message);
+                lock (job.Errors) job.Errors.Add(LogText.Clean(ex.Message));
                 Write(job, $"Непредвиденная ошибка: {ex}");
             }
         }
@@ -381,7 +412,7 @@ public sealed class DownloadManager(
                     Interlocked.Increment(ref job.WarningCount);
                     lock (job.Warnings)
                     {
-                        if (job.Warnings.Count < 50) job.Warnings.Add($"{url}: {line}");
+                        if (job.Warnings.Count < 50) job.Warnings.Add(LogText.Clean($"{url}: {line}"));
                     }
                 });
                 DebugLine(job, $"Параметры ядра: формат {string.Join(",", options.Format)}, главы {options.Start?.ToString() ?? "-"}..{options.End?.ToString() ?? "-"}" +
@@ -484,7 +515,8 @@ public sealed class DownloadManager(
                         ? $"Сертификат сайта не прошёл проверку ({CertificatePolicy.LastRejection ?? "причина неизвестна"}). " +
                           "Если сеть надёжная, проверку можно выключить: «Настройки» → «Сеть»"
                         : ex.Message;
-                lock (job.Errors) job.Errors.Add($"{url}: {message}");
+                message = LogText.Clean(message);
+                lock (job.Errors) job.Errors.Add(LogText.Clean($"{url}: {message}"));
                 // В журнал — полный текст исключения со стеком: пригодится для отчёта об ошибке
                 Write(job, $"Генерация книги {url} завершилась с ошибкой. {ex}");
 
@@ -771,7 +803,7 @@ public sealed class DownloadManager(
     {
         lock (_sync)
         {
-            if (!ReferenceEquals(job, _job)) return;
+            if (!ReferenceEquals(job, _job) || job.LogCleared) return;
             var entry = $"{DateTime.Now:HH:mm:ss} {LogText.Clean(line)}";
             lock (job.Log)
             {
@@ -901,6 +933,7 @@ public sealed class DownloadManager(
         public int Chapters;
         public int WarningCount;
         public int LogCharacters;
+        public bool LogCleared;
 
         // Пишутся из фонового потока, читаются из UI — только под lock на сам список
         public readonly List<string> Log = [];

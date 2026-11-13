@@ -46,4 +46,18 @@ public static class StartupLog
             _current = null;
         }
     }
+
+    /// <summary>Удаляет текущий и предыдущий внутренние журналы, не затрагивая сохранённые отчёты.</summary>
+    public static void Clear()
+    {
+        lock (Sync)
+        {
+            if (_current != null) _current.Delete();
+            if (_failedPath != null)
+            {
+                File.Delete(_failedPath);
+                File.Delete(Path.Combine(Path.GetDirectoryName(_failedPath)!, "startup.log"));
+            }
+        }
+    }
 }
