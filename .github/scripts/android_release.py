@@ -231,6 +231,9 @@ def attach(env, api):
         api.api(f"releases/{release['id']}", "PATCH",
                 {"draft": False, "prerelease": True, "make_latest": "false",
                  "target_commitish": env["GITHUB_SHA"]})
+        # Публикация через GITHUB_TOKEN не создаёт отдельный release workflow.
+        # Проверяем итоговое состояние здесь, не меняя уже опубликованный релиз.
+        verify_published({**env, "RELEASE_TAG": tag}, api)
         summary(env, f"Опубликован pre-release: {release['html_url']}")
     elif kind == "stable":
         summary(env, f"Черновик с APK готов: {release['html_url']}\n\n"
