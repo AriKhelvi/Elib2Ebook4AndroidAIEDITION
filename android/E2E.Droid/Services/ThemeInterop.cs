@@ -16,4 +16,14 @@ public static class ThemeInterop
     [JSInvokable("ApplyNativeTheme")]
     public static void ApplyNativeTheme(bool dark, string background)
         => MauiProgram.Services?.GetService<IPlatformServices>()?.ApplyTheme(dark, background);
+
+    /// <summary>Повторно читает системную палитру после возвращения из фона: обои могли измениться.</summary>
+    [JSInvokable("ReadDynamicPalette")]
+    public static object? ReadDynamicPalette()
+    {
+        var platform = MauiProgram.Services?.GetService<IPlatformServices>();
+        return platform?.SupportsDynamicColor == true
+            ? new { light = platform.GetDynamicColorScheme(false), dark = platform.GetDynamicColorScheme(true) }
+            : null;
+    }
 }

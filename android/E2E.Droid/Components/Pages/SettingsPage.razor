@@ -2,6 +2,7 @@
    [AI-EDITION] Сгенерировано ИИ (Claude, Anthropic) под присмотром человека. Стабильность не гарантируется — см. android/README.md. *@
 @page "/settings"
 @using System.Reflection
+@using System.Globalization
 @implements IDisposable
 @inject AppSettings Settings
 @inject DiagnosticsRunner Diagnostics
@@ -12,7 +13,7 @@
 @inject ToastService Toasts
 @inject IJSRuntime Js
 
-<div class="page">
+<div class="page settings-page">
     <section class="section">
         <h2 class="section-title">Сохранение</h2>
         <div class="card">
@@ -216,18 +217,29 @@
     <section class="section">
         <h2 class="section-title">Сеть</h2>
         <div class="card card-body">
-            <div class="grid-2">
-                <div class="text-field">
-                    <label class="text-field-label" for="timeout">Таймаут, сек</label>
-                    <input id="timeout" class="text-field-input" type="number" inputmode="numeric" min="5" @bind="_timeout" @bind:after="SaveNumbers" />
+            <div class="text-field">
+                <label class="text-field-label" for="timeout">Таймаут, сек</label>
+                <input id="timeout" class="text-field-input" type="number" inputmode="numeric" min="5" @bind="_timeout" @bind:after="SaveNumbers" />
+            </div>
+            <div class="slider-field">
+                <div class="slider-heading">
+                    <label for="delay-mode">Задержка</label>
+                    <span aria-hidden="true">@_delayMode из 4</span>
                 </div>
-                <div class="text-field">
-                    <label class="text-field-label" for="delay-mode">Задержка: @_delayMode из 4</label>
-                    <input id="delay-mode" class="text-field-input" type="range" min="1" max="4" step="1" aria-describedby="delay-description"
+                <div class="slider-control" style="--slider-progress: @SliderProgress(_delayMode)">
+                    <div class="slider-track" aria-hidden="true">
+                        <span class="slider-fill"></span>
+                        @for (var position = 1; position <= 4; position++)
+                        {
+                            <span class="slider-tick @(position <= _delayMode ? "active" : "")" style="left: @SliderProgress(position)"></span>
+                        }
+                    </div>
+                    <input id="delay-mode" class="slider-input" type="range" min="1" max="4" step="1" aria-describedby="delay-description"
+                           aria-valuetext="@($"{_delayMode} из 4. {DelayDescription}")"
                            @bind="_delayMode" @bind:event="oninput" @bind:after="SaveDelay" />
                 </div>
+                <p id="delay-description" class="supporting-text flush" aria-live="polite">@DelayDescription</p>
             </div>
-            <p id="delay-description" class="supporting-text flush" aria-live="polite">@DelayDescription</p>
             @if (_delayMode == 4)
             {
                 <div class="text-field">
@@ -384,6 +396,10 @@
                             <span class="list-item-supporting">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{Storage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</span>
                         </span>
                     </button>
+                    <button type="button" class="btn btn-outlined btn-block" disabled="@(!Diagnostics.CanClearLogs)" @onclick="ClearLogs">
+                        Очистить логи
+                    </button>
+                    <p class="supporting-text flush">Очистит журналы в приложении. Сохранённые книги и уже выгруженные файлы журналов останутся.</p>
                 </div>
             }
         </div>
@@ -475,6 +491,8 @@
     private int _timeout;
     private int _delayMode;
     private double _customDelay;
+    private static string SliderProgress(int position) =>
+        ((Math.Clamp(position, 1, 4) - 1) * 100d / 3).ToString("0.###", CultureInfo.InvariantCulture) + "%";
     private string DelayDescription => _delayMode switch
     {
         1 => "Нулевая задержка. Значительно уменьшает время загрузки, но может вызвать резкий ответ от Claudflare",
@@ -500,6 +518,7 @@
     protected override async Task OnInitializedAsync()
     {
         Diagnostics.Changed += OnDiagnosticsChanged;
+        Downloads.Changed += OnDiagnosticsChanged;
         _backgroundAllowed = Platform.IsIgnoringBatteryOptimizations;
         _debugUrl = Settings.DebugTestUrl;
         // Диагностика идёт или уже отработала — раскрываем блок сразу, чтобы был виден её ход или итог
@@ -740,6 +759,14 @@
 
     private void OnDiagnosticsChanged() => InvokeAsync(StateHasChanged);
 
+    private void ClearLogs()
+    {
+        if (Diagnostics.TryClearLogs(out var error))
+            Toasts.Show("Логи очищены", ToastKind.Success, 3);
+        else
+            Toasts.Show(error, ToastKind.Error, 6);
+    }
+
     private async Task AllowBackground()
     {
         _backgroundAllowed = await Platform.RequestIgnoreBatteryOptimizationsAsync();
@@ -773,5 +800,9 @@
         }
     }
 
-    public void Dispose() => Diagnostics.Changed -= OnDiagnosticsChanged;
+    public void Dispose()
+    {
+        Diagnostics.Changed -= OnDiagnosticsChanged;
+        Downloads.Changed -= OnDiagnosticsChanged;
+    }
 }

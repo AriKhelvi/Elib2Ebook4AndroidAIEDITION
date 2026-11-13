@@ -16,6 +16,7 @@
         '--md-on-tertiary-container', '--md-inverse-primary'];
     const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
     let appliedKeys = [];
+    let refreshingPalette = false;
 
     function read(key) {
         try { return localStorage.getItem(key); } catch (e) { return null; }
@@ -82,6 +83,24 @@
         }
     }
 
+    function setDynamicPalette(p) {
+        write(PALETTE_KEY, p && (p.light || p.dark) ? JSON.stringify(p) : null);
+        apply(savedMode());
+        syncNative();
+    }
+
+    // Палитра обоев может поменяться, пока приложение находится в фоне.
+    // Android до 12 возвращает null: остаются фиксированные цвета подходящей темы.
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible' || refreshingPalette ||
+            !window.DotNet || !window.DotNet.invokeMethodAsync) return;
+        refreshingPalette = true;
+        window.DotNet.invokeMethodAsync('E2E.Droid', 'ReadDynamicPalette')
+            .then(setDynamicPalette)
+            .catch(() => { })
+            .finally(() => { refreshingPalette = false; });
+    });
+
     // До первой отрисовки, чтобы не мигнуть чужой темой
     apply(savedMode());
 
@@ -94,7 +113,8 @@
 
     // Пока открыта клавиатура, прячем нижнюю панель вкладок — иначе она всплывает над клавиатурой
     function isTextField(el) {
-        return el && (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && ['checkbox', 'radio', 'button'].indexOf(el.type) < 0));
+        return el && !el.readOnly && !el.disabled && (el.tagName === 'TEXTAREA' ||
+            (el.tagName === 'INPUT' && ['text', 'search', 'tel', 'url', 'email', 'password', 'number'].indexOf(el.type) >= 0));
     }
     document.addEventListener('focusin', e => {
         if (isTextField(e.target)) document.body.classList.add('kb-open');
@@ -122,11 +142,7 @@
         },
         syncNative: syncNative,
         // Палитра Material You от Android (null — у системы её нет); запоминается для следующего запуска
-        setDynamicPalette: p => {
-            write(PALETTE_KEY, p && (p.light || p.dark) ? JSON.stringify(p) : null);
-            apply(savedMode());
-            syncNative();
-        },
+        setDynamicPalette: setDynamicPalette,
         getDynamicEnabled: () => dynamicEnabled(),
         setDynamicEnabled: enabled => {
             write(DYNAMIC_KEY, enabled ? null : '0');
