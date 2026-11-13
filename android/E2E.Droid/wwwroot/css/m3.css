@@ -623,6 +623,23 @@ button.assist-chip:active::after,
     border-radius: 24px;
 }
 
+/* Подписи действий в настройках читаются целиком и при крупном системном шрифте. */
+.settings-page .btn {
+    min-height: 40px;
+    height: auto;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    white-space: normal;
+    text-align: center;
+    overflow-wrap: anywhere;
+}
+
+.settings-page .btn-block {
+    min-height: 48px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
 .icon-button {
     position: relative;
     overflow: hidden;
@@ -1104,6 +1121,27 @@ label.list-item {
     display: flex;
     flex-direction: column;
     gap: 16px;
+}
+
+/* Вложенные строки и разделители уже имеют16px от родительского блока. */
+.settings-page .card-body > .list-item,
+.settings-page .expand-body > .list-item {
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.settings-page .card-body > .divider,
+.settings-page .expand-body > .divider {
+    margin-left: 0;
+    margin-right: 0;
+}
+
+.settings-page .expand-body {
+    padding-top: 16px;
+}
+
+.settings-page .expand-body > .card-actions {
+    padding: 0;
 }
 
 /* --- Переключатель, флажок, чипы, сегменты -------------------------------- */
@@ -1717,6 +1755,55 @@ a.book-host {
     color: var(--md-on-surface);
 }
 
+/* Нативный details сохраняет доступные Enter/Space и состояние expanded в WebView94. */
+.setting-help > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 48px;
+    list-style: none;
+    cursor: pointer;
+    border-radius: 8px;
+}
+
+.setting-help > summary::-webkit-details-marker {
+    display: none;
+}
+
+.setting-help .setting-title {
+    flex: 1;
+}
+
+.setting-help-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 48px;
+    height: 48px;
+    border-radius: 24px;
+    color: var(--md-on-surface-variant);
+}
+
+.setting-help-button > span {
+    width: 20px;
+    height: 20px;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 17px;
+    text-align: center;
+}
+
+.setting-help > summary:active .setting-help-button {
+    background: var(--md-surface-container-highest);
+}
+
+.setting-help .setting-explain {
+    padding-top: 8px;
+}
+
 .setting-explain {
     font-size: 14px;
     line-height: 20px;
@@ -1749,6 +1836,11 @@ a.book-host {
     color: var(--md-on-tertiary-container);
     font-size: 14px;
     line-height: 20px;
+}
+
+.ai-note > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 /* --- Всплывающие сообщения (snackbar) ------------------------------------- */

@@ -92,14 +92,6 @@
     <section class="section">
         <h2 class="section-title">Скачивание</h2>
         <div class="card">
-            <label class="list-item two-line">
-                <span class="list-item-text">
-                    <span class="list-item-headline wrap">Продолжать прерванное скачивание Rulate/Bllate</span>
-                    <span class="list-item-supporting">После ошибки нажмите «Скачать заново»: готовые тексты используются повторно, изображения могут загрузиться снова. Кэш ограничен 64 МБ; тексты старше 7 дней не используются. После сохранения книги её кэш удаляется</span>
-                </span>
-                <input type="checkbox" role="switch" class="switch" checked="@Settings.ResumeDownloads" @onchange="e => Settings.ResumeDownloads = (bool)e.Value!" />
-            </label>
-            <hr class="divider" />
             <div class="card-body">
                 <h3 class="setting-title">Текстовый формат по умолчанию</h3>
                 <div class="segmented" role="radiogroup" aria-label="Текстовый формат по умолчанию">
@@ -161,7 +153,29 @@
             <hr class="divider" />
 
             <div class="card-body">
-                <h3 class="setting-title">Пропустить диалог скачивания</h3>
+                <details class="setting-help">
+                    <summary aria-label="Справка: пропустить диалог скачивания">
+                        <h3 class="setting-title">Пропустить диалог скачивания</h3>
+                        <span class="setting-help-button" aria-hidden="true"><span>?</span></span>
+                    </summary>
+                    <div class="setting-explain">
+                        <p>
+                            Касается ссылок, которыми вы делитесь в E2E из браузера или другого приложения
+                            («Поделиться» → «Скачать книгу (E2E)»).
+                        </p>
+                        <p>
+                            <b>Да</b> — книга начинает скачиваться сразу, без нажатия «Скачать». Формат выбирается сам: CBZ для
+                            манги и комиксов, для остального — текстовый формат по умолчанию. Подставляется сохранённый вход на сайт,
+                            главы — все, картинки — как в переключателе на главном экране. Ход загрузки виден на главном экране
+                            и в шторке, там же её можно отменить.
+                        </p>
+                        <p>
+                            <b>Нет</b> — ссылка только подставляется на главный экран: можно проверить формат, вход на сайт
+                            и диапазон глав и нажать «Скачать» самому.
+                        </p>
+                        <p>Ссылки, вставленные в приложение вручную, всегда ждут нажатия «Скачать».</p>
+                    </div>
+                </details>
                 <div class="segmented" role="radiogroup" aria-label="Пропустить диалог скачивания">
                     @foreach (var (value, title) in YesNo)
                     {
@@ -175,23 +189,6 @@
                             @title
                         </button>
                     }
-                </div>
-                <div class="setting-explain">
-                    <p>
-                        Касается ссылок, которыми вы делитесь в E2E из браузера или другого приложения
-                        («Поделиться» → «Скачать книгу (E2E)»).
-                    </p>
-                    <p>
-                        <b>Да</b> — книга начинает скачиваться сразу, без нажатия «Скачать». Формат выбирается сам: CBZ для
-                        манги и комиксов, для остального — текстовый формат по умолчанию. Подставляется сохранённый вход на сайт,
-                        главы — все, картинки — как в переключателе на главном экране. Ход загрузки виден на главном экране
-                        и в шторке, там же её можно отменить.
-                    </p>
-                    <p>
-                        <b>Нет</b> — ссылка только подставляется на главный экран: можно проверить формат, вход на сайт
-                        и диапазон глав и нажать «Скачать» самому.
-                    </p>
-                    <p>Ссылки, вставленные в приложение вручную, всегда ждут нажатия «Скачать».</p>
                 </div>
             </div>
         </div>
@@ -217,10 +214,36 @@
     <section class="section">
         <h2 class="section-title">Сеть</h2>
         <div class="card card-body">
-            <div class="text-field">
-                <label class="text-field-label" for="timeout">Таймаут, сек</label>
-                <input id="timeout" class="text-field-input" type="number" inputmode="numeric" min="5" @bind="_timeout" @bind:after="SaveNumbers" />
+            <div class="slider-field">
+                <div class="slider-heading">
+                    <label for="timeout-mode">Таймаут ожидания</label>
+                    <span aria-hidden="true">@TimeoutLabel</span>
+                </div>
+                <div class="slider-control" style="--slider-progress: @SliderProgress(_timeoutMode)">
+                    <div class="slider-track" aria-hidden="true">
+                        <span class="slider-fill"></span>
+                        @for (var position = 1; position <= 4; position++)
+                        {
+                            <span class="slider-tick @(position <= _timeoutMode ? "active" : "")" style="left: @SliderProgress(position)"></span>
+                        }
+                    </div>
+                    <input id="timeout-mode" class="slider-input" type="range" min="1" max="4" step="1" aria-describedby="timeout-description timeout-purpose"
+                           aria-valuetext="@($"{TimeoutLabel}. {TimeoutDescription}")"
+                           @bind="_timeoutMode" @bind:event="oninput" @bind:after="SaveTimeoutMode" />
+                </div>
+                <p id="timeout-description" class="supporting-text flush" aria-live="polite">@TimeoutDescription</p>
+                <p id="timeout-purpose" class="supporting-text flush">Сколько ждать ответ на один сетевой запрос. Пауза между запросами задаётся отдельно ниже.</p>
             </div>
+            @if (_timeoutMode == 4)
+            {
+                <div class="text-field">
+                    <label class="text-field-label" for="custom-timeout">Свой таймаут, сек (5–3600)</label>
+                    <input id="custom-timeout" class="text-field-input" type="number" inputmode="numeric" min="5" max="3600" step="1"
+                           @bind="_customTimeout" @bind:after="SaveCustomTimeout" />
+                </div>
+            }
+
+            <hr class="divider" />
             <div class="slider-field">
                 <div class="slider-heading">
                     <label for="delay-mode">Задержка</label>
@@ -377,7 +400,7 @@
 
                     @if (!Diagnostics.IsRunning && Diagnostics.Summary != null)
                     {
-                        <p class="supporting-text">@Diagnostics.Summary@(Diagnostics.Result != null ? $". Файл: {Diagnostics.Result.Name}" : "")</p>
+                        <p class="supporting-text flush">@Diagnostics.Summary@(Diagnostics.Result != null ? $". Файл: {Diagnostics.Result.Name}" : "")</p>
                         <div class="card-actions compact">
                             @if (Diagnostics.Result != null)
                             {
@@ -389,13 +412,10 @@
 
                     <hr class="divider" />
 
-                    <button type="button" class="list-item two-line" disabled="@(Downloads.Log.Count == 0 && !HasStartupLog)" @onclick="SaveDownloadLog">
-                        <span class="list-item-leading"><Icon Name="log" /></span>
-                        <span class="list-item-text">
-                            <span class="list-item-headline">Сохранить журнал скачивания и запуска</span>
-                            <span class="list-item-supporting">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{Storage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</span>
-                        </span>
+                    <button type="button" class="btn btn-tonal btn-block" disabled="@(Downloads.Log.Count == 0 && !HasStartupLog)" aria-describedby="download-log-status" @onclick="SaveDownloadLog">
+                        <Icon Name="log" Size="18" />Сохранить журнал скачивания и запуска
                     </button>
+                    <p id="download-log-status" class="supporting-text flush">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{Storage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</p>
                     <button type="button" class="btn btn-outlined btn-block" disabled="@(!Diagnostics.CanClearLogs)" @onclick="ClearLogs">
                         Очистить логи
                     </button>
@@ -488,11 +508,20 @@
     private bool _backgroundAllowed = true;
     private string _debugUrl;
     private string _pattern;
-    private int _timeout;
+    private int _timeoutMode;
+    private int _customTimeout;
     private int _delayMode;
     private double _customDelay;
     private static string SliderProgress(int position) =>
         ((Math.Clamp(position, 1, 4) - 1) * 100d / 3).ToString("0.###", CultureInfo.InvariantCulture) + "%";
+    private string TimeoutLabel => _timeoutMode switch { 1 => "60 сек", 2 => "120 сек", 3 => "240 сек", _ => "Своё" };
+    private string TimeoutDescription => _timeoutMode switch
+    {
+        1 => "Если знаете, что сайты доступны, а проблема только в VPN",
+        2 => "Стандартный режим",
+        3 => "Для проблем с VPN и интернетом",
+        _ => "Выберите время ожидания от 5 до 3600 секунд"
+    };
     private string DelayDescription => _delayMode switch
     {
         1 => "Нулевая задержка. Значительно уменьшает время загрузки, но может вызвать резкий ответ от Claudflare",
@@ -524,7 +553,8 @@
         // Диагностика идёт или уже отработала — раскрываем блок сразу, чтобы был виден её ход или итог
         _showDebug = Diagnostics.IsRunning || Diagnostics.Summary != null;
         _pattern = Settings.BookNamePattern;
-        _timeout = Settings.Timeout;
+        _timeoutMode = Settings.TimeoutMode;
+        _customTimeout = Settings.CustomTimeoutSeconds;
         _delayMode = Settings.DelayMode;
         _customDelay = Settings.CustomDelaySeconds;
         ParseProxy(Settings.Proxy);
@@ -592,10 +622,17 @@
         SavePattern();
     }
 
-    private void SaveNumbers()
+    private void SaveTimeoutMode()
     {
-        Settings.Timeout = _timeout;
-        _timeout = Settings.Timeout;
+        Settings.TimeoutMode = _timeoutMode;
+        _timeoutMode = Settings.TimeoutMode;
+        _customTimeout = Settings.CustomTimeoutSeconds;
+    }
+
+    private void SaveCustomTimeout()
+    {
+        Settings.CustomTimeoutSeconds = _customTimeout;
+        _customTimeout = Settings.CustomTimeoutSeconds;
     }
 
     private void SaveDelay()
