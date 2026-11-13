@@ -76,7 +76,12 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
                 return embedded;
             }
             if (uri.Scheme is not ("http" or "https")) throw new FormatException("Неподдерживаемая схема адреса изображения");
-            using var response = await Config.Client.SendWithTriesAsync(() => GetImageRequestMessage(uri));
+            using var response = await Config.Client.SendWithTriesAsync(() =>
+            {
+                var request = GetImageRequestMessage(uri);
+                RequestPolicyHandler.ScopeImageCredentials(request, SystemUrl, uri);
+                return request;
+            });
             response.EnsureDownloadSuccess();
             if (response.Content.Headers.ContentType?.MediaType is "text/html" or "application/json")
                 throw new FormatException("Сайт вернул страницу ошибки вместо изображения");
