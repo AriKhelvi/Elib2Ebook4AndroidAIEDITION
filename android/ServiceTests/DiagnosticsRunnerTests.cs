@@ -72,6 +72,21 @@ public sealed class DiagnosticsRunnerTests : IDisposable
     }
 
     [Fact]
+    public void AlternativeTlsResponseIsVisibleInShortReportWithoutHidingDefaultFailure()
+    {
+        var runner = CreateRunner();
+        var probe = new TlsProbeResult { Tls12HttpStatusCode = 200 };
+        probe.Lines.Add("[FAIL] example.test: штатное TLS-соединение оборвано");
+        var report = typeof(DiagnosticsRunner).GetMethod("Report", PrivateInstance, null, [typeof(TlsProbeResult)], null)!;
+
+        report.Invoke(runner, [probe]);
+
+        Assert.Equal(1, typeof(DiagnosticsRunner).GetField("_failed", PrivateInstance)!.GetValue(runner));
+        Assert.Equal(0, typeof(DiagnosticsRunner).GetField("_ok", PrivateInstance)!.GetValue(runner));
+        Assert.Contains(runner.ReportLines, line => line.StartsWith("#   ") && line.Contains("[FAIL]") && line.Contains("TLS 1.2: HTTP 200"));
+    }
+
+    [Fact]
     public void DiagnosticLogStripsEmbeddedPayloadAndKeepsRecentLinesWithinMemoryLimit()
     {
         var runner = CreateRunner();

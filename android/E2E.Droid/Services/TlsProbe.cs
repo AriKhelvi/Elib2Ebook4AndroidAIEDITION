@@ -22,6 +22,9 @@ public sealed class TlsProbeResult
     /// <summary>HTTP-статус ответа; null, если до ответа сервера не дошло.</summary>
     public int? HttpStatusCode { get; internal set; }
 
+    /// <summary>Ответ отдельной пробы TLS 1.2; не заменяет результат штатного подключения.</summary>
+    public int? Tls12HttpStatusCode { get; internal set; }
+
     /// <summary>Сервер ответил отказом или ошибкой; успешный TLS не означает доступность содержимого.</summary>
     public bool HttpBlocked => HttpStatusCode >= 400;
 
@@ -66,6 +69,16 @@ public sealed class TlsProbeResult
 /// </summary>
 public static class TlsProbe
 {
+    public static string DescribeSummary(IEnumerable<TlsProbeResult> source)
+    {
+        var results = source.ToList();
+        return $"итого в штатном режиме: получен HTTP-ответ {results.Count(r => r.Ok)}, из них HTTP >= 400: {results.Count(r => r.HttpBlocked)}, " +
+               $"отказ по сертификату {results.Count(r => r.TlsRejected)}, без HTTP-ответа и без отказа по сертификату {results.Count(r => !r.Ok && !r.TlsRejected)}, " +
+               $"цепочку достроила политика {results.Count(r => r.ChainCompleted)}; " +
+               $"в отдельной пробе TLS 1.2 получен HTTP-ответ {results.Count(r => r.Tls12HttpStatusCode.HasValue)}, " +
+               $"из них HTTP >= 400: {results.Count(r => r.Tls12HttpStatusCode >= 400)}";
+    }
+
     /// <param name="url">Адрес; для обхода по IP — https://IP/.</param>
     /// <param name="hostHeader">Настоящее имя сайта в заголовке Host (обход по IP) или null.</param>
     /// <param name="proxy">Прокси из настроек (http://, socks5://…) или пусто.</param>

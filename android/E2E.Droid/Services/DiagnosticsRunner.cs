@@ -37,7 +37,7 @@ public sealed class DiagnosticsRunner(
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
     public const string DefaultTestUrl = "https://tl.rulate.ru/book/209502";
-    public const string ScenarioVersion = "2026-11-12.2";
+    public const string ScenarioVersion = "2026-11-13.1";
 
     private const int TestChapters = 2;
     private const int MaxLines = 6000;
@@ -608,11 +608,12 @@ public sealed class DiagnosticsRunner(
                     result.Lines.Insert(1, $"      Повтор с таймаутом {longTimeout.TotalSeconds:0} с (из настроек); первая попытка: {first}");
                 }
 
-                // TCP есть, а TLS виснет: пробуем TLS 1.2. Его первый пакет короче (без TLS 1.3 и больших ключей),
-                // на таком часто не ломаются фильтры провайдеров. Открылся — значит, мешает именно TLS 1.3
+                // Дополнительная проба при доступном TCP. Различие результатов не доказывает
+                // конкретную причину: влиять могут сеть, VPN и временное состояние сервера.
                 if (!result.Ok && result.TcpConnected)
                 {
                     var tls12 = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, ProbeTimeout, ct, System.Security.Authentication.SslProtocols.Tls12);
+                    result.Tls12HttpStatusCode = tls12.HttpStatusCode;
                     result.Lines.Insert(1, tls12.Ok
                         ? $"      Проба TLS 1.2: ОТКРЫЛСЯ — {tls12.Outcome}. Результат отличается; причина может быть в сети или временном состоянии сервера"
                         : $"      Проба TLS 1.2: тоже не открылся — {tls12.Outcome}");
@@ -627,9 +628,7 @@ public sealed class DiagnosticsRunner(
             }
         }));
 
-        Info($"итого: получен HTTP-ответ {results.Count(r => r.Ok)}, из них HTTP >= 400: {results.Count(r => r.HttpBlocked)}, отказ по сертификату {results.Count(r => r.TlsRejected)}, " +
-             $"недоступны по сети {results.Count(r => !r.Ok && !r.TlsRejected)}, " +
-             $"цепочку достроила политика {results.Count(r => r.ChainCompleted)}");
+        Info(TlsProbe.DescribeSummary(results));
     }
 
     private async Task StepBypassAsync(CancellationToken ct)
@@ -838,8 +837,11 @@ public sealed class DiagnosticsRunner(
 
         lock (_log)
         {
-            foreach (var line in result.Lines)
+            for (var index = 0; index < result.Lines.Count; index++)
             {
+                var line = result.Lines[index];
+                if (index == 0 && result.Tls12HttpStatusCode.HasValue)
+                    line += $"; отдельная проба TLS 1.2: HTTP {result.Tls12HttpStatusCode}, результат штатного режима не изменён";
                 AddLine(line);
             }
         }

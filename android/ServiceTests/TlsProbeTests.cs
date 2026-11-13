@@ -4,6 +4,23 @@ namespace ServiceTests;
 
 public sealed class TlsProbeTests
 {
+    [Fact]
+    public void SummaryKeepsDefaultFailuresSeparateFromAlternativeHttpResponses()
+    {
+        TlsProbeResult[] results =
+        [
+            new() { Ok = true, HttpStatusCode = 200 },
+            new() { Tls12HttpStatusCode = 200 },
+            new() { Tls12HttpStatusCode = 403 },
+        ];
+
+        var summary = TlsProbe.DescribeSummary(results);
+        Assert.Contains("в штатном режиме: получен HTTP-ответ 1", summary);
+        Assert.Contains("без HTTP-ответа и без отказа по сертификату 2", summary);
+        Assert.Contains("в отдельной пробе TLS 1.2 получен HTTP-ответ 2, из них HTTP >= 400: 1", summary);
+        Assert.False(results[1].Ok);
+    }
+
     [Theory]
     [InlineData(200, false)]
     [InlineData(204, false)]
