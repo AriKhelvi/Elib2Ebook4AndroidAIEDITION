@@ -1,5 +1,7 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Elib2Ebook.Domain.Book;
+using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
@@ -33,8 +35,9 @@ public class TwilightRussiaGetter(BookGetterConfig config) : GetterBase(config)
         if (url.ToString().Contains("/publ/"))
         {
             var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
-            var a = doc.QuerySelector("#msgd ~ a[href]");
-            return a.Attributes["href"].Value.AsUri();
+            var a = doc.QuerySelector("#msgd ~ a[href*='/forum/']")
+                ?? throw new InvalidOperationException($"TwilightRussia не вернул ссылку на оглавление ({url}).");
+            return ReadLink(url, a.Attributes["href"].Value, "/forum/");
         }
 
         return url;
@@ -48,8 +51,7 @@ public class TwilightRussiaGetter(BookGetterConfig config) : GetterBase(config)
         }
 
         var post = doc.QuerySelectorAll("td.content-block-forum");
-
-        var result = new List<Chapter>();
+        var toc = new List<UrlChapter>();
         foreach (var a in post.QuerySelectorAll("a[href*='/publ/']"))
         {
             var title = a.GetText();
@@ -58,12 +60,34 @@ public class TwilightRussiaGetter(BookGetterConfig config) : GetterBase(config)
                 continue;
             }
 
-            Config.Logger.LogInformation($"Загружаю главу {title}");
-            var href = url.MakeRelativeUri(a.Attributes["href"].Value);
-            result.Add(await GetChapter(href, title));
+            toc.Add(new UrlChapter(ReadLink(url, a.Attributes["href"].Value, "/publ/"), title));
         }
+        toc = toc.DistinctBy(c => c.Url).ToList();
+        if (toc.Count == 0)
+            throw new InvalidOperationException($"TwilightRussia не вернул доступного оглавления ({url}); пустая книга не будет сохранена.");
 
+        var result = new List<Chapter>();
+        foreach (var chapter in SliceToc(toc, c => c.Title))
+        {
+            Config.Logger.LogInformation($"Загружаю главу {chapter.Title}");
+            result.Add(await GetChapter(chapter.Url, chapter.Title));
+        }
         return result;
+    }
+
+    private Uri ReadLink(Uri page, string source, string pathPrefix)
+    {
+        var link = source.HtmlDecode().Trim();
+        // На реальном форуме встретился префикс https://https:// (Uri также
+        // мог нормализовать его в https://https//).
+        // Исправляем только дублированную схему и только при сохранении домена сайта.
+        var corrected = Regex.Replace(link, "^https?://https?:?//", "https://", RegexOptions.IgnoreCase);
+        if (!Uri.TryCreate(page, corrected, out var uri) || uri.Scheme is not ("http" or "https") ||
+            uri.UserInfo.Length > 0 || !SystemUrl.IsSameHost(uri) || !uri.AbsolutePath.StartsWith(pathPrefix, StringComparison.Ordinal))
+            throw new InvalidOperationException($"TwilightRussia: повреждённая ссылка в оглавлении ({page}): {source}");
+        if (corrected != link)
+            Config.Logger.LogWarning($"TwilightRussia: исправлена дублированная схема ссылки: {link} → {uri}");
+        return uri;
     }
 
     private async Task<Chapter> GetChapter(Uri url, string title)
@@ -73,7 +97,9 @@ public class TwilightRussiaGetter(BookGetterConfig config) : GetterBase(config)
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
 
         var text = new StringBuilder();
-        foreach (var node in doc.QuerySelector("#msgd").ChildNodes)
+        var content = doc.QuerySelector("#msgd")
+            ?? throw new InvalidOperationException($"TwilightRussia не вернул текст главы ({url}); возможно ограничение доступа или изменение разметки.");
+        foreach (var node in content.ChildNodes)
         {
             var img = node.QuerySelector("img[src]");
             if (img != null)

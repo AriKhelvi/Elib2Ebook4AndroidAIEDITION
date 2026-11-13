@@ -73,7 +73,7 @@ public class StrokiMtsGetter(BookGetterConfig config) : GetterBase(config)
             }
             else
             {
-                Config.Logger.LogInformation("Эта книга не в формате epub. Получить главы невозможно");
+                Config.Logger.LogWarning("Эта книга не в формате epub. Получить главы невозможно");
             }
         }
         else
@@ -188,7 +188,11 @@ public class StrokiMtsGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<StrokiMtsFile[]> GetFileMeta(string id)
     {
         var json = await SendAsync<StrokiMtsApiResponse<StrokiMtsFiles>>(() => GetMessage(SystemUrl.MakeRelativeUri("/api/books/files").AppendQueryParameter("bookId", id), "5.0", "5.0"));
-        return json.Data.Full?.Length > 0 ? json.Data.Full : [json.Data.Preview];
+        if (json?.Data?.Full?.Length > 0) return json.Data.Full;
+        if (json?.Data?.Preview == null)
+            throw new InvalidOperationException("Строки не предоставили ни полного файла, ни ознакомительного отрывка книги.");
+        Config.Logger.LogWarning("Строки предоставили только ознакомительный отрывок. Полный файл книги сайт не предоставил.");
+        return [json.Data.Preview];
     }
 
     private async Task<StrokiMtsFileUrl> GetFileUrl(StrokiMtsFile file)

@@ -19,10 +19,14 @@ public class RanobeHubGetter(BookGetterConfig config) : GetterBase(config)
     {
         url = SystemUrl.MakeRelativeUri($"/ranobe/{GetId(url)}");
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
+        var title = doc.GetTextBySelector("h1.header");
+        if (string.IsNullOrWhiteSpace(title) || doc.QuerySelector("html[data-id]") == null)
+            throw new InvalidOperationException($"RanobeHub вернул страницу в неподдерживаемой разметке ({url}). " +
+                "Не удалось прочитать название и идентификатор книги; загрузчик требует обновления.");
 
         var book = new Book(url)
         {
-            Cover = await GetCover(doc, url), Chapters = await FillChapters(doc, url), Title = doc.GetTextBySelector("h1.header"), Author = new Author("RanobeHub")
+            Cover = await GetCover(doc, url), Chapters = await FillChapters(doc, url), Title = title, Author = new Author("RanobeHub")
         };
 
         return book;
@@ -55,14 +59,12 @@ public class RanobeHubGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HtmlDocument> GetChapter(string url)
     {
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url.AsUri());
-        while (doc.QuerySelector("div[data-callback=correctCaptcha]") != null)
-        {
-            Config.Logger.LogInformation($"Обнаружена капча. Перейдите по ссылке {url}, введите капчу и нажмите Enter...");
-            Console.Read();
-            doc = await Config.Client.GetHtmlDocWithTriesAsync(url.AsUri());
-        }
+        if (doc.QuerySelector("div[data-callback=correctCaptcha]") != null)
+            throw new InvalidOperationException($"RanobeHub требует CAPTCHA ({url}); текст главы не получен.");
 
-        var result = doc.QuerySelector("div.container[data-container]").RemoveNodes("div.title-wrapper, div.ads-desktop, div.tablet, div.chapter-hoticons").InnerHtml.AsHtmlDoc();
+        var content = doc.QuerySelector("div.container[data-container]")
+            ?? throw new InvalidOperationException($"RanobeHub не вернул текст главы ({url}); возможно ограничение доступа или изменение разметки.");
+        var result = content.RemoveNodes("div.title-wrapper, div.ads-desktop, div.tablet, div.chapter-hoticons").InnerHtml.AsHtmlDoc();
 
         foreach (var img in result.QuerySelectorAll("img"))
         {
@@ -89,7 +91,10 @@ public class RanobeHubGetter(BookGetterConfig config) : GetterBase(config)
     {
         var internalId = doc.QuerySelector("html[data-id]").Attributes["data-id"].Value;
         var response = await Config.Client.GetFromJsonAsync<RanobeHubApiResponse>(SystemUrl.MakeRelativeUri($"/api/ranobe/{internalId}/contents"));
-        return SliceToc(response?.Volumes.SelectMany(t => t.Chapters).ToList(), c => c.Name);
+        var chapters = response?.Volumes?.SelectMany(t => t.Chapters ?? []).ToList();
+        if (chapters == null || chapters.Count == 0)
+            throw new InvalidOperationException("RanobeHub не вернул доступного оглавления; пустая книга не будет сохранена.");
+        return SliceToc(chapters, c => c.Name);
     }
 
     private Task<TempFile> GetCover(HtmlDocument doc, Uri bookUri)

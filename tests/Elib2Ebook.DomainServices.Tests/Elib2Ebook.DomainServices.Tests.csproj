@@ -43,5 +43,15 @@
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.TopLiba/Elib2Ebook.ExternalServices.TopLiba.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Bookinist/Elib2Ebook.ExternalServices.Bookinist.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Fb2Top/Elib2Ebook.ExternalServices.Fb2Top.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Bookuruk/Elib2Ebook.ExternalServices.Bookuruk.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.FictionBook/Elib2Ebook.ExternalServices.FictionBook.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Jaomix/Elib2Ebook.ExternalServices.Jaomix.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.RanobeHub/Elib2Ebook.ExternalServices.RanobeHub.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.TwilightRussia/Elib2Ebook.ExternalServices.TwilightRussia.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.BookInBook/Elib2Ebook.ExternalServices.BookInBook.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Neobook/Elib2Ebook.ExternalServices.Neobook.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Novelxo/Elib2Ebook.ExternalServices.Novelxo.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.StrokiMts/Elib2Ebook.ExternalServices.StrokiMts.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Renovels/Elib2Ebook.ExternalServices.Renovels.csproj" />
     </ItemGroup>
 </Project>

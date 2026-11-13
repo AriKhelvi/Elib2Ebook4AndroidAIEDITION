@@ -86,7 +86,9 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     {
         var url = ApiIp.MakeRelativeUri($"/v1/book/get/{bookId}?app=android&device_id={DeviceId}&user_token={token}&sign={GetSign(token)}");
         var data = await GetApiData<LitnetBookResponse>(url);
-        if (!Config.HasCredentials && data!.AdultOnly)
+        if (data == null || string.IsNullOrWhiteSpace(data.Title) || string.IsNullOrWhiteSpace(data.Url))
+            throw new InvalidOperationException("Litnet не вернул название или адрес книги. Проверьте доступ к произведению.");
+        if (!Config.HasCredentials && data.AdultOnly)
         {
             throw new Exception("Произведение 18+. Необходимо добавить логин и пароль.");
         }
@@ -125,18 +127,9 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     private async Task<T> GetApiData<T>(Uri uri)
     {
         using var request = GetDefaultMessage(uri, ApiUrl);
-        using var response = await Config.Client.SendAsync(request);
-        if (response.StatusCode == HttpStatusCode.Forbidden)
-        {
-            throw new Exception("Получен бан. Попробуйте позже.");
-        }
-
-        if (response.StatusCode == HttpStatusCode.NotFound)
-        {
-            return default;
-        }
-
-        var data = await response.Content.ReadFromJsonAsync<T>();
+        using var response = await Config.Client.SendAsync(request, Config.CancellationToken);
+        response.EnsureDownloadSuccess();
+        var data = await response.Content.ReadFromJsonAsync<T>(Config.CancellationToken);
         return data;
     }
 
@@ -166,19 +159,26 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     {
         try
         {
-            var doc = await Config.Client.SendAsync(GetDefaultMessage(url.ReplaceHost(SiteIp.Host), SystemUrl)).ContinueWith(t => t.Result.Content.ReadAsStream().AsHtmlDoc());
+            using var request = GetDefaultMessage(url.ReplaceHost(SiteIp.Host), SystemUrl);
+            using var response = await Config.Client.SendAsync(request, Config.CancellationToken);
+            response.EnsureDownloadSuccess();
+            await using var stream = await response.Content.ReadAsStreamAsync(Config.CancellationToken);
+            var doc = stream.AsHtmlDoc();
             var a = doc.QuerySelector("div.book-view-info-coll a[href*='sort=cycles']");
-            if (a != null)
+            if (a != null && !string.IsNullOrWhiteSpace(a.GetText()))
             {
                 return new Seria
                 {
-                    Name = a.GetText(), Url = url.MakeRelativeUri(a.Attributes["href"].Value), Number = book.CyclePriority is > 0 ? book.CyclePriority.Value.ToString() : string.Empty
+                    Name = a.GetText(), Url = url.MakeRelativeUri(a.Attributes["href"].Value.HtmlDecode()), Number = book.CyclePriority is > 0 ? book.CyclePriority.Value.ToString() : string.Empty
                 };
             }
+            if (book.CyclePriority is > 0)
+                Config.Logger.LogWarning("Litnet сообщил номер книги в цикле ({Number}), но название серии не найдено. Книга будет сохранена без серии.", book.CyclePriority);
         }
+        catch (OperationCanceledException) when (Config.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            Config.Logger.LogInformation(ex.ToString());
+            Config.Logger.LogWarning("Не удалось получить серию Litnet: {Reason}. Книга будет сохранена без серии.", ex.Message);
         }
 
         return null;

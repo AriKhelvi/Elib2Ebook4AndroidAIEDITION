@@ -140,19 +140,20 @@ public class NeobookGetter(BookGetterConfig config) : GetterBase(config)
         var data = Regex.Match(doc.ParsedText, "var data = (?<data>.*?);\n").Groups["data"].Value;
         if (string.IsNullOrWhiteSpace(data))
         {
-            return null;
+            throw new InvalidOperationException($"Neobook не вернул данные главы «{neobookTocChapter.Title}». Возможно, доступ ограничен или формат страницы изменился.");
         }
 
         var neobookBook = data.Deserialize<NeobookBook>();
-        if (neobookBook.ActiveChapterIndex > neobookBook.Chapters.Length)
+        if (neobookBook?.Chapters == null || neobookBook.ActiveChapterIndex < 0 ||
+            neobookBook.ActiveChapterIndex >= neobookBook.Chapters.Length)
         {
-            return null;
+            throw new InvalidOperationException($"Neobook вернул неверный индекс главы «{neobookTocChapter.Title}». Неполная книга не будет сохранена.");
         }
 
         var chapter = neobookBook.Chapters[neobookBook.ActiveChapterIndex];
-        if (string.IsNullOrWhiteSpace(chapter.Data?.Html))
+        if (string.IsNullOrWhiteSpace(chapter?.Data?.Html))
         {
-            return null;
+            throw new InvalidOperationException($"Neobook не предоставил текст главы «{neobookTocChapter.Title}». Неполная книга не будет сохранена.");
         }
 
         return chapter.Data.Html.AsHtmlDoc();

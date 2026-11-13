@@ -137,17 +137,43 @@ public abstract class RenovelsGetterBase(BookGetterConfig config) : GetterBase(c
     private async Task<IEnumerable<RenovelsChapter>> GetToc(RenovelsContent content)
     {
         var result = new List<RenovelsChapter>();
+        var seen = new Dictionary<int, RenovelsChapter>();
+        if (content.Branches == null || content.Branches.Length == 0)
+            throw new InvalidOperationException("Сайт не предоставил ветку перевода. Оглавление книги не получено.");
 
         for (var i = 1;; i++)
         {
             var uri = _apiUrl.MakeRelativeUri($"/api/v2/titles/chapters/?branch_id={content.Branches[0].Id}&ordering=-index&user_data=1&count=40&page={i}");
             var response = await Config.Client.GetFromJsonAsync<RenovelsTocResponse>(uri);
-            result.AddRange(response.Results);
+            if (response?.Results == null)
+                throw new InvalidOperationException($"Сайт не предоставил страницу {i} оглавления. Неполная книга не будет сохранена.");
+            var countBefore = seen.Count;
+            foreach (var chapter in response.Results)
+            {
+                if (seen.TryAdd(chapter.Id, chapter)) result.Add(chapter);
+                else
+                {
+                    // На пересечении страниц сохраняем первый порядок и название,
+                    // но не теряем доступ, подтверждённый хотя бы одним вхождением.
+                    var existing = seen[chapter.Id];
+                    existing.IsPaid &= chapter.IsPaid;
+                    if (chapter.IsBought == true) existing.IsBought = true;
+                }
+            }
+            if (response.Results.Length > 0 && seen.Count == countBefore)
+                throw new InvalidOperationException($"Сайт повторил страницу {i} оглавления. Загрузка остановлена, чтобы не сохранить дубли и неполную книгу.");
 
             if (response.Results.Length < 40)
             {
                 result.Reverse();
-                return SliceToc(result.Where(c => !c.IsPaid || c.IsBought == true).ToList(), c => c.Name);
+                var available = new List<RenovelsChapter>();
+                foreach (var chapter in SliceToc(result, c => c.Name))
+                {
+                    if (chapter.IsPaid && chapter.IsBought != true)
+                        Config.Logger.LogWarning($"Глава «{chapter.Title}» не загружена: платная глава недоступна текущему аккаунту.");
+                    else available.Add(chapter);
+                }
+                return available;
             }
         }
     }
