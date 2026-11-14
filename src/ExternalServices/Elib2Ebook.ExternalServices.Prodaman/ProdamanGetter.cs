@@ -178,9 +178,13 @@ public class ProdamanGetter : GetterBase
 
     private static bool IsHeaderStart(IEnumerable<HtmlNode> nodes)
     {
-        var firstNode = nodes.First();
-        return firstNode.Name == "h3" && !string.IsNullOrWhiteSpace(firstNode.InnerText);
+        var firstNode = nodes.FirstOrDefault(node => node.NodeType != HtmlNodeType.Comment
+            && (node.NodeType != HtmlNodeType.Text || !string.IsNullOrWhiteSpace(node.InnerText)));
+        return firstNode != null && IsChapterHeader(firstNode);
     }
+
+    private static bool IsChapterHeader(HtmlNode node)
+        => node.Name == "h3" && !string.IsNullOrWhiteSpace(node.GetText()) && node.GetText().Trim() != "***";
 
     private static Chapter CreateChapter(string title)
     {
@@ -190,17 +194,28 @@ public class ProdamanGetter : GetterBase
         };
     }
 
-    private async Task AddChapter(ICollection<Chapter> chapters, Chapter chapter, StringBuilder text, Uri url)
+    private static void AddChapter(ICollection<Chapter> chapters, Chapter chapter, StringBuilder text)
     {
         if (chapter == null)
         {
             return;
         }
 
-        var chapterDoc = text.ToString().AsHtmlDoc();
-        chapter.Images = await GetImages(chapterDoc, url);
-        chapter.Content = chapterDoc.DocumentNode.InnerHtml;
+        chapter.Content = text.ToString();
         chapters.Add(chapter);
+    }
+
+    private async Task<IEnumerable<Chapter>> SelectChapters(List<Chapter> chapters, Uri url)
+    {
+        var selected = SliceToc(chapters, chapter => chapter.Title).ToList();
+        // Иллюстрации пропущенных глав не запрашиваем: диапазон применяется до их обработки.
+        foreach (var chapter in selected)
+        {
+            var document = chapter.Content.AsHtmlDoc();
+            chapter.Images = await GetImages(document, url);
+            chapter.Content = document.DocumentNode.InnerHtml;
+        }
+        return selected;
     }
 
     private static string Decode(string encode)
@@ -218,6 +233,10 @@ public class ProdamanGetter : GetterBase
 
         Chapter chapter = null;
         var text = new StringBuilder();
+        // Для индексов от конца и названий нужен полный список глав; обычный End можно остановить заранее.
+        var stopAfter = Config.Options.End is > 0 && Config.Options.Start is not < 0
+            && string.IsNullOrWhiteSpace(Config.Options.StartName) && string.IsNullOrWhiteSpace(Config.Options.EndName)
+            ? Config.Options.End : null;
 
         var pages = await GetPages(url);
         var firstBr = true;
@@ -236,7 +255,7 @@ public class ProdamanGetter : GetterBase
 
             foreach (var node in nodes)
             {
-                if (node.Name != "h3" || (node.Name == "h3" && node.GetText() == "***"))
+                if (!IsChapterHeader(node))
                 {
                     if (node.Name == "br")
                     {
@@ -277,16 +296,19 @@ public class ProdamanGetter : GetterBase
                 else
                 {
                     text.Append("</p>");
-                    await AddChapter(result, chapter, text, url);
+                    AddChapter(result, chapter, text);
+                    // Только следующий заголовок доказывает конец главы: её текст мог продолжаться на другой странице.
+                    if (stopAfter.HasValue && result.Count >= stopAfter.Value) return await SelectChapters(result, url);
                     text.Clear();
+                    firstBr = true;
                     chapter = CreateChapter(Decode(node.InnerText.HtmlDecode()));
                 }
             }
         }
 
         text.Append("</p>");
-        await AddChapter(result, chapter ?? CreateChapter(title), text, url);
-        return result;
+        AddChapter(result, chapter ?? CreateChapter(title), text);
+        return await SelectChapters(result, url);
     }
 
     private Task<TempFile> GetCover(HtmlDocument doc, Uri url)

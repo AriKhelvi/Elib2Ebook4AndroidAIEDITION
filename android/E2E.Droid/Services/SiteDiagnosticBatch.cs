@@ -49,7 +49,8 @@ public static class SiteDiagnosticBatch
             else
             {
                 using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                limit.CancelAfter(siteTimeout ?? SiteTimeout);
+                var timeout = siteTimeout ?? SiteTimeout;
+                limit.CancelAfter(timeout);
                 try
                 {
                     // Не оставляем загрузчик работать в фоне: отмена кооперативная, ждём освобождения ресурсов.
@@ -57,14 +58,14 @@ public static class SiteDiagnosticBatch
                     if (cancellationToken.IsCancellationRequested)
                         outcome = new(SiteDiagnosticStatus.Cancelled, "Текущая проверка отменена");
                     else if (limit.IsCancellationRequested)
-                        outcome = new(SiteDiagnosticStatus.Timeout, "Истёк лимит проверки; завершение отмены могло занять дополнительное время");
+                        outcome = ProbeTimeout(timeout);
                 }
                 catch (Exception ex)
                 {
                     outcome = cancellationToken.IsCancellationRequested
                         ? new(SiteDiagnosticStatus.Cancelled, "Текущая проверка отменена")
-                        : limit.IsCancellationRequested || ex is OperationCanceledException or TimeoutException
-                            ? new(SiteDiagnosticStatus.Timeout, "Истёк лимит проверки или сетевого запроса")
+                        : limit.IsCancellationRequested
+                            ? ProbeTimeout(timeout)
                             : ClassifyFailure(ex);
                 }
             }
@@ -82,7 +83,7 @@ public static class SiteDiagnosticBatch
                 ? "Возрастное ограничение 18+: требуется вход; анонимная диагностика не использует сохранённые учётные данные"
                 : "Сайт требует входа или не предоставил доступ; сохранённые учётные данные не использовались");
         if (error is OperationCanceledException or TimeoutException)
-            return new(SiteDiagnosticStatus.Timeout, "Истёк лимит проверки или сетевого запроса");
+            return new(SiteDiagnosticStatus.Timeout, "Сработал таймаут отдельного запроса/операции загрузчика; параметры пробы и время ожидания — в журнале");
         if (error is HttpRequestException http && http.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
             return new(SiteDiagnosticStatus.AccessRestricted, $"HTTP {(int)http.StatusCode.Value}: сайт ограничил доступ; анонимная проба не доказывает дефект загрузчика");
         if (error is HttpRequestException unavailable && unavailable.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
@@ -103,6 +104,9 @@ public static class SiteDiagnosticBatch
             ? $"HTTP {(int)request.StatusCode.Value}; подробности этапа — в журнале"
             : $"{error.GetType().Name}; подробности этапа — в журнале");
     }
+
+    private static SiteProbeOutcome ProbeTimeout(TimeSpan timeout) => new(SiteDiagnosticStatus.Timeout,
+        $"Исчерпан общий лимит примера ({timeout.TotalSeconds:0.###} с), включая задержки и очередь запросов; завершение отмены может занять дополнительное время");
 
     public static string DescribeSummary(IReadOnlyList<SiteDiagnosticResult> results)
     {

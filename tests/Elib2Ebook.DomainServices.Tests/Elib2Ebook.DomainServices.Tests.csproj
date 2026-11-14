@@ -25,6 +25,7 @@
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Acomics/Elib2Ebook.ExternalServices.Acomics.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.HogwartsNet/Elib2Ebook.ExternalServices.HogwartsNet.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Readli/Elib2Ebook.ExternalServices.Readli.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Prodaman/Elib2Ebook.ExternalServices.Prodaman.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litsovet/Elib2Ebook.ExternalServices.Litsovet.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Rulate/Elib2Ebook.ExternalServices.Rulate.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Ficbook/Elib2Ebook.ExternalServices.Ficbook.csproj" />

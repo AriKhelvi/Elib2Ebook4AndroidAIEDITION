@@ -37,7 +37,7 @@ public sealed class DiagnosticsRunner(
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
     public const string DefaultTestUrl = "https://tl.rulate.ru/book/273770";
-    public const string ScenarioVersion = "2026-11-14.3";
+    public const string ScenarioVersion = "2026-11-15.1";
 
     private const int TestChapters = 2;
     private const int MaxLines = 6000;
@@ -825,6 +825,7 @@ public sealed class DiagnosticsRunner(
         Info($"{item.Id}: {item.BookUrl}; глава {item.StartChapter}; {item.Limitation}");
         var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "site-" + Guid.NewGuid().ToString("N"));
         var options = CreateSiteProbeOptions(item, work, settings);
+        Info($"{item.Id}: таймаут запроса в пробе {options.Timeout} с (настройка приложения {settings.Timeout} с), общий лимит примера {SiteDiagnosticBatch.SiteTimeout.TotalSeconds:0} с; задержка сохранена из настроек, режим {options.DelayMode}, своя {options.CustomDelaySeconds:0.##} с. Ожидание очереди запросов также расходует эти лимиты.");
         var hadWarnings = false;
         var cleanupFailed = false;
         SiteProbeOutcome outcome;

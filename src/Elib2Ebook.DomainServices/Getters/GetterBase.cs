@@ -46,7 +46,12 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
     /// </summary>
     /// <param name="uri"></param>
     /// <returns></returns>
-    protected async Task<TempFile> SaveImage(Uri uri)
+    protected Task<TempFile> SaveImage(Uri uri) => SaveImageCore(uri, required: false);
+
+    /// <summary>Обязательная страница комикса: ошибка не должна превращаться в пропуск изображения.</summary>
+    protected Task<TempFile> SaveRequiredImage(Uri uri) => SaveImageCore(uri, required: true);
+
+    private async Task<TempFile> SaveImageCore(Uri uri, bool required)
     {
         var label = uri.Scheme == "data" ? "встроенное изображение" : LogText.Clean(uri.ToString());
         try
@@ -105,6 +110,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         catch (Exception ex)
         {
             Config.Logger.LogWarning($"Не удалось загрузить изображение {label}: {LogText.Clean(ex.Message)}");
+            if (required) throw;
             return null;
         }
     }
@@ -114,7 +120,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
     /// </summary>
     /// <param name="doc"></param>
     /// <param name="baseUri"></param>
-    protected async Task<IEnumerable<TempFile>> GetImages(HtmlDocument doc, Uri baseUri)
+    protected virtual async Task<IEnumerable<TempFile>> GetImages(HtmlDocument doc, Uri baseUri)
     {
         var images = new ConcurrentBag<Tuple<TempFile, int>>();
         var toRemove = new ConcurrentBag<HtmlNode>();

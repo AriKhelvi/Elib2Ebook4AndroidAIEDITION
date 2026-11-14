@@ -74,27 +74,24 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
             $"https://{host ?? "ios.litres.ru"}/pages/{path}/{art.Id}/{file.Id}.mp3?sid={_authData.Sid}&uilang=ru&libapp={APP}&timestamp={ts}&md5={Convert.ToHexString(hashBytes).ToLower()}");
     }
 
-    private LitresAuthResponseData _authData = new()
-    {
-        Sid = "6ufp4b2wbx1acc4k1f0wdo571762c0fn"
-    };
+    private LitresAuthResponseData _authData;
 
     private LitresMe _me;
 
     public override async Task Authorize()
     {
-        Config.CancellationToken.ThrowIfCancellationRequested();
         Config.Client.DefaultRequestHeaders.Remove("Session-Id");
+        _authData = null;
         _me = null;
+        Config.CancellationToken.ThrowIfCancellationRequested();
         if (!Config.HasCredentials)
         {
-            Config.Client.DefaultRequestHeaders.Add("Session-Id", _authData.Sid);
+            Config.Logger.LogDebug("Литрес: анонимный режим, доступен официальный отрывок без сессии.");
             return;
         }
 
         // Кэш уменьшает число входов, но отсутствие прав на диск не должно мешать скачиванию.
         // На Android рабочая директория может быть корнем файловой системы, доступным только для чтения.
-        _authData = null;
         var cacheFile = GetAuthCacheFile();
         try
         {
@@ -271,6 +268,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
 
     public override async Task<Book> Get(Uri url)
     {
+        Config.CancellationToken.ThrowIfCancellationRequested();
         var bookId = GetBookId(url);
 
         var art = await GetResponse<LitresArt>($"https://api.litres.ru/foundation/api/arts/{bookId}".AsUri());
@@ -305,12 +303,14 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                 var litresBook = await GetBook(stream);
                 book.Chapters = await FillChapters(litresBook, art.Title);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception)
             {
                 Config.Logger.LogInformation($"Не удалось обработать оригинальный файл {fb3File.FullName}");
             }
         }
 
+        Config.CancellationToken.ThrowIfCancellationRequested();
         return book;
     }
 
@@ -347,7 +347,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
 
         if (_authData == null || (book.AdditionalFiles.Get(AdditionalTypeEnum.Books).Count == 0 && art.ArtType != LitresArtTypeEnum.Audio))
         {
-            var fileResponse = await GetShortBook(art);
+            using var fileResponse = await GetShortBook(art);
             if (fileResponse != null)
             {
                 book.AdditionalFiles.Add(AdditionalTypeEnum.Books, await CreateTempFile(fileResponse));
@@ -361,7 +361,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
             response.RequestMessage.RequestUri,
             Config.TempFolder.Path,
             response.Content.Headers.ContentDisposition?.FileName?.Trim('\"') ?? response.RequestMessage.RequestUri.GetFileName(),
-            await response.Content.ReadAsStreamAsync());
+            await response.Content.ReadAsStreamAsync(Config.CancellationToken));
     }
 
     private static string GetBookId(Uri url)
@@ -430,6 +430,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
 
         foreach (var section in book.Content.QuerySelectorAll("section"))
         {
+            Config.CancellationToken.ThrowIfCancellationRequested();
             if (section.QuerySelector("> section") != null)
             {
                 continue;
@@ -507,12 +508,13 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                 foreach (var path in paths)
                 {
                     var uri = GetFullUri(art, path, file, host);
-                    var response = await Config.Client.GetAsync(uri);
+                    var response = await Config.Client.GetAsync(uri, Config.CancellationToken);
                     if (response.StatusCode == HttpStatusCode.OK && response.Headers.AcceptRanges.Count != 0)
                     {
                         Config.Logger.LogInformation(LogText.Clean($"Дополнительный файл доступен по ссылке {uri}"));
                         return response;
                     }
+                    response.Dispose();
                 }
             }
         }
@@ -523,8 +525,19 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HttpResponseMessage> GetShortBook(LitresArt art)
     {
         var shortUri = GetShortUri(art);
-        Config.Logger.LogInformation(LogText.Clean($"Дополнительный файл доступен по ссылке {shortUri}"));
-        return await Config.Client.GetAsync(shortUri);
+        Config.Logger.LogInformation(LogText.Clean($"Запрашиваю ознакомительный отрывок по ссылке {shortUri}"));
+        var response = await Config.Client.GetAsync(shortUri, Config.CancellationToken);
+        try
+        {
+            response.EnsureDownloadSuccess();
+            Config.Logger.LogWarning("Литрес: получен ознакомительный отрывок. Полнота книги не подтверждена.");
+            return response;
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
     }
 
     private async Task<LitresBook> GetBook(Stream stream)
@@ -537,7 +550,8 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
         foreach (var entry in zip.Entries)
         {
             using var ms = new MemoryStream();
-            await entry.Open().CopyToAsync(ms);
+            await using var entryStream = entry.Open();
+            await entryStream.CopyToAsync(ms, Config.CancellationToken);
             map[entry.FullName.Replace("fb3/", string.Empty)] = ms.ToArray();
         }
 

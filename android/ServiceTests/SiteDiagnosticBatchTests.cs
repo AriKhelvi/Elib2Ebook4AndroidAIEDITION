@@ -56,6 +56,7 @@ public sealed class SiteDiagnosticBatchTests : IDisposable
         }, null, CancellationToken.None, TimeSpan.FromMilliseconds(20));
 
         Assert.Equal(new[] { SiteDiagnosticStatus.Timeout, SiteDiagnosticStatus.Ok }, results.Select(result => result.Status));
+        Assert.Contains("общий лимит примера", results[0].Detail);
     }
 
     [Fact]
@@ -68,6 +69,21 @@ public sealed class SiteDiagnosticBatchTests : IDisposable
         }, null, CancellationToken.None, TimeSpan.FromMilliseconds(5));
 
         Assert.Equal(SiteDiagnosticStatus.Timeout, Assert.Single(results).Status);
+        Assert.Contains("общий лимит примера", results[0].Detail);
+    }
+
+    [Fact]
+    public async Task RequestTimeoutBeforeSiteBudgetIsNotReportedAsExhaustedSiteBudget()
+    {
+        var results = await SiteDiagnosticBatch.RunAsync(new[] { Case("request") }, (_, _) =>
+            Task.FromException<SiteProbeOutcome>(new TaskCanceledException("private-value", new TimeoutException("private-value"))),
+            null, CancellationToken.None, TimeSpan.FromMinutes(1));
+
+        var result = Assert.Single(results);
+        Assert.Equal(SiteDiagnosticStatus.Timeout, result.Status);
+        Assert.Contains("отдельного запроса", result.Detail);
+        Assert.DoesNotContain("общий лимит", result.Detail);
+        Assert.DoesNotContain("private-value", result.Detail);
     }
 
     [Fact]
