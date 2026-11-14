@@ -132,14 +132,6 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
         chapters.Add(chapter);
     }
 
-    private static bool IsSingleChapter(IEnumerable<HtmlNode> nodes)
-    {
-        var firstNode = nodes.FirstOrDefault();
-        if (firstNode == null)
-            throw new InvalidOperationException("Readli вернул пустую страницу книги. Неполный файл не будет сохранён.");
-        return firstNode.Name != "h3" || string.IsNullOrWhiteSpace(firstNode.InnerText);
-    }
-
     private static Chapter CreateChapter(string title)
     {
         return new Chapter
@@ -165,7 +157,6 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
         }
 
         Chapter chapter = null;
-        var singleChapter = true;
         var text = new StringBuilder();
         var pending = new List<(Chapter Chapter, StringBuilder Text)>();
         // Отрицательные индексы и поиск по названию требуют полного оглавления.
@@ -188,11 +179,10 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
             // поэтому порядок текста и заголовков берём непосредственно из DOM.
             var nodes = content.ChildNodes.Where(node => node.Name is "h3" or "p" or "img").ToList();
             if (nodes.Count == 0) nodes = content.ChildNodes.ToList();
-            singleChapter = i == 1 ? IsSingleChapter(nodes) : singleChapter;
-
             foreach (var node in nodes)
             {
-                if (singleChapter || node.Name != "h3")
+                var headingTitle = node.Name == "h3" ? node.InnerText.HtmlDecode().Trim() : null;
+                if (string.IsNullOrWhiteSpace(headingTitle))
                 {
                     if (node.Name == "img" && node.Attributes["src"] != null)
                     {
@@ -215,9 +205,11 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
                         // даже если её текст занимал несколько страниц сайта.
                         if (earlyEnd.HasValue && pending.Count >= earlyEnd.Value)
                             return await BuildSelectedChapters(pending);
+                        text = new StringBuilder();
                     }
-                    text = new StringBuilder();
-                    chapter = CreateChapter(node.InnerHtml.HtmlDecode());
+                    // Вступление до первого заголовка относится к первой главе,
+                    // даже если заголовок появился лишь на следующей странице.
+                    chapter = CreateChapter(headingTitle);
                 }
             }
         }

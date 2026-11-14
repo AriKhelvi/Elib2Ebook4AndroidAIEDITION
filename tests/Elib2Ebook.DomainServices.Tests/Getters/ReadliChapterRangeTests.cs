@@ -57,6 +57,106 @@ public sealed class ReadliChapterRangeTests
         Assert.Equal(new[] { 1, 2 }, visited);
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task PrefaceAndImageBeforeFirstHeadingDoNotShiftChapterNumbers(int selected)
+    {
+        var visited = new List<int>();
+        var images = new List<string>();
+        using var getter = Create(new Options { Start = selected, End = selected }, 96, visited, page => page == 1
+            ? Html("<img src='/preface.jpg'><p>Предисловие.</p><h3>Первая</h3><p>Текст первой.</p>" +
+                   "<h3>Вторая</h3><p>Текст второй.</p><h3>Третья</h3><p>Чужой текст.</p>")
+            : throw new InvalidOperationException("Все выбранные главы завершены на первой странице"), image =>
+        {
+            images.Add(image);
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([255, 216, 255, 224]) };
+        });
+
+        var chapter = Assert.Single((await getter.Get(Url)).Chapters);
+
+        Assert.Equal(selected == 1 ? "Первая" : "Вторая", chapter.Title);
+        if (selected == 1)
+        {
+            Assert.Contains("Предисловие.", chapter.Content);
+            Assert.Contains("Текст первой.", chapter.Content);
+            Assert.True(chapter.Content.IndexOf("Предисловие.", StringComparison.Ordinal) <
+                        chapter.Content.IndexOf("Текст первой.", StringComparison.Ordinal));
+            Assert.DoesNotContain("Текст второй.", chapter.Content);
+            Assert.Single(chapter.Images);
+            Assert.Equal(new[] { "/preface.jpg" }, images);
+        }
+        else
+        {
+            Assert.Contains("Текст второй.", chapter.Content);
+            Assert.DoesNotContain("Предисловие.", chapter.Content);
+            Assert.DoesNotContain("Текст первой.", chapter.Content);
+            Assert.Empty(chapter.Images);
+            Assert.Empty(images);
+        }
+        Assert.DoesNotContain("Чужой текст.", chapter.Content);
+        Assert.Equal(new[] { 1 }, visited);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task FirstHeadingOnLaterPageKeepsPrefaceWithoutCreatingExtraChapter(int selected)
+    {
+        var visited = new List<int>();
+        using var getter = Create(new Options { Start = selected, End = selected, NoImage = true }, 96, visited, page => page switch
+        {
+            1 => Html("<p>Предисловие.</p>"),
+            2 => Html("<p>Продолжение предисловия.</p><h3>Первая</h3><p>Начало первой.</p>"),
+            3 => Html("<p>Конец первой.</p><h3>Вторая</h3><p>Начало второй.</p>"),
+            4 => Html("<p>Конец второй.</p><h3>Третья</h3><p>Чужой текст.</p>"),
+            _ => throw new InvalidOperationException("Не нужно загружать следующие страницы")
+        });
+
+        var chapter = Assert.Single((await getter.Get(Url)).Chapters);
+
+        Assert.Equal(selected == 1 ? "Первая" : "Вторая", chapter.Title);
+        if (selected == 1)
+        {
+            Assert.Contains("Предисловие.", chapter.Content);
+            Assert.Contains("Продолжение предисловия.", chapter.Content);
+            Assert.Contains("Начало первой.", chapter.Content);
+            Assert.Contains("Конец первой.", chapter.Content);
+            Assert.DoesNotContain("Начало второй.", chapter.Content);
+            Assert.Equal(new[] { 1, 2, 3 }, visited);
+        }
+        else
+        {
+            Assert.Contains("Начало второй.", chapter.Content);
+            Assert.Contains("Конец второй.", chapter.Content);
+            Assert.DoesNotContain("предислов", chapter.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("первой", chapter.Content);
+            Assert.Equal(new[] { 1, 2, 3, 4 }, visited);
+        }
+        Assert.DoesNotContain("Чужой текст.", chapter.Content);
+    }
+
+    [Fact]
+    public async Task EmptyHeadingsAreNotChapterBoundaries()
+    {
+        var visited = new List<int>();
+        using var getter = Create(new Options { End = 1, NoImage = true }, 96, visited, page => page switch
+        {
+            1 => Html("<h3> </h3><p>Предисловие.</p><h3><em>Первая</em></h3><p>Начало.</p><h3>&nbsp;</h3>"),
+            2 => Html("<h3><span> &#160; </span></h3><p>Конец.</p><h3>Вторая</h3><p>Чужой текст.</p>"),
+            _ => throw new InvalidOperationException("Не нужно загружать следующие страницы")
+        });
+
+        var chapter = Assert.Single((await getter.Get(Url)).Chapters);
+
+        Assert.Equal("Первая", chapter.Title);
+        Assert.Contains("Предисловие.", chapter.Content);
+        Assert.Contains("Начало.", chapter.Content);
+        Assert.Contains("Конец.", chapter.Content);
+        Assert.DoesNotContain("Чужой текст.", chapter.Content);
+        Assert.Equal(new[] { 1, 2 }, visited);
+    }
+
     [Fact]
     public async Task BookWithoutHeadingsRemainsOneWholeChapter()
     {
@@ -66,6 +166,20 @@ public sealed class ReadliChapterRangeTests
         var book = await getter.Get(Url);
 
         var chapter = Assert.Single(book.Chapters);
+        Assert.Equal("Книга", chapter.Title);
+        foreach (var page in new[] { 1, 2, 3 }) Assert.Contains($"Страница {page}.", chapter.Content);
+        Assert.Equal(new[] { 1, 2, 3 }, visited);
+    }
+
+    [Fact]
+    public async Task BookWithOnlyEmptyHeadingsRemainsOneWholeChapter()
+    {
+        var visited = new List<int>();
+        using var getter = Create(new Options { End = 1, NoImage = true }, 3, visited,
+            page => Html($"<h3>&nbsp;</h3><p>Страница {page}.</p><h3> </h3>"));
+
+        var chapter = Assert.Single((await getter.Get(Url)).Chapters);
+
         Assert.Equal("Книга", chapter.Title);
         foreach (var page in new[] { 1, 2, 3 }) Assert.Contains($"Страница {page}.", chapter.Content);
         Assert.Equal(new[] { 1, 2, 3 }, visited);
