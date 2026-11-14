@@ -48,6 +48,17 @@ Check(working >= GetterResolver.GetterTypes.Count - 10, $"доменов у ге
 Console.WriteLine($"  в README, но без геттера: {string.Join(", ", sites.Where(s => !s.HasGetter).Select(s => s.Name))}");
 Console.WriteLine($"  есть геттер, но нет в README: {string.Join(", ", sites.Where(s => !s.InReadme).Select(s => s.Name))}");
 
+// Только сверка каталога с настоящими загрузчиками: никаких HTTP-запросов и входа.
+var catalog = SiteDiagnosticCatalog.Entries;
+Check(catalog.Select(test => test.SiteHost).Distinct().Count() >= sites.Select(site => SupportedSites.DisplayName(site.Url)).Distinct().Count(),
+    "диагностический каталог охватывает все сайты реестра");
+Check(catalog.Select(test => test.Id).Distinct().Count() == catalog.Count, "стабильные идентификаторы диагностических примеров уникальны");
+Check(catalog.All(test => test.CanRun || !string.IsNullOrWhiteSpace(test.SkipReason)), "каждый пропуск диагностики имеет причину");
+foreach (var test in catalog.Where(test => test.CanRun))
+    Check(GetterResolver.IsSupported(new Uri(test.BookUrl)), $"диагностический пример распознаётся загрузчиком: {test.Id}");
+Console.WriteLine($"Диагностический каталог {SiteDiagnosticCatalog.Version}: {catalog.Count} случаев, " +
+    $"{catalog.Count(test => test.CanRun)} для запуска, {catalog.Count(test => !test.CanRun)} с причиной пропуска.");
+
 if (args.Length < 2)
 {
     return;

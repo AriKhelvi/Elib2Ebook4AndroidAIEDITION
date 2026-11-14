@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Web;
 using Elib2Ebook.Domain.Book;
@@ -32,47 +33,106 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
 
     public override async Task Authorize()
     {
+        Config.Logger.LogDebug("Rulate parser: этап=вход, credentials={Credentials}", Config.HasCredentials);
         if (!Config.HasCredentials)
         {
             return;
         }
 
         var main = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl);
-        var doc = await Config.Client.PostHtmlDocWithTriesAsync(SystemUrl, GetAuthData(main));
-        var alertBlock = doc.QuerySelector("div.alert.in.alert-block");
-
-        if (alertBlock == null)
+        LogPageStructure(main, "форма входа");
+        using var authData = GetAuthData(main);
+        var doc = await Config.Client.PostHtmlDocWithTriesAsync(SystemUrl, authData);
+        LogPageStructure(doc, "ответ входа");
+        if (doc.ParsedText.TrimStart().StartsWith('{'))
         {
-            RulateAuthResponse error = null;
+            RulateAuthResponse response;
             try
             {
-                error = doc.ParsedText.Deserialize<RulateAuthResponse>();
+                response = doc.ParsedText.Deserialize<RulateAuthResponse>();
             }
-            catch { }
-
-            if (!string.IsNullOrWhiteSpace(error?.Error))
+            catch (JsonException ex)
             {
-                throw new Exception($"Не удалось авторизоваться. {error.Error}");
+                Config.Logger.LogDebug("Rulate parser: auth JSON invalid, line={Line}, byte={Byte}", ex.LineNumber, ex.BytePositionInLine);
+                throw new InvalidOperationException("Не удалось подтвердить вход: сайт вернул непонятный ответ. Повторите попытку позже.");
             }
+            Config.Logger.LogDebug("Rulate parser: auth JSON errorPresent={ErrorPresent}", !string.IsNullOrWhiteSpace(response?.Error));
+            if (!string.IsNullOrWhiteSpace(response?.Error))
+                throw new InvalidOperationException("Не удалось авторизоваться: сайт отклонил вход. Проверьте логин и пароль; возможно, сайт требует проверку в браузере.");
 
-            Config.Logger.LogInformation("Успешно авторизовались");
+            // Отсутствие error в AJAX-ответе ещё не означает, что сессия действительно создана.
+            doc = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl);
+            LogPageStructure(doc, "проверка сессии");
         }
-        else
-        {
-            throw new Exception($"Не удалось авторизоваться. {alertBlock.GetText()}");
-        }
+
+        var alertBlock = doc.QuerySelector("div.alert.in.alert-block, .alert-danger, .alert-error, .errorSummary");
+        if (alertBlock != null)
+            throw new InvalidOperationException("Не удалось авторизоваться: сайт сообщил об ошибке входа. Проверьте логин и пароль; возможно, сайт требует проверку в браузере.");
+        if (GetLoginForm(doc) != null)
+            throw new InvalidOperationException("Не удалось авторизоваться: сайт снова показал форму входа. Проверьте логин и пароль; возможно, сайт требует проверку в браузере.");
+        if (string.IsNullOrWhiteSpace(GetCsrfToken(doc)) && !HasSignOutAction(doc))
+            throw new InvalidOperationException("Не удалось подтвердить вход: вместо страницы сайта получен неизвестный ответ или страница проверки. Проверьте доступность сайта в браузере и повторите попытку.");
+
+        Config.Logger.LogInformation("Успешно авторизовались");
     }
 
     private FormUrlEncodedContent GetAuthData(HtmlDocument doc)
     {
+        var form = GetLoginForm(doc);
+        var token = GetCsrfToken(doc, form);
+        Config.Logger.LogDebug("Rulate parser: loginForm={LoginForm}, csrfPresent={CsrfPresent}", form != null, !string.IsNullOrWhiteSpace(token));
+        if (form == null || string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("Не удалось открыть форму входа: сайт не передал форму или защитный токен. Возможно, вместо неё открылась проверка сайта. Проверьте доступность сайта в браузере и повторите попытку.");
+
         var data = new Dictionary<string, string>
         {
             ["login[login]"] = Config.Options.Login,
             ["login[pass]"] = Config.Options.Password,
-            ["csrf_token"] = doc.QuerySelector("meta[name=csrf-token]").Attributes["content"].Value
+            ["csrf_token"] = token
         };
 
         return new FormUrlEncodedContent(data);
+    }
+
+    private static HtmlNode GetLoginForm(HtmlDocument doc)
+        => doc.QuerySelectorAll("form").FirstOrDefault(form =>
+            form.QuerySelectorAll("input[name]").Any(input => input.GetAttributeValue("name", "") == "login[login]") &&
+            form.QuerySelectorAll("input[name]").Any(input => input.GetAttributeValue("name", "") == "login[pass]"));
+
+    private static string GetCsrfToken(HtmlDocument doc, HtmlNode form = null)
+    {
+        // В новой шапке токен есть и внутри формы; meta может отсутствовать в сокращённом ответе.
+        var token = form?.QuerySelector("input[name=csrf_token]")?.GetAttributeValue("value", "");
+        if (string.IsNullOrWhiteSpace(token))
+            token = doc.QuerySelector("meta[name=csrf-token]")?.GetAttributeValue("content", "");
+        return HttpUtility.HtmlDecode(token);
+    }
+
+    private bool HasSignOutAction(HtmlDocument doc)
+        => doc.QuerySelectorAll("a[href], form[action]").Any(node =>
+        {
+            var target = HttpUtility.HtmlDecode(node.GetAttributeValue(node.Name == "form" ? "action" : "href", ""));
+            return Uri.TryCreate(SystemUrl, target, out var uri) &&
+                   uri.Scheme == SystemUrl.Scheme && uri.Authority == SystemUrl.Authority &&
+                   uri.AbsolutePath.TrimEnd('/') is "/logout" or "/site/logout" or "/user/logout";
+        });
+
+    private void LogPageStructure(HtmlDocument doc, string stage)
+    {
+        if (!Config.Logger.IsEnabled(LogLevel.Debug)) return;
+        // Только структура первых узлов: значения полей, script, текст книги и идентификаторы сессии не выводятся.
+        var nodes = doc.DocumentNode.Descendants().Take(4097).ToArray();
+        var sample = nodes.Take(4096).ToArray();
+        Config.Logger.LogDebug("Rulate DOM: stage={Stage}, htmlChars={Chars}, nodes={Nodes}, truncated={Truncated}, forms={Forms}, inputs={Inputs}, scripts={Scripts}, links={Links}, tocMarker={Toc}, loginField={Login}, passwordField={Password}, csrfMeta={CsrfMeta}, csrfInput={CsrfInput}, challengeMarker={Challenge}",
+            stage, doc.ParsedText.Length, sample.Length, nodes.Length > sample.Length,
+            sample.Count(n => n.Name == "form"), sample.Count(n => n.Name == "input"), sample.Count(n => n.Name == "script"), sample.Count(n => n.Name == "a"),
+            sample.Any(n => n.GetAttributeValue("id", "") == "Chapters"),
+            sample.Any(n => n.Name == "input" && n.GetAttributeValue("name", "") == "login[login]"),
+            sample.Any(n => n.Name == "input" && n.GetAttributeValue("name", "") == "login[pass]"),
+            sample.Any(n => n.Name == "meta" && n.GetAttributeValue("name", "") == "csrf-token"),
+            sample.Any(n => n.Name == "input" && n.GetAttributeValue("name", "") == "csrf_token"),
+            sample.Any(n => n.GetAttributeValue("id", "").Contains("challenge", StringComparison.OrdinalIgnoreCase) ||
+                            n.GetAttributeValue("class", "").Contains("captcha", StringComparison.OrdinalIgnoreCase)));
     }
 
     public override async Task<Book> Get(Uri url)
@@ -132,6 +192,9 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
     private async Task<List<Chapter>> FillChapters(HtmlDocument doc, Uri bookUri, string bookId)
     {
         var result = new List<Chapter>();
+        Config.Logger.LogDebug("Rulate parser: preview={Preview}, start={Start}, end={End}, startNameSet={StartName}, endNameSet={EndName}, images={Images}",
+            Config.Options.NoChapters, Config.Options.Start, Config.Options.End,
+            !string.IsNullOrWhiteSpace(Config.Options.StartName), !string.IsNullOrWhiteSpace(Config.Options.EndName), !Config.Options.NoImage);
         if (Config.Options.NoChapters)
         {
             return result;
@@ -141,10 +204,16 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
         var cache = new ChapterTextCache(Config.Options.ChapterCachePath, Config.Logger);
         var account = Config.HasCredentials ? Config.Options.Login : null;
         var ct = Config.CancellationToken;
-        foreach (var entry in SliceToc(toc, c => c.Title))
+        var selected = SliceToc(toc, c => c.Title);
+        if (Config.Logger.IsEnabled(LogLevel.Debug))
+            Config.Logger.LogDebug("Rulate parser: tocTotal={Total}, selected={Selected}, chapterCache={Cache}", toc.Count, selected.Count(), cache.Enabled);
+        var index = 0;
+        foreach (var entry in selected)
         {
+            index++;
             ct.ThrowIfCancellationRequested();
             var (id, name, unavailable, available) = entry;
+            Config.Logger.LogDebug("Rulate parser: selectedIndex={Index}, denied={Denied}, readable={Readable}, cacheEligible={CacheEligible}", index, unavailable, available, cache.Enabled && available);
             if (unavailable)
             {
                 Config.Logger.LogWarning($"Глава «{name}» не загружена: оглавление сайта явно запрещает скачивание для текущей сессии. {SystemUrl.MakeRelativeUri($"/book/{bookId}/{id}")}");
@@ -154,6 +223,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
             var chapter = new Chapter();
             // Кэш не заменяет проверку текущего доступа: неизвестная разметка идёт через API.
             var cached = available ? await cache.ReadAsync(bookUri, id, account, ct) : null;
+            Config.Logger.LogDebug("Rulate parser: selectedIndex={Index}, cacheHit={CacheHit}", index, cached != null);
             HtmlDocument chapterDoc;
             if (cached != null)
             {
@@ -176,20 +246,27 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
             result.Add(chapter);
         }
 
+        Config.Logger.LogDebug("Rulate parser: selected={Selected}, returned={Returned}", index, result.Count);
+
         return result;
     }
 
     private async Task<HtmlDocument> GetChapter(string bookId, string chapterId)
     {
         var s = await Config.Client.GetFromJsonWithTriesAsync<RulateChapter>(SystemUrl.MakeRelativeUri($"/book/{bookId}/{chapterId}/readyajax"));
+        Config.Logger.LogDebug("Rulate parser: chapterResponse canRead={CanRead}, contentPresent={ContentPresent}, contentChars={Chars}", s.CanRead, s.Content != null, s.Content?.Length ?? 0);
         if (!s.CanRead)
         {
             Config.Logger.LogWarning($"Глава {chapterId} не загружена: сайт не предоставил доступ к тексту. {SystemUrl.MakeRelativeUri($"/book/{bookId}/{chapterId}")}");
             return string.Empty.AsHtmlDoc();
         }
-        var content = s.Content?.AsHtmlDoc().QuerySelector("div.content-text");
+        var chapterDoc = s.Content?.AsHtmlDoc();
+        var content = chapterDoc?.QuerySelector("div.content-text");
         if (content == null)
+        {
+            if (chapterDoc != null) LogPageStructure(chapterDoc, "нет div.content-text");
             throw new InvalidOperationException($"Не найден текст доступной главы {chapterId}. Неполная книга не будет сохранена.");
+        }
         // Ответ зеркала может содержать служебный адрес той же главы на основном домене.
         var sources = new[] { SystemUrl.Host, "tl.rulate.ru", "bllate.org", "mlate.ru", "erolate.com" }
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -258,6 +335,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
             var doc = page == 1 ? firstPage : await GetBookPage(pageUri);
             if (doc.QuerySelector("#Chapters") == null)
             {
+                LogPageStructure(doc, "нет #Chapters");
                 throw new InvalidOperationException($"На странице оглавления {pageUri} не найден список глав. Возможно, сайт ограничил доступ.");
             }
 
@@ -277,6 +355,11 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
                 // Конфликт проверяем через API: нельзя ни пропустить текст, ни взять старый из кэша.
                 pageChapters.Add(new TocChapter(id, row.GetTextBySelector("td.t"), denied && !enabled, enabled && !denied));
             }
+
+            if (Config.Logger.IsEnabled(LogLevel.Debug))
+                Config.Logger.LogDebug("Rulate TOC: page={Page}, rows={Rows}, newIds={NewIds}, denied={Denied}, readable={Readable}, unknownAccess={Unknown}",
+                    page, pageChapters.Count, chapterIds.Count - countBefore, pageChapters.Count(c => c.Unavailable),
+                    pageChapters.Count(c => c.Available), pageChapters.Count(c => !c.Available && !c.Unavailable));
 
             if (page != 1 && chapterIds.Count == countBefore)
             {
@@ -315,6 +398,7 @@ public abstract class RulateGetterBase(BookGetterConfig config) : GetterBase(con
                 }
                 lastScheduledPage = nextPage;
             }
+            Config.Logger.LogDebug("Rulate TOC: page={Page}, lastScheduled={Last}, pending={Pending}, uniqueTotal={Total}", page, lastScheduledPage, pendingPages.Count, chapterIds.Count);
         }
 
         // На пересекающихся страницах признаки доступа могут расходиться.

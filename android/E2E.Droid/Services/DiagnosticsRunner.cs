@@ -37,7 +37,7 @@ public sealed class DiagnosticsRunner(
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
     public const string DefaultTestUrl = "https://tl.rulate.ru/book/209502";
-    public const string ScenarioVersion = "2026-11-13.1";
+    public const string ScenarioVersion = "2026-11-14.2";
 
     private const int TestChapters = 2;
     private const int MaxLines = 6000;
@@ -57,6 +57,8 @@ public sealed class DiagnosticsRunner(
     ];
 
     private readonly List<string> _log = [];
+    private readonly List<SiteDiagnosticResult> _siteResults = [];
+    private IReadOnlyList<SiteDiagnosticCase> _allSiteCases = [];
     private CancellationTokenSource _cts;
 
     /// <summary>1 — идёт запуск или сценарий (защита от двойного нажатия, как в DownloadManager).</summary>
@@ -80,6 +82,11 @@ public sealed class DiagnosticsRunner(
     public event Action Changed;
 
     public bool IsRunning => Volatile.Read(ref _busy) == 1;
+    public bool IsAllSitesRun { get; private set; }
+    public IReadOnlyList<SiteDiagnosticResult> SiteResults
+    {
+        get { lock (_log) return _siteResults.ToArray(); }
+    }
 
     /// <summary>Очистка недоступна, в том числе пока скачивание ожидает разрешения Android.</summary>
     public bool CanClearLogs => !IsRunning && !downloads.IsBusy;
@@ -125,6 +132,13 @@ public sealed class DiagnosticsRunner(
             {
                 result.Add($"# Кратко: {Summary}");
             }
+            if (IsAllSitesRun)
+            {
+                result.Add($"# Каталог примеров: {SiteDiagnosticCatalog.Version}; итог по каждому примеру сохраняется независимо от ограничения журнала.");
+                result.Add("# Сайт | Статус | Секунды | Пример | Подробности");
+                foreach (var site in SiteResults)
+                    result.Add($"# {site.Case.SiteHost} | {site.StatusLabel} | {site.Duration.TotalSeconds:0.0} | {site.Case.Id}: {site.Case.BookUrl ?? "—"} | {LogText.Clean(site.Detail)}");
+            }
 
             result.Add(_completed ? "# Сценарий выполнен до конца; результат относится только к выполненным проверкам." : "# Сценарий не завершён; отсутствие ошибок не означает успешную проверку.");
             if (_logTruncated) result.Add("# Журнал ограничен по размеру: часть ранних подробностей удалена, итоговые счётчики сохранены.");
@@ -144,7 +158,12 @@ public sealed class DiagnosticsRunner(
     }
 
     /// <summary>Запуск из UI-потока (может спросить разрешения). Повторное нажатие, пока идёт, ничего не делает.</summary>
-    public async Task StartAsync()
+    public Task StartAsync() => StartCoreAsync(false);
+
+    /// <summary>Отдельный проход по каталогу сайтов: по одному короткому анонимному примеру.</summary>
+    public Task StartAllSitesAsync() => StartCoreAsync(true);
+
+    private async Task StartCoreAsync(bool allSites)
     {
         if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0)
         {
@@ -152,9 +171,11 @@ public sealed class DiagnosticsRunner(
         }
 
         var started = false;
+        IDisposable reservation = null;
         try
         {
-            if (downloads.IsRunning)
+            // Резервируем до диалогов разрешений: обычное скачивание не должно вклиниться во время await.
+            if (!downloads.TryReserveDiagnostics(out reservation))
             {
                 toasts.Show("Сейчас идёт скачивание — запустите диагностику, когда оно закончится");
                 return;
@@ -168,7 +189,8 @@ public sealed class DiagnosticsRunner(
 
             await platform.RequestNotificationPermissionAsync();
 
-            lock (_log) _log.Clear();
+            lock (_log) { _log.Clear(); _siteResults.Clear(); }
+            IsAllSitesRun = allSites;
             _ok = _failed = _skipped = _warnings = _logChars = 0;
             _logTruncated = _completed = false;
             _runLog = new BoundedFileLog(Path.Combine(FileSystem.AppDataDirectory, "logs", "diagnostics-last.log"));
@@ -191,7 +213,7 @@ public sealed class DiagnosticsRunner(
             {
                 try
                 {
-                    await RunAsync(ct);
+                    await RunAsync(ct, allSites);
                 }
                 catch (Exception ex)
                 {
@@ -199,10 +221,14 @@ public sealed class DiagnosticsRunner(
                 }
                 finally
                 {
-                    hold.Dispose();
-                    Interlocked.Exchange(ref _cts, null)?.Dispose();
-                    Volatile.Write(ref _busy, 0);
-                    Changed?.Invoke();
+                    try { hold.Dispose(); }
+                    finally
+                    {
+                        reservation.Dispose();
+                        Interlocked.Exchange(ref _cts, null)?.Dispose();
+                        Volatile.Write(ref _busy, 0);
+                        Changed?.Invoke();
+                    }
                 }
             });
         }
@@ -210,6 +236,7 @@ public sealed class DiagnosticsRunner(
         {
             if (!started)
             {
+                reservation?.Dispose();
                 Volatile.Write(ref _busy, 0);
             }
         }
@@ -237,6 +264,9 @@ public sealed class DiagnosticsRunner(
                     {
                         _runLog = null;
                         _log.Clear();
+                        _siteResults.Clear();
+                        _allSiteCases = [];
+                        IsAllSitesRun = false;
                         _previousDiagnostic = [];
                         _ok = _failed = _skipped = _warnings = _logChars = 0;
                         _logTruncated = _completed = false;
@@ -267,8 +297,10 @@ public sealed class DiagnosticsRunner(
         return await SaveTextAsync($"E2E-download-log-{DateTime.Now:yyyyMMdd-HHmmss}.txt", lines);
     }
 
-    private async Task RunAsync(CancellationToken ct)
+    private async Task RunAsync(CancellationToken ct, bool allSites)
     {
+        IsAllSitesRun = allSites;
+        _allSiteCases = allSites ? SiteDiagnosticCatalog.Entries : [];
         var total = Stopwatch.StartNew();
         foreach (var line in Header("журнал диагностики"))
         {
@@ -278,7 +310,13 @@ public sealed class DiagnosticsRunner(
         Line("# Обозначения: [ok] — проверка прошла, [FAIL] — ошибка, [warn] — ограничение или подозрение, [skip] — пропущена, [i] — сведения.");
         Line("# HTTP-ответ и успешный TLS не доказывают работу загрузчика. Проверка примеров не гарантирует работу всех книг сайта.");
 
-        var steps = new (string Name, Func<CancellationToken, Task> Run)[]
+        var steps = allSites ? new (string Name, Func<CancellationToken, Task> Run)[]
+        {
+            ("Устройство и приложение", StepEnvironmentAsync),
+            ("Сохранённые журналы", StepHistoryAsync),
+            ("FB2, EPUB, Unicode и изображения без сети", StepFormatsAsync),
+            ("Примеры всех сайтов", StepAllSitesAsync)
+        } : new (string Name, Func<CancellationToken, Task> Run)[]
         {
             ("Устройство и приложение", StepEnvironmentAsync),
             ("Сохранённые журналы", StepHistoryAsync),
@@ -303,6 +341,14 @@ public sealed class DiagnosticsRunner(
             }
 
             await RunStepAsync(i + 1, steps.Length, steps[i].Name, steps[i].Run, ct);
+        }
+
+        if (allSites)
+        {
+            var finished = SiteResults.Select(result => result.Case.Id).ToHashSet(StringComparer.Ordinal);
+            foreach (var item in _allSiteCases.Where(item => !finished.Contains(item.Id)))
+                RecordSiteResult(new(item, ct.IsCancellationRequested ? SiteDiagnosticStatus.Cancelled : SiteDiagnosticStatus.Error,
+                    ct.IsCancellationRequested ? "Не проверено: диагностику остановили" : "Проверка не выполнена из-за ошибки сценария", TimeSpan.Zero));
         }
 
         _completed = !ct.IsCancellationRequested;
@@ -716,6 +762,95 @@ public sealed class DiagnosticsRunner(
             : "ПОДСТАВНОЙ СЕРТИФИКАТ ПРИНЯТ — проверка сертификатов не работает");
     }
 
+    private async Task StepAllSitesAsync(CancellationToken ct)
+    {
+        Info($"Каталог {SiteDiagnosticCatalog.Version}: примеров {_allSiteCases.Count}; анонимно, последовательно, запрашивается одна глава каждого примера.");
+        Info("Сохранённые логины, пароли и кэши сеансов/глав не используются. Файлы временные. Для комиксов проверяется CBZ с изображениями, для текста — FB2 и EPUB.");
+        Info("Лимит одного примера — 90 секунд, затем запрашивается отмена. Отмена кооперативная: завершение обработки может занять дополнительное время. Некоторые сайты возвращают всю книгу одним ответом.");
+        Info("Успех означает проверенный файл текущего примера; HTTP 200 сам по себе успехом не считается. Пропуски и ограничения доступа не доказывают ошибку загрузчика.");
+        await SiteDiagnosticBatch.RunAsync(_allSiteCases, RunSiteProbeAsync, RecordSiteResult, ct);
+    }
+
+    private void RecordSiteResult(SiteDiagnosticResult result)
+    {
+        lock (_log) _siteResults.Add(result);
+        var text = $"{result.Case.SiteHost} ({result.Case.Id}): {result.StatusLabel}; {result.Detail}; {result.Duration.TotalSeconds:0.0} с";
+        switch (result.Status)
+        {
+            case SiteDiagnosticStatus.Ok: Ok(text); break;
+            case SiteDiagnosticStatus.Error: Fail(text); break;
+            case SiteDiagnosticStatus.Skipped:
+            case SiteDiagnosticStatus.Cancelled: Skip(text); break;
+            default: Warn(text); break;
+        }
+        Changed?.Invoke();
+    }
+
+    private static Options CreateSiteProbeOptions(SiteDiagnosticCase item, string work, AppSettings current)
+        => new()
+        {
+            Url = [item.BookUrl], Format = item.Images ? ["cbz"] : ["fb2", "epub"],
+            Start = 1, End = 1, NoImage = !item.Images, Additional = false, Cover = false,
+            Login = null, Password = null, AuthCachePath = "", ChapterCachePath = "",
+            Timeout = Math.Clamp(current.Timeout, 1, 60), Delay = current.Delay, DelayMode = current.DelayMode,
+            CustomDelaySeconds = current.CustomDelaySeconds,
+            Proxy = string.IsNullOrWhiteSpace(current.Proxy) ? null : current.Proxy.Trim(),
+            BookNamePattern = "diagnostic-probe", SavePath = Path.Combine(work, "out"), TempPath = Path.Combine(work, "tmp")
+        };
+
+    private async Task<SiteProbeOutcome> RunSiteProbeAsync(SiteDiagnosticCase item, CancellationToken ct)
+    {
+        if (!Uri.TryCreate(item.BookUrl, UriKind.Absolute, out var url) || url.Scheme is not ("https" or "http") || url.UserInfo.Length > 0)
+            return new(SiteDiagnosticStatus.Error, "Некорректный адрес примера в каталоге");
+        if (!GetterResolver.IsSupported(url))
+            return new(SiteDiagnosticStatus.Skipped, "Для адреса примера нет включённого загрузчика в этой сборке");
+
+        Status = $"Сайт {SiteResults.Count + 1} из {_allSiteCases.Count}: {item.SiteHost}";
+        platform.UpdateBackgroundWork("Диагностика E2E — " + Status);
+        Changed?.Invoke();
+        Info($"{item.Id}: {item.BookUrl}; {item.Limitation}");
+        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "site-" + Guid.NewGuid().ToString("N"));
+        var options = CreateSiteProbeOptions(item, work, settings);
+        var hadWarnings = false;
+        var cleanupFailed = false;
+        SiteProbeOutcome outcome;
+        Action<string> trace = line => Line("  tls | " + line);
+        CertificatePolicy.Traced += trace;
+        try
+        {
+            var logger = new CallbackLogger(line => Line("  ядро | " + line), message =>
+            {
+                hadWarnings = true;
+                Line($"[warn] {item.SiteHost}: {message}");
+            }, debug: settings.DebugLog ? line => Line("  отладка ядра | " + line) : null);
+            var result = await BookPipeline.RunAsync(options, logger, null, ct);
+            ct.ThrowIfCancellationRequested();
+            Info(item.Images
+                ? $"{item.SiteHost}: файлов комикса {result.Files.Count}; проверяю архив и изображения, текстовый счётчик глав не используется"
+                : $"{item.SiteHost}: получено глав {result.Info.Chapters}, файлов {result.Files.Count}; проверяю содержимое");
+            var checks = SiteDiagnosticBatch.CheckOutput(item, result.Info.Chapters, result.Files, ct);
+            foreach (var check in checks)
+                Line($"[{(check.Warning ? "warn" : check.Passed ? "ok" : "FAIL")}] {item.SiteHost}: {check.Message}");
+            outcome = SiteDiagnosticBatch.Evaluate(checks, result.Info.Chapters, hadWarnings);
+            ct.ThrowIfCancellationRequested();
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Line($"[FAIL] {item.SiteHost}: {ex.GetType().Name}: {LogText.Clean(ex.Message)}");
+            throw;
+        }
+        finally
+        {
+            CertificatePolicy.Traced -= trace;
+            TryDelete(work);
+            cleanupFailed = Directory.Exists(work);
+            Line($"[{(cleanupFailed ? "warn" : "ok")}] {item.SiteHost}: временные файлы {(cleanupFailed ? "не удалось удалить; очистка не завершилась" : "удалены")}");
+        }
+        return cleanupFailed && outcome.Status == SiteDiagnosticStatus.Ok
+            ? new(SiteDiagnosticStatus.Warning, "Файлы проверены, но очистка временных файлов не завершилась")
+            : outcome;
+    }
+
     private async Task StepTestDownloadAsync(CancellationToken ct)
     {
         var selected = string.IsNullOrWhiteSpace(settings.DebugTestUrl) ? DefaultTestUrl : settings.DebugTestUrl;
@@ -773,7 +908,8 @@ public sealed class DiagnosticsRunner(
         var sw = Stopwatch.StartNew();
         try
         {
-            var logger = new CallbackLogger(line => Line("  ядро | " + line), message => Warn($"{label}: {message}"));
+            var logger = new CallbackLogger(line => Line("  ядро | " + line), message => Warn($"{label}: {message}"),
+                debug: settings.DebugLog ? line => Line("  отладка ядра | " + line) : null);
             // Необязательное превью отключено: не запрашиваем оглавление и обложку второй раз.
             var result = await BookPipeline.RunAsync(options, logger, null, limit.Token);
             _cover ??= result.Info.Cover;

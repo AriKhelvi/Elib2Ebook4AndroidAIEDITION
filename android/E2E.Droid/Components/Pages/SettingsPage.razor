@@ -365,7 +365,7 @@
                     <label class="list-item two-line">
                         <span class="list-item-text">
                             <span class="list-item-headline">Подробный журнал</span>
-                            <span class="list-item-supporting">В журнал скачивания — проверки сертификатов, время этапов, параметры (без пароля) и сохранённые файлы</span>
+                            <span class="list-item-supporting">Запросы и ответы HTTP, время этапов, TLS, оглавление, кэш и ошибки. Без паролей, cookies, токенов и текста книг. Включите перед повторной загрузкой</span>
                         </span>
                         <input type="checkbox" role="switch" class="switch" checked="@Settings.DebugLog" @onchange="e => Settings.DebugLog = (bool)e.Value!" />
                     </label>
@@ -396,6 +396,31 @@
                         <button type="button" class="btn btn-filled btn-block" @onclick="Diagnostics.StartAsync">
                             <Icon Name="bug" Size="18" />Запустить диагностику
                         </button>
+                        <button type="button" class="btn btn-outlined btn-block" @onclick="Diagnostics.StartAllSitesAsync" aria-describedby="all-sites-description">
+                            <Icon Name="globe" Size="18" />Проверить все сайты
+                        </button>
+                    }
+                    <p id="all-sites-description" class="supporting-text flush">
+                        «Проверить все сайты» последовательно проверит заранее выбранные книги без входа в аккаунты:
+                        по одной главе, для комиксов — с картинками. Некоторые загрузчики получают книгу целиком.
+                        На сайт отводится 90 секунд; завершение отмены может занять время. Проверка может быть долгой и расходует трафик.
+                        Временные книги удаляются, результат каждого сайта попадёт в общий отчёт. Пропуски и ограничения доступа будут отмечены отдельно.
+                    </p>
+
+                    @if (Diagnostics.IsAllSitesRun && Diagnostics.SiteResults.Count > 0)
+                    {
+                        <button type="button" class="btn btn-text btn-block" aria-expanded="@_showSiteResults" @onclick="() => _showSiteResults = !_showSiteResults">
+                            @(_showSiteResults ? "Скрыть результаты сайтов" : $"Результаты сайтов: {Diagnostics.SiteResults.Count}")
+                        </button>
+                        @if (_showSiteResults)
+                        {
+                            <ul class="diagnostic-site-results">
+                                @foreach (var item in Diagnostics.SiteResults)
+                                {
+                                    <li><strong>@item.Case.SiteHost — @item.StatusLabel</strong><br />@item.Detail</li>
+                                }
+                            </ul>
+                        }
                     }
 
                     @if (!Diagnostics.IsRunning && Diagnostics.Summary != null)
@@ -543,6 +568,7 @@
     private string _editLogin;
     private string _editPassword;
     private bool _showPassword;
+    private bool _showSiteResults;
 
     protected override async Task OnInitializedAsync()
     {

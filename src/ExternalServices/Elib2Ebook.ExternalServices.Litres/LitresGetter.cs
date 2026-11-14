@@ -83,61 +83,180 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
 
     public override async Task Authorize()
     {
+        Config.CancellationToken.ThrowIfCancellationRequested();
+        Config.Client.DefaultRequestHeaders.Remove("Session-Id");
+        _me = null;
         if (!Config.HasCredentials)
         {
             Config.Client.DefaultRequestHeaders.Add("Session-Id", _authData.Sid);
             return;
         }
 
-        // Литрес очень не любит много авторизовывать
-        // поэтому пришлось добавить кеширование токенов
-        const string directory = "LitresCache";
-
-        if (!Directory.Exists(directory))
+        // Кэш уменьшает число входов, но отсутствие прав на диск не должно мешать скачиванию.
+        // На Android рабочая директория может быть корнем файловой системы, доступным только для чтения.
+        _authData = null;
+        var cacheFile = GetAuthCacheFile();
+        try
         {
-            Directory.CreateDirectory(directory);
-        }
-
-        var saveCreds = $"{directory}/{Config.Options.Login.RemoveInvalidChars()}";
-        if (File.Exists(saveCreds))
-        {
-            _authData = await File.ReadAllTextAsync(saveCreds).ContinueWith(t => t.Result.Deserialize<LitresAuthResponseData>());
-            Config.Client.DefaultRequestHeaders.Add("Session-Id", _authData.Sid);
-
-            var checkResponse = await Config.Client.GetFromJsonAsync<LitresStaticResponse<LitresMe>>("https://api.litres.ru/foundation/api/users/me/detailed");
-            if (checkResponse?.Payload?.Data != null)
+            var cached = await ReadAuthCache(cacheFile);
+            if (IsValidSession(cached))
             {
-                _me = checkResponse.Payload.Data;
-                return;
+                SetSession(cached.Sid);
+                _me = await ReadCurrentUser(allowExpiredSession: true);
+                if (_me != null)
+                {
+                    _authData = cached;
+                    Config.Logger.LogDebug("Литрес: сохранённая сессия подтверждена.");
+                    return;
+                }
+                Config.Logger.LogDebug("Литрес: сохранённая сессия больше не подтверждается, выполняю новый вход.");
             }
+
+            // Старый SID нельзя отправлять вместе с новым логином и паролем.
+            Config.Client.DefaultRequestHeaders.Remove("Session-Id");
+            Config.Logger.LogDebug("Литрес: выполняю вход по сохранённым учётным данным.");
+            using var content = JsonContent.Create(new LitresAuthData
+            {
+                Login = Config.Options.Login,
+                Password = Config.Options.Password,
+            });
+            using var response = await Config.Client.PostAsync(
+                "https://api.litres.ru/foundation/api/auth/login", content, Config.CancellationToken);
+            Config.Logger.LogDebug("Литрес: ответ входа HTTP {Status}.", (int)response.StatusCode);
+            response.EnsureDownloadSuccess();
+            var auth = await ReadAuthResponse<LitresAuthResponseData>(response);
+            if (!string.IsNullOrWhiteSpace(auth?.Error) || !IsValidSession(auth?.Payload?.Data))
+                throw new InvalidOperationException("Литрес не подтвердил вход. Проверьте логин и пароль.");
+
+            SetSession(auth.Payload.Data.Sid);
+            _me = await ReadCurrentUser(allowExpiredSession: false);
+            _authData = auth.Payload.Data;
+            Config.Logger.LogDebug("Литрес: новый вход и профиль подтверждены.");
+            await WriteAuthCache(cacheFile, _authData);
         }
-
-        var payload = new LitresAuthData
+        finally
         {
-            Login = Config.Options.Login,
-            Password = Config.Options.Password,
-        };
-
-        var response = await Config.Client.PostWithTriesAsync("https://api.litres.ru/foundation/api/auth/login".AsUri(), JsonContent.Create(payload));
-        var responseData = await response.Content.ReadFromJsonAsync<LitresStaticResponse<LitresAuthResponseData>>();
-
-        if (!string.IsNullOrWhiteSpace(responseData.Error))
-        {
-            throw new Exception($"Не удалось авторизоваться. {responseData.Error}");
+            if (_authData == null)
+                Config.Client.DefaultRequestHeaders.Remove("Session-Id");
         }
-
-        _authData = responseData.Payload.Data;
-
-        Config.Client.DefaultRequestHeaders.Add("Session-Id", _authData.Sid);
-        var meResponse = await Config.Client.GetFromJsonAsync<LitresStaticResponse<LitresMe>>("https://api.litres.ru/foundation/api/users/me/detailed");
-        if (meResponse?.Payload?.Data == null)
-        {
-            return;
-        }
-
-        _me = meResponse.Payload.Data;
-        await File.WriteAllTextAsync(saveCreds, JsonSerializer.Serialize(_authData));
     }
+
+    private static bool IsValidSession(LitresAuthResponseData auth)
+        => !string.IsNullOrWhiteSpace(auth?.Sid) && !auth.Sid.Any(char.IsControl);
+
+    private void SetSession(string sid)
+    {
+        Config.Client.DefaultRequestHeaders.Remove("Session-Id");
+        Config.Client.DefaultRequestHeaders.Add("Session-Id", sid);
+    }
+
+    private async Task<LitresMe> ReadCurrentUser(bool allowExpiredSession)
+    {
+        using var response = await Config.Client.GetAsync(
+            "https://api.litres.ru/foundation/api/users/me/detailed", Config.CancellationToken);
+        Config.Logger.LogDebug("Литрес: проверка профиля HTTP {Status}, сохранённая сессия: {Cached}.",
+            (int)response.StatusCode, allowExpiredSession);
+        if (allowExpiredSession && response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            return null;
+
+        // 429, 5xx и сетевые ошибки не означают, что SID истёк. Не делаем лишний вход.
+        response.EnsureDownloadSuccess();
+        var me = await ReadAuthResponse<LitresMe>(response);
+        if (string.IsNullOrWhiteSpace(me?.Error) && me?.Payload?.Data != null)
+            return me.Payload.Data;
+        if (allowExpiredSession)
+            return null;
+        throw new InvalidOperationException("Литрес не подтвердил сессию после входа. Попробуйте позже.");
+    }
+
+    private async Task<LitresStaticResponse<T>> ReadAuthResponse<T>(HttpResponseMessage response)
+    {
+        try
+        {
+            return await response.Content.ReadFromJsonAsync<LitresStaticResponse<T>>(cancellationToken: Config.CancellationToken);
+        }
+        catch (JsonException)
+        {
+            // Тело ответа и исходное исключение могут содержать пароль или SID.
+            throw new InvalidOperationException("Литрес вернул некорректный ответ при проверке входа. Попробуйте позже.");
+        }
+    }
+
+    private string GetAuthCacheFile()
+    {
+        try
+        {
+            var directory = Config.Options.AuthCachePath;
+            if (directory == null)
+            {
+                var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrWhiteSpace(localData) || !Path.IsPathFullyQualified(localData))
+                    return null;
+                directory = Path.Combine(localData, "Elib2Ebook", "auth-cache");
+            }
+            if (string.IsNullOrWhiteSpace(directory))
+                return null;
+
+            // Логин не попадает в имя файла и не может превратиться в путь за пределами кэша.
+            var account = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Config.Options.Login))).ToLowerInvariant();
+            return Path.Combine(Path.GetFullPath(directory), "litres-" + account + ".json");
+        }
+        catch (Exception error) when (IsCacheError(error))
+        {
+            LogCacheUnavailable();
+            return null;
+        }
+    }
+
+    private async Task<LitresAuthResponseData> ReadAuthCache(string path)
+    {
+        if (path == null) return null;
+        try
+        {
+            var json = await File.ReadAllTextAsync(path, Config.CancellationToken);
+            var cached = JsonSerializer.Deserialize<LitresAuthResponseData>(json);
+            Config.Logger.LogDebug("Литрес: кэш прочитан, непустая сессия: {Valid}.", IsValidSession(cached));
+            return cached;
+        }
+        catch (FileNotFoundException) { Config.Logger.LogDebug("Литрес: сохранённой сессии пока нет."); return null; }
+        catch (DirectoryNotFoundException) { Config.Logger.LogDebug("Литрес: папки сохранённых сессий пока нет."); return null; }
+        catch (JsonException) { Config.Logger.LogDebug("Литрес: повреждённый кэш сессии будет заменён после входа."); return null; }
+        catch (Exception error) when (IsCacheError(error))
+        {
+            LogCacheUnavailable();
+            return null;
+        }
+    }
+
+    private async Task WriteAuthCache(string path, LitresAuthResponseData auth)
+    {
+        if (path == null) return;
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(auth), Config.CancellationToken);
+            Config.CancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, path, overwrite: true);
+            Config.Logger.LogDebug("Литрес: проверенная сессия сохранена для следующих запусков.");
+        }
+        catch (Exception error) when (IsCacheError(error))
+        {
+            LogCacheUnavailable();
+        }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (Exception error) when (IsCacheError(error)) { }
+        }
+    }
+
+    private static bool IsCacheError(Exception error)
+        => error is IOException or UnauthorizedAccessException or System.Security.SecurityException
+            or ArgumentException or NotSupportedException;
+
+    private void LogCacheUnavailable()
+        => Config.Logger.LogWarning("Литрес: кэш сессии недоступен. Вход работает без сохранения сессии.");
 
     private async Task<T> GetResponse<T>(Uri url)
     {

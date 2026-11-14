@@ -33,10 +33,12 @@
     <Compile Include="../E2E.Droid/Services/BuildInfo.cs" Link="Shared/BuildInfo.cs" />
     <Compile Include="../E2E.Droid/Services/DiagnosticsRunner.cs" Link="Shared/DiagnosticsRunner.cs" />
     <Compile Include="../E2E.Droid/Services/DiagnosticBookChecks.cs" Link="Shared/DiagnosticBookChecks.cs" />
+    <Compile Include="../E2E.Droid/Services/SiteDiagnosticBatch.cs" Link="Shared/SiteDiagnosticBatch.cs" />
     <Compile Include="../E2E.Droid/Services/TlsProbe.cs" Link="Shared/TlsProbe.cs" />
     <Compile Include="../E2E.Droid/Services/CoverThumbnails.cs" Link="Shared/CoverThumbnails.cs" />
     <Compile Include="../E2E.Droid/Services/CoverFileProvider.cs" Link="Shared/CoverFileProvider.cs" />
     <Compile Include="../E2E.Droid/Services/SupportedSites.cs" Link="Shared/SupportedSites.cs" />
+    <Compile Include="../E2E.Droid/Services/SiteDiagnosticCatalog.cs" Link="Shared/SiteDiagnosticCatalog.cs" />
     <Compile Include="../E2E.Droid/Services/SharedLinkInbox.cs" Link="Shared/SharedLinkInbox.cs" />
     <Compile Include="../E2E.Droid/Services/Formatting.cs" Link="Shared/Formatting.cs" />
     <Compile Include="../E2E.Droid/Services/FormatSupport.cs" Link="Shared/FormatSupport.cs" />

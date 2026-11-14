@@ -39,11 +39,16 @@ public class DownloadResumeSettingsTests
             Assert.Equal(Path.Combine(FileSystem.AppDataDirectory, "chapter-cache"), retry.ChapterCachePath);
             Assert.Equal("глава до обновления", await new ChapterTextCache(retry.ChapterCachePath, NullLogger.Instance).ReadAsync(book, "1", null));
             Assert.Equal(first.ChapterCachePath, retry.ChapterCachePath);
+            Assert.Equal(Path.Combine(FileSystem.AppDataDirectory, "auth-cache"), retry.AuthCachePath);
+            Assert.Equal(first.AuthCachePath, retry.AuthCachePath);
+            Assert.True(Path.IsPathFullyQualified(retry.AuthCachePath));
+            Assert.False(retry.AuthCachePath.StartsWith(FileSystem.CacheDirectory, StringComparison.Ordinal));
             Assert.False(first.ChapterCachePath.StartsWith(firstWork, StringComparison.Ordinal));
             Assert.False(retry.ChapterCachePath.StartsWith(retryWork, StringComparison.Ordinal));
             Assert.NotEqual(first.TempPath, retry.TempPath);
             Assert.False(Preferences.Default.Get("ResumeDownloads", true));
             Assert.Null(new Options().ChapterCachePath);
+            Assert.Null(new Options().AuthCachePath);
         }
         finally
         {

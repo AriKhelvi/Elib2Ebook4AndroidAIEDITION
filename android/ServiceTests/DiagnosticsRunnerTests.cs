@@ -26,7 +26,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         cancellation.Cancel();
 
         // Ни одного шага с сетью: воспроизводим отмену до запуска фонового задания.
-        await InvokeAsync(runner, "RunAsync", cancellation.Token);
+        await InvokeAsync(runner, "RunAsync", cancellation.Token, false);
 
         Assert.NotNull(runner.Result);
         Assert.Equal("Остановлено", runner.Status);
@@ -51,6 +51,59 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         Assert.DoesNotContain(runner.ReportLines, line => line == "# Проблем нет");
         Assert.Equal(1, typeof(DiagnosticsRunner).GetField("_warnings", PrivateInstance)!.GetValue(runner));
         Assert.Equal(0, typeof(DiagnosticsRunner).GetField("_ok", PrivateInstance)!.GetValue(runner));
+    }
+
+    [Fact]
+    public async Task CancelledAllSitesRunRecordsEveryUnstartedCaseAndSavesReport()
+    {
+        var runner = CreateRunner();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await InvokeAsync(runner, "RunAsync", cancellation.Token, true);
+
+        Assert.True(runner.IsAllSitesRun);
+        Assert.Equal(SiteDiagnosticCatalog.Entries.Count, runner.SiteResults.Count);
+        Assert.All(runner.SiteResults, result => Assert.Equal(SiteDiagnosticStatus.Cancelled, result.Status));
+        Assert.Contains("Каталог примеров", _storage.Text);
+        Assert.DoesNotContain(_toasts.Toasts, toast => toast.Kind == ToastKind.Success);
+    }
+
+    [Fact]
+    public void SiteTableSurvivesDetailedLogTruncation()
+    {
+        var runner = CreateRunner();
+        typeof(DiagnosticsRunner).GetProperty(nameof(DiagnosticsRunner.IsAllSitesRun))!.SetValue(runner, true);
+        var item = new SiteDiagnosticCase("safe-case", "example.test", "https://example.test/book/1", null, null);
+        Invoke(runner, "RecordSiteResult", new SiteDiagnosticResult(item, SiteDiagnosticStatus.AccessRestricted, "HTTP 403: доступ ограничен", TimeSpan.FromSeconds(2)));
+        for (var index = 0; index < 1000; index++)
+            Invoke(runner, "Line", $"Длинная строка {index}: " + new string('Я', 4000));
+
+        Assert.Single(runner.SiteResults);
+        Assert.Contains(runner.ReportLines, line => line.StartsWith("# example.test | Вход или ограничение") && line.Contains("safe-case") && line.Contains("HTTP 403"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void AllSitesOptionsAlwaysUseOneChapterAndFreshAnonymousSession(bool images)
+    {
+        var item = new SiteDiagnosticCase("case", "example.test", "https://example.test/book/1", null, null, images);
+        var options = (Elib2Ebook.DomainServices.Configs.Options)typeof(DiagnosticsRunner)
+            .GetMethod("CreateSiteProbeOptions", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [item, _root, new AppSettings { Timeout = 240, Images = true, Cover = true, Additional = true }])!;
+
+        Assert.Null(options.Login);
+        Assert.Null(options.Password);
+        Assert.Equal("", options.AuthCachePath);
+        Assert.Equal("", options.ChapterCachePath);
+        Assert.Equal(1, options.Start);
+        Assert.Equal(1, options.End);
+        Assert.Equal(60, options.Timeout);
+        Assert.Equal(!images, options.NoImage);
+        Assert.False(options.Cover);
+        Assert.False(options.Additional);
+        Assert.Equal(images ? ["cbz"] : new[] { "fb2", "epub" }, options.Format);
     }
 
     [Theory]
@@ -225,6 +278,38 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         }
         finally { permission.SetResult(false); }
         Assert.False(await starting);
+        Assert.True(runner.CanClearLogs);
+    }
+
+    [Fact]
+    public async Task DiagnosticReservationBlocksDownloadWhilePermissionDialogIsPendingAndReleasesOnDenial()
+    {
+        var permission = new TaskCompletionSource<bool>();
+        _storage.WriteAccess = permission.Task;
+        var settings = new AppSettings();
+        var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        var starting = runner.StartAllSitesAsync();
+        Task<bool> ordinary = null;
+        try
+        {
+            Assert.True(runner.IsRunning);
+            Assert.True(downloads.IsBusy);
+            ordinary = downloads.StartAsync(new DownloadRequest { Urls = ["https://example.test/book/1"] });
+            Assert.True(ordinary.IsCompleted, "Обычное скачивание должно быть отклонено до ожидания разрешений");
+            Assert.False(await ordinary);
+            Assert.False(runner.CanClearLogs);
+        }
+        finally
+        {
+            permission.TrySetResult(false);
+            await starting;
+            if (ordinary != null) await ordinary;
+        }
+        Assert.False(runner.IsRunning);
+        Assert.False(downloads.IsBusy);
+        Assert.True(downloads.TryReserveDiagnostics(out var lease));
+        lease.Dispose();
         Assert.True(runner.CanClearLogs);
     }
 

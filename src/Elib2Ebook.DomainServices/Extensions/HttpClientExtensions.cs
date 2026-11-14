@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Elib2Ebook.DomainServices.Misc;
 using HtmlAgilityPack;
 
 namespace Elib2Ebook.DomainServices.Extensions;
@@ -37,6 +38,7 @@ public static class HttpClientExtensions
                     }
 
                     response.Dispose();
+                    DownloadDiagnostics.Retry(client, HttpMethod.Get, url, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), response.StatusCode);
                     await Task.Delay(GetTimeout(errorTimeout));
                     continue;
                 }
@@ -49,6 +51,8 @@ public static class HttpClientExtensions
             catch (Exception ex)
             {
                 lastEx = ex;
+                if (i < MAX_TRY_COUNT - 1)
+                    DownloadDiagnostics.Retry(client, HttpMethod.Get, url, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), exception: ex);
                 await Task.Delay(GetTimeout(errorTimeout));
             }
         }
@@ -67,9 +71,11 @@ public static class HttpClientExtensions
 
         for (var i = 0; i < MAX_TRY_COUNT; i++)
         {
+            HttpRequestMessage attempted = null;
             try
             {
-                var response = await client.SendAsync(message());
+                attempted = message();
+                var response = await client.SendAsync(attempted);
 
                 // Повтор не исправляет отсутствие доступа и усугубляет ограничение частоты.
                 if ((int)response.StatusCode is >= 400 and < 500)
@@ -83,6 +89,7 @@ public static class HttpClientExtensions
                     }
 
                     response.Dispose();
+                    DownloadDiagnostics.Retry(client, attempted.Method, attempted.RequestUri, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), response.StatusCode);
                     await Task.Delay(GetTimeout(errorTimeout));
                     continue;
                 }
@@ -95,6 +102,8 @@ public static class HttpClientExtensions
             catch (Exception ex)
             {
                 lastEx = ex;
+                if (i < MAX_TRY_COUNT - 1)
+                    DownloadDiagnostics.Retry(client, attempted?.Method, attempted?.RequestUri, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), exception: ex);
                 await Task.Delay(GetTimeout(errorTimeout));
             }
         }
@@ -129,6 +138,7 @@ public static class HttpClientExtensions
                     }
 
                     response.Dispose();
+                    DownloadDiagnostics.Retry(client, HttpMethod.Post, url, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), response.StatusCode);
                     await Task.Delay(GetTimeout(errorTimeout));
                     continue;
                 }
@@ -141,6 +151,8 @@ public static class HttpClientExtensions
             catch (Exception ex)
             {
                 lastEx = ex;
+                if (i < MAX_TRY_COUNT - 1)
+                    DownloadDiagnostics.Retry(client, HttpMethod.Post, url, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), exception: ex);
                 await Task.Delay(GetTimeout(errorTimeout));
             }
         }
@@ -165,7 +177,7 @@ public static class HttpClientExtensions
         using var response = await client.GetWithTriesAsync(url, errorTimeout);
         if (response == null)
         {
-            throw new Exception($"Не удалось получить ответ от {url}");
+            throw new Exception($"Не удалось получить ответ от {DownloadDiagnostics.SafeUri(url)}");
         }
 
         response.EnsureDownloadSuccess();
@@ -177,22 +189,29 @@ public static class HttpClientExtensions
         var payload = Encoding.UTF8.GetString(memoryStream.ToArray());
         if (string.IsNullOrWhiteSpace(payload))
         {
-            throw new Exception($"Ответ {url} пустой");
+            DownloadDiagnostics.JsonFailure(response, payload);
+            throw new Exception($"Ответ {DownloadDiagnostics.SafeUri(url)} пустой");
         }
 
         if (LooksLikeHtml(payload))
         {
+            DownloadDiagnostics.JsonFailure(response, payload);
             throw new Exception(
-                $"Сайт вернул HTML вместо JSON по адресу {url}. Возможно сработала защита (DDoS-Guard). Попробуйте увеличить параметры --delay/--timeout или настроить --flare.");
+                $"Сайт вернул HTML вместо JSON по адресу {DownloadDiagnostics.SafeUri(url)}. Возможно, требуется вход или проверка доступа на сайте.");
         }
 
         try
         {
-            return JsonSerializer.Deserialize<T>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new Exception($"Сайт вернул пустой JSON по адресу {url}");
+            var data = JsonSerializer.Deserialize<T>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (data != null) return data;
+            DownloadDiagnostics.JsonFailure(response, payload);
+            throw new Exception($"Сайт вернул пустой JSON по адресу {DownloadDiagnostics.SafeUri(url)}");
         }
         catch (JsonException ex)
         {
-            throw new Exception($"Не удалось разобрать JSON ответа {url}. {ex.Message}. {FormatSnippet(payload)}", ex);
+            DownloadDiagnostics.JsonFailure(response, payload, ex);
+            // Message/Path и исходный JSON могут содержать реквизиты или текст книги.
+            throw new Exception($"Не удалось разобрать JSON ответа {DownloadDiagnostics.SafeUri(url)}. Строка {ex.LineNumber}, байт {ex.BytePositionInLine}. {DownloadDiagnostics.DescribePayload(payload)}");
         }
     }
 
@@ -248,24 +267,4 @@ public static class HttpClientExtensions
         return value.TrimStart().StartsWith("<", StringComparison.Ordinal);
     }
 
-    private static string FormatSnippet(string value, int maxLength = 300)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var trimmed = value.Trim();
-        if (LooksLikeHtml(trimmed))
-        {
-            return string.Empty;
-        }
-
-        if (trimmed.Length > maxLength)
-        {
-            trimmed = trimmed[..maxLength] + "…";
-        }
-
-        return $" Ответ сервера: {trimmed}";
-    }
 }
