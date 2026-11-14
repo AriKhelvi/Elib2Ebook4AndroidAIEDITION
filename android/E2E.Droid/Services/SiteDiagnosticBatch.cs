@@ -1,10 +1,11 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
+using Elib2Ebook.DomainServices.Getters;
 
 namespace E2E.Droid.Services;
 
-public enum SiteDiagnosticStatus { Ok, Warning, AccessRestricted, Timeout, Error, Skipped, Cancelled }
+public enum SiteDiagnosticStatus { Ok, Warning, AccessRestricted, Timeout, Error, Skipped, Cancelled, ExampleUnavailable, NetworkError }
 
 public sealed record SiteProbeOutcome(SiteDiagnosticStatus Status, string Detail);
 
@@ -17,6 +18,8 @@ public sealed record SiteDiagnosticResult(SiteDiagnosticCase Case, SiteDiagnosti
         SiteDiagnosticStatus.AccessRestricted => "Вход или ограничение",
         SiteDiagnosticStatus.Timeout => "Таймаут",
         SiteDiagnosticStatus.Error => "Ошибка",
+        SiteDiagnosticStatus.ExampleUnavailable => "Пример недоступен",
+        SiteDiagnosticStatus.NetworkError => "Ошибка сети/TLS",
         SiteDiagnosticStatus.Skipped => "Пропуск",
         _ => "Отменено"
     };
@@ -74,10 +77,23 @@ public static class SiteDiagnosticBatch
 
     public static SiteProbeOutcome ClassifyFailure(Exception error)
     {
+        if (error is SiteAccessException access)
+            return new(SiteDiagnosticStatus.AccessRestricted, access.Reason == SiteAccessReason.AgeConfirmationRequired
+                ? "Возрастное ограничение 18+: требуется вход; анонимная диагностика не использует сохранённые учётные данные"
+                : "Сайт требует входа или не предоставил доступ; сохранённые учётные данные не использовались");
+        if (error is OperationCanceledException or TimeoutException)
+            return new(SiteDiagnosticStatus.Timeout, "Истёк лимит проверки или сетевого запроса");
         if (error is HttpRequestException http && http.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
             return new(SiteDiagnosticStatus.AccessRestricted, $"HTTP {(int)http.StatusCode.Value}: сайт ограничил доступ; анонимная проба не доказывает дефект загрузчика");
-        if (error is HttpRequestException { StatusCode: HttpStatusCode.NotFound })
-            return new(SiteDiagnosticStatus.Error, "HTTP 404: пример или ресурс книги не найден; книга могла быть удалена, это не доказывает поломку загрузчика");
+        if (error is HttpRequestException unavailable && unavailable.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
+            return new(SiteDiagnosticStatus.ExampleUnavailable, $"HTTP {(int)unavailable.StatusCode.Value}: пример или ресурс книги недоступен/удалён; это не доказывает поломку загрузчика или закрытие сайта");
+        if (error.InnerException != null)
+        {
+            var nested = ClassifyFailure(error.InnerException);
+            if (nested.Status != SiteDiagnosticStatus.Error) return nested;
+        }
+        if (error is HttpRequestException { StatusCode: null } || error is System.Security.Authentication.AuthenticationException or System.Net.Sockets.SocketException)
+            return new(SiteDiagnosticStatus.NetworkError, "Запрос не завершился из-за сети/TLS; это не подтверждает ошибку сертификата. Подробности — в журнале");
         if (error.Message.Contains("авторизац", StringComparison.OrdinalIgnoreCase) ||
             error.Message.Contains("требуется вход", StringComparison.OrdinalIgnoreCase) ||
             error.Message.Contains("не предоставил доступ", StringComparison.OrdinalIgnoreCase))
@@ -86,6 +102,18 @@ public static class SiteDiagnosticBatch
         return new(SiteDiagnosticStatus.Error, error is HttpRequestException request && request.StatusCode.HasValue
             ? $"HTTP {(int)request.StatusCode.Value}; подробности этапа — в журнале"
             : $"{error.GetType().Name}; подробности этапа — в журнале");
+    }
+
+    public static string DescribeSummary(IReadOnlyList<SiteDiagnosticResult> results)
+    {
+        int Count(SiteDiagnosticStatus status) => results.Count(result => result.Status == status);
+        var skipped = Count(SiteDiagnosticStatus.Skipped);
+        var cancelled = Count(SiteDiagnosticStatus.Cancelled);
+        return $"Сайтов {results.Select(result => result.Case.SiteHost).Distinct(StringComparer.OrdinalIgnoreCase).Count()}, примеров {results.Count}: " +
+               $"завершено проб {results.Count - skipped - cancelled}; OK {Count(SiteDiagnosticStatus.Ok)}, предупреждений {Count(SiteDiagnosticStatus.Warning)}, " +
+               $"вход/ограничение {Count(SiteDiagnosticStatus.AccessRestricted)}, пример недоступен {Count(SiteDiagnosticStatus.ExampleUnavailable)}, " +
+               $"сеть/TLS {Count(SiteDiagnosticStatus.NetworkError)}, таймаутов {Count(SiteDiagnosticStatus.Timeout)}, ошибок {Count(SiteDiagnosticStatus.Error)}, " +
+               $"пропущено {skipped}, отменено {cancelled}";
     }
 
     public static IReadOnlyList<DiagnosticCheck> CheckOutput(SiteDiagnosticCase item, int chapters, IReadOnlyList<string> files, CancellationToken cancellationToken = default)

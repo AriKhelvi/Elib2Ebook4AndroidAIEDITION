@@ -95,7 +95,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             throw new InvalidOperationException("Litnet не вернул название или адрес книги. Проверьте доступ к произведению.");
         if (!Config.HasCredentials && data.AdultOnly)
         {
-            throw new Exception("Произведение 18+. Необходимо добавить логин и пароль.");
+            throw new SiteAccessException(SiteAccessReason.AgeConfirmationRequired, "Произведение 18+. Необходимо добавить логин и пароль.");
         }
 
         return data;

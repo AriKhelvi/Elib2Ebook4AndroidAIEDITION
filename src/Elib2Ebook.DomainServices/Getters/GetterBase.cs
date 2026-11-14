@@ -195,7 +195,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         var startChapter = epubBook.Resources.Html.First(h => HttpUtility.UrlDecode(h.AbsolutePath) == HttpUtility.UrlDecode(epubChapter.AbsolutePath));
         var startIndex = epubBook.Resources.Html.IndexOf(startChapter);
 
-        var chapter = epubBook.Resources.Html[startIndex].TextContent.AsHtmlDoc();
+        var chapter = EpubImportLinks.Parse(epubBook.Resources.Html[startIndex].TextContent);
         foreach (var node in chapter.QuerySelector("body").ChildNodes)
         {
             doc.DocumentNode.AppendChild(node);
@@ -209,7 +209,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
                 break;
             }
 
-            chapter = chapterContent.TextContent.AsHtmlDoc();
+            chapter = EpubImportLinks.Parse(chapterContent.TextContent);
             foreach (var node in chapter.QuerySelector("body").ChildNodes)
             {
                 doc.DocumentNode.AppendChild(node);
@@ -229,10 +229,12 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
 
         await using var stream = shortFile.GetStream();
         var epubBook = EpubReader.Read(stream, true, Encoding.UTF8);
+        var importedLinks = EpubImportLinks.Prepare(epubBook);
 
         if (epubBook.TableOfContents.Count > 0)
         {
             var current = epubBook.TableOfContents.First();
+            var startedFiles = new HashSet<string>(StringComparer.Ordinal);
 
             do
             {
@@ -244,8 +246,10 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
                 };
 
                 var content = GetContent(epubBook, current);
+                if (startedFiles.Add(current.AbsolutePath)) EpubImportLinks.EnsureFileAnchors(content, current.AbsolutePath, importedLinks);
                 chapter.Images = await GetImages(content, epubBook);
                 ChapterContentCleaner.RemoveLeadingTitle(content.DocumentNode, chapter.Title);
+                EpubImportLinks.RemoveClonedAnchors(content, importedLinks);
                 chapter.Content = content.DocumentNode.InnerHtml;
                 result.Add(chapter);
             } while ((current = current.Next) != null);
@@ -257,11 +261,11 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
             var sb = new StringBuilder();
             foreach (var textFile in epubBook.SpecialResources.HtmlInReadingOrder)
             {
-                var textFileDoc = textFile.TextContent.AsHtmlDoc();
+                var textFileDoc = EpubImportLinks.Parse(textFile.TextContent);
                 var body = textFileDoc.DocumentNode.QuerySelector("body");
                 if (body != null)
                 {
-                    textFileDoc = body.InnerHtml.AsHtmlDoc();
+                    textFileDoc = EpubImportLinks.Parse(body.InnerHtml);
                 }
 
                 sb.Append(textFileDoc.DocumentNode.InnerHtml);
@@ -272,7 +276,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
                 Title = epubBook.Title
             };
 
-            var content = sb.AsHtmlDoc();
+            var content = EpubImportLinks.Parse(sb.ToString());
             chapter.Images = await GetImages(content, epubBook);
             ChapterContentCleaner.RemoveLeadingTitle(content.DocumentNode, chapter.Title);
             chapter.Content = content.DocumentNode.InnerHtml;

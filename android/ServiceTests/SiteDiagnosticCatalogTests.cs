@@ -42,6 +42,7 @@ public class SiteDiagnosticCatalogTests
     public void ExamplesAreTraceableToAuditOrConcreteUserReports()
     {
         var audit = File.ReadAllText(Path.Combine(RepositoryRoot(), "docs", "CONTENT-AUDIT-2026-11-12.md"));
+        var followup = File.ReadAllText(Path.Combine(RepositoryRoot(), "docs", "DIAGNOSTICS-2026-11-14.md"));
         string[] userReports =
         [
             "https://bllate.org/book/20455",
@@ -50,8 +51,15 @@ public class SiteDiagnosticCatalogTests
         ];
 
         foreach (var example in SiteDiagnosticCatalog.Samples.Where(test => test.BookUrl != null))
-            Assert.True(audit.Contains(example.BookUrl, StringComparison.Ordinal) || userReports.Contains(example.BookUrl),
+            Assert.True(audit.Contains(example.BookUrl, StringComparison.Ordinal) || followup.Contains(example.BookUrl, StringComparison.Ordinal) || userReports.Contains(example.BookUrl),
                 $"Для примера {example.Id} необходимо зафиксировать источник реальной ссылки.");
+    }
+
+    [Fact]
+    public void ReaderSampleSkipsIllustrationOnlyOpeningButKeepsPositiveRange()
+    {
+        Assert.All(SiteDiagnosticCatalog.Samples, sample => Assert.True(sample.StartChapter > 0));
+        Assert.Equal(2, SiteDiagnosticCatalog.Samples.Single(sample => sample.SiteHost == "ranobehub.org").StartChapter);
     }
 
     [Fact]

@@ -26,8 +26,9 @@ public class LitsovetGetter(BookGetterConfig config) : GetterBase(config)
         }
 
         using var post = await Config.Client.PostAsync(SystemUrl.MakeRelativeUri("/ajax/login_signup_remind"), GenerateAuthData());
+        post.EnsureDownloadSuccess();
         var response = await post.Content.ReadFromJsonAsync<LitsovetLoginResponse>();
-        if (response.Ok == 1)
+        if (response?.Ok == 1)
         {
             Config.Logger.LogInformation("Успешно авторизовались");
         }
@@ -59,14 +60,16 @@ public class LitsovetGetter(BookGetterConfig config) : GetterBase(config)
     {
         url = SystemUrl.MakeRelativeUri("/books/" + GetId(url));
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
+        var title = doc.GetTextBySelector("h1");
+        if (string.IsNullOrWhiteSpace(title)) throw new InvalidOperationException("Литсовет не вернул карточку книги: название отсутствует.");
 
         var book = new Book(url)
         {
             Cover = await GetCover(doc, url),
-            Chapters = await FillChapters(url),
-            Title = doc.GetTextBySelector("h1"),
+            Chapters = await FillChapters(url, doc),
+            Title = title,
             Author = GetAuthor(doc),
-            Annotation = doc.QuerySelector("div.book-informate div.item-descr")?.InnerHtml
+            Annotation = (doc.QuerySelector("div[itemprop='description']") ?? doc.QuerySelector("div.book-informate div.item-descr"))?.InnerHtml
         };
 
         return book;
@@ -74,12 +77,25 @@ public class LitsovetGetter(BookGetterConfig config) : GetterBase(config)
 
     private Author GetAuthor(HtmlDocument doc)
     {
-        var a = doc.QuerySelector("div.p-book-author a");
-        return new Author(a.QuerySelector("span").GetText(), SystemUrl.MakeRelativeUri(a.Attributes["href"].Value));
+        var a = doc.QuerySelector("div.p-book-author a") ?? doc.QuerySelector("div.card-book.big .item-author a");
+        var name = a?.GetText();
+        var href = a?.GetAttributeValue("href", null);
+        return string.IsNullOrWhiteSpace(name) ? new Author("Автор не указан") : new Author(name, string.IsNullOrWhiteSpace(href) ? null : SystemUrl.MakeRelativeUri(href));
     }
 
-    private async Task<IEnumerable<UrlChapter>> GetToc(Uri url)
+    private async Task<IEnumerable<UrlChapter>> GetToc(Uri url, HtmlDocument card)
     {
+        var currentRows = card.QuerySelectorAll("#book-sections .card-glava .item-name");
+        if (currentRows.Count > 0)
+        {
+            var chapters = currentRows.Select(row =>
+            {
+                var href = row.QuerySelector("a")?.GetAttributeValue("href", null);
+                return new UrlChapter(string.IsNullOrWhiteSpace(href) ? null : url.MakeRelativeUri(href), row.GetText().ReplaceNewLine());
+            }).ToList();
+            return SliceToc(chapters, chapter => chapter.Title);
+        }
+
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url.AppendSegment("/read/"));
 
         var result = new List<UrlChapter>();
@@ -92,10 +108,11 @@ public class LitsovetGetter(BookGetterConfig config) : GetterBase(config)
                     : new UrlChapter(url.MakeRelativeUri(href), a.GetText().ReplaceNewLine()));
         }
 
+        if (result.Count == 0) throw new InvalidOperationException("Литсовет не вернул оглавление в поддерживаемой разметке.");
         return SliceToc(result, c => c.Title);
     }
 
-    private async Task<IEnumerable<Chapter>> FillChapters(Uri url)
+    private async Task<IEnumerable<Chapter>> FillChapters(Uri url, HtmlDocument card)
     {
         var result = new List<Chapter>();
         if (Config.Options.NoChapters)
@@ -103,8 +120,10 @@ public class LitsovetGetter(BookGetterConfig config) : GetterBase(config)
             return result;
         }
 
-        foreach (var urlChapter in await GetToc(url))
+        foreach (var urlChapter in await GetToc(url, card))
         {
+            Config.CancellationToken.ThrowIfCancellationRequested();
+            if (urlChapter.Url == null) throw ChapterAccessDenied();
             Config.Logger.LogInformation($"Загружаю главу {urlChapter.Title.CoverQuotes()}");
             var chapter = new Chapter
             {
@@ -127,12 +146,23 @@ public class LitsovetGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HtmlDocument> GetChapter(UrlChapter urlChapter)
     {
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(urlChapter.Url);
-        return doc.QuerySelector("div.reader").InnerHtml.AsHtmlDoc();
+        var content = doc.QuerySelector("div.reader-text") ?? doc.QuerySelector("div.reader");
+        if (content?.QuerySelectorAll(".card-alert .item-descr").Any(alert =>
+                alert.GetText().Contains("Для продолжения чтения книги", StringComparison.OrdinalIgnoreCase)) == true)
+            throw ChapterAccessDenied();
+        if (content == null || (string.IsNullOrWhiteSpace(content.GetText()) && content.QuerySelector("img") == null))
+            throw new InvalidOperationException("Литсовет не вернул текст выбранной главы в поддерживаемой разметке.");
+        var chapter = new HtmlDocument();
+        chapter.LoadHtml(content.InnerHtml);
+        return chapter;
     }
+
+    private static SiteAccessException ChapterAccessDenied() => new(SiteAccessReason.AccessDenied,
+        "Литсовет не предоставил доступ к выбранной главе. Проверьте вход и покупку книги.");
 
     private Task<TempFile> GetCover(HtmlDocument doc, Uri bookUri)
     {
-        var imagePath = doc.QuerySelector("div.p-book-cover img")?.Attributes["src"]?.Value;
+        var imagePath = (doc.QuerySelector("div.p-book-cover img") ?? doc.QuerySelector("div.card-book.big .item-cover img"))?.Attributes["src"]?.Value;
         return !string.IsNullOrWhiteSpace(imagePath) ? SaveImage(bookUri.MakeRelativeUri(imagePath)) : Task.FromResult(default(TempFile));
     }
 }

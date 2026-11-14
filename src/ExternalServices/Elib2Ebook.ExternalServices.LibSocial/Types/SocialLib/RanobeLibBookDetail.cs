@@ -28,6 +28,9 @@ internal class RLBDData
     [JsonPropertyName("slug_url")]
     public string SlugUrl { get; set; }
 
+    [JsonPropertyName("is_licensed")]
+    public bool IsLicensed { get; set; }
+
     [JsonPropertyName("cover")]
     public RLBDCover Cover { get; set; }
 

@@ -46,7 +46,10 @@ public class LibkingGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task AddChapter(ICollection<Chapter> chapters, Chapter chapter, StringBuilder text)
     {
-        var chapterDoc = text.AsHtmlDoc();
+        var chapterDoc = new HtmlDocument();
+        chapterDoc.LoadHtml(text.ToString());
+        if (string.IsNullOrWhiteSpace(chapterDoc.DocumentNode.InnerText) && chapterDoc.QuerySelector("img") == null)
+            return;
         chapter.Images = await GetImages(chapterDoc, SystemUrl);
         chapter.Content = chapterDoc.DocumentNode.InnerHtml;
         chapters.Add(chapter);
@@ -127,11 +130,18 @@ public class LibkingGetter(BookGetterConfig config) : GetterBase(config)
             Config.Logger.LogInformation($"Получаю страницу {i}");
             doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
             url = GetNextPage(doc, url);
-            fullText.Append(doc.QuerySelector("#book").RemoveNodes(".navigation, .cpab, .cpab1, .load_text, #twentypersent").InnerHtml);
+            var content = doc.QuerySelector("#book") ?? doc.QuerySelector("#read");
+            if (content == null)
+                throw new InvalidOperationException("LibKing не вернул текст страницы книги. Проверьте доступность чтения на сайте; возможно, изменилась его разметка.");
+            content.RemoveNodes(".navigation, .cpab, .cpab1, .load_text, #twentypersent, script, style");
+            if (string.IsNullOrWhiteSpace(content.InnerText) && content.QuerySelector("img") == null)
+                throw new InvalidOperationException("LibKing вернул пустую страницу книги. Неполный файл не будет сохранён.");
+            fullText.Append(content.InnerHtml);
             i++;
         }
 
-        var book = fullText.AsHtmlDoc();
+        var book = new HtmlDocument();
+        book.LoadHtml(fullText.ToString());
         var node = GetTitleNode(book);
         if (node != null)
         {
@@ -140,13 +150,12 @@ public class LibkingGetter(BookGetterConfig config) : GetterBase(config)
                 var title = node.GetText();
                 var chapterText = new StringBuilder();
 
-                do
-                {
-                    node = node.NextSibling;
-                    chapterText.Append(node.OuterHtml);
-                } while (node.NextSibling != null && !IsTitle(node.NextSibling));
-
                 node = node.NextSibling;
+                while (node != null && !IsTitle(node))
+                {
+                    chapterText.Append(node.OuterHtml);
+                    node = node.NextSibling;
+                }
                 await AddChapter(result, CreateChapter(title), chapterText);
             }
         }
@@ -155,6 +164,8 @@ public class LibkingGetter(BookGetterConfig config) : GetterBase(config)
             await AddChapter(result, CreateChapter(name), fullText);
         }
 
-        return result;
+        if (result.Count == 0)
+            throw new InvalidOperationException("LibKing не вернул текст глав книги. Пустой файл не будет сохранён.");
+        return SliceToc(result, chapter => chapter.Title).ToList();
     }
 }

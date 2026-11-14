@@ -94,10 +94,10 @@ public class ChangedLayoutGetterTests
     }
 
     [Fact]
-    public async Task RanobeHubModernLayoutDoesNotFallThroughToOldApi()
+    public async Task RanobeHubUnknownLayoutDoesNotFallThroughToOldApi()
     {
         // В живой карточке больше нет старых html[data-id]/h1.header.
-        var handler = new AfAuditSupport.Handler(_ => Html("<html data-site-version='modern'><h1>Книга</h1><script>self.__next_f.push([])</script></html>"));
+        var handler = new AfAuditSupport.Handler(_ => Html("<html><h1>Книга</h1><script>self.__next_f.push([])</script></html>"));
         using var config = AfAuditSupport.Config(handler);
         using var getter = new RanobeHubGetter(config);
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => getter.Get(new Uri("https://ranobehub.org/ranobe/947-test")));

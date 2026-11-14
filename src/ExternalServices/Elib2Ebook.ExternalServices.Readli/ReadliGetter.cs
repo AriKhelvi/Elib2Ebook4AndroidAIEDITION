@@ -23,6 +23,19 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
         Config.Client.DefaultRequestHeaders.Add("Host", SystemUrl.Host);
     }
 
+    protected override HttpRequestMessage GetImageRequestMessage(Uri uri)
+    {
+        var request = base.GetImageRequestMessage(uri);
+        // SaveImage получает публичный адрес: он нужен для проверки TLS и области действия заголовков.
+        // Меняем только адрес соединения для собственного HTTPS-хоста; внешние изображения не перенаправляем.
+        if (uri.Scheme == SystemUrl.Scheme && uri.IdnHost == SystemUrl.IdnHost && uri.Port == SystemUrl.Port)
+        {
+            request.RequestUri = uri.ReplaceHost(_host.Host);
+            request.Headers.Host = SystemUrl.Host;
+        }
+        return request;
+    }
+
     public override async Task<Book> Get(Uri url)
     {
         url = await GetMainUrl(url);
@@ -99,7 +112,10 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
     private Task<TempFile> GetCover(HtmlNode doc, Uri bookUri)
     {
         var imagePath = doc.QuerySelector("img")?.Attributes["src"]?.Value;
-        return !string.IsNullOrWhiteSpace(imagePath) ? SaveImage(bookUri.MakeRelativeUri(imagePath).ReplaceHost(_host.Host)) : Task.FromResult(default(TempFile));
+        if (string.IsNullOrWhiteSpace(imagePath)) return Task.FromResult(default(TempFile));
+        var imageUri = bookUri.MakeRelativeUri(imagePath);
+        if (imageUri.IdnHost == _host.IdnHost) imageUri = imageUri.ReplaceHost(SystemUrl.Host);
+        return SaveImage(imageUri);
     }
 
     private async Task AddChapter(ICollection<Chapter> chapters, Chapter chapter, StringBuilder text)
@@ -110,7 +126,7 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
         }
 
         var chapterDoc = text.AsHtmlDoc();
-        chapter.Images = await GetImages(chapterDoc, SystemUrl.MakeRelativeUri("/chitat-online/").ReplaceHost(_host.Host));
+        chapter.Images = await GetImages(chapterDoc, SystemUrl.MakeRelativeUri("/chitat-online/"));
         chapter.Content = chapterDoc.DocumentNode.InnerHtml;
         chapters.Add(chapter);
     }

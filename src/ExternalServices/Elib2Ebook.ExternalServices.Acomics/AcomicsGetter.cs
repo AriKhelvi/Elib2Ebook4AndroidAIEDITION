@@ -29,8 +29,10 @@ public class AcomicsGetter(BookGetterConfig config) : GetterBase(config)
         url = SystemUrl.MakeRelativeUri(id);
 
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"{id}/1"));
-
-        var title = doc.QuerySelector("meta[property=og:title]").Attributes["content"].Value;
+        CheckAvailability(doc);
+        var title = doc.QuerySelector("meta[property=og:title]")?.GetAttributeValue("content", null);
+        if (string.IsNullOrWhiteSpace(title))
+            throw new InvalidOperationException("Acomics не вернул карточку комикса. Проверьте доступность сайта в браузере; возможно, изменилась его разметка.");
         var book = new Book(url)
         {
             Chapters = await FillChapters(doc, id, title, url),
@@ -46,8 +48,14 @@ public class AcomicsGetter(BookGetterConfig config) : GetterBase(config)
 
     private static Author GetAuthor(HtmlDocument doc, Uri url)
     {
-        var a = doc.QuerySelector("article.authors,a.username");
-        return new Author(a.GetText(), url.MakeRelativeUri(a.Attributes["href"].Value));
+        var a = doc.QuerySelector("article.authors a[href],a.username[href]");
+        return a == null ? new Author("Acomics") : new Author(a.GetText(), url.MakeRelativeUri(a.Attributes["href"].Value));
+    }
+
+    private static void CheckAvailability(HtmlDocument doc)
+    {
+        if (doc.DocumentNode.InnerText.Contains("сайт недоступен в вашем регионе", StringComparison.OrdinalIgnoreCase))
+            throw new SiteAccessException(SiteAccessReason.AccessDenied, "Acomics сообщил, что сайт недоступен в вашем регионе. Вместо комикса получена страница ограничения доступа.");
     }
 
     private async Task<IEnumerable<Chapter>> FillChapters(HtmlDocument doc, string bookId, string title, Uri url)
@@ -62,17 +70,25 @@ public class AcomicsGetter(BookGetterConfig config) : GetterBase(config)
             Title = title
         };
 
-        var pages = int.Parse(doc.GetTextBySelector("span.issueNumber,span.number-without-name,span.number-with-name").Split("/").Last());
+        var pageCount = doc.GetTextBySelector("span.issueNumber,span.number-without-name,span.number-with-name")?.Split('/').Last();
+        if (!int.TryParse(pageCount, out var pages) || pages <= 0 || pages > 100000)
+            throw new InvalidOperationException("Acomics не вернул количество страниц комикса. Возможно, изменилась разметка сайта.");
         var sb = new StringBuilder();
-        for (var i = 1; i <= pages; i++)
+        foreach (var i in SliceToc(Enumerable.Range(1, pages).ToArray(), page => page.ToString()))
         {
             Config.Logger.LogInformation($"Получаю страницу {i}/{pages}");
-            var response = await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"{bookId}/{i}"));
+            var response = i == 1 ? doc : await Config.Client.GetHtmlDocWithTriesAsync(SystemUrl.MakeRelativeUri($"{bookId}/{i}"));
+            CheckAvailability(response);
             var img = response.QuerySelector("#mainImage") ?? response.QuerySelector("img.issue");
-            var src = url.MakeRelativeUri(img.Attributes["src"].Value);
+            var imagePath = img?.GetAttributeValue("src", null);
+            if (string.IsNullOrWhiteSpace(imagePath))
+                throw new InvalidOperationException($"Acomics не вернул изображение страницы {i}. Неполный комикс не будет сохранён.");
+            var src = url.MakeRelativeUri(imagePath);
             sb.Append($"<img src='{src}'/>");
         }
 
+        if (sb.Length == 0)
+            return [];
         var chapterDoc = sb.AsHtmlDoc();
         chapter.Images = await GetImages(chapterDoc, url);
         chapter.Content = chapterDoc.DocumentNode.InnerHtml;

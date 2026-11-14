@@ -14,7 +14,7 @@ public class HogwartsNetGetter(BookGetterConfig config) : GetterBase(config)
 {
     protected override Uri SystemUrl => new("https://hogwartsnet.ru/");
 
-    private static Encoding _encoding = Encoding.GetEncoding(1251);
+    private static readonly Encoding _encoding = Encoding.GetEncoding(1251);
 
     protected override string GetId(Uri url)
         => url.GetQueryParameter("fid");
@@ -46,6 +46,7 @@ public class HogwartsNetGetter(BookGetterConfig config) : GetterBase(config)
     {
         url = $"https://hogwartsnet.ru/mfanf/ffshowfic.php?fid={GetId(url)}".AsUri();
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url, _encoding);
+        CheckAvailability(doc);
 
         var book = new Book(url)
         {
@@ -75,12 +76,10 @@ public class HogwartsNetGetter(BookGetterConfig config) : GetterBase(config)
                 Title = urlChapter.Title
             };
 
-            var chapterDoc = await GetChapter(urlChapter.Url);
-            if (chapterDoc != null)
-            {
-                chapter.Images = await GetImages(chapterDoc, urlChapter.Url);
-                chapter.Content = chapterDoc.DocumentNode.InnerHtml;
-            }
+            // Одночастные фанфики уже содержат текст на странице карточки.
+            var chapterDoc = ParseChapter(urlChapter.Url == url ? doc : await Config.Client.GetHtmlDocWithTriesAsync(urlChapter.Url, _encoding));
+            chapter.Images = await GetImages(chapterDoc, urlChapter.Url);
+            chapter.Content = chapterDoc.DocumentNode.InnerHtml;
 
             result.Add(chapter);
         }
@@ -88,21 +87,30 @@ public class HogwartsNetGetter(BookGetterConfig config) : GetterBase(config)
         return result;
     }
 
-    private async Task<HtmlDocument> GetChapter(Uri url)
+    private static void CheckAvailability(HtmlDocument doc)
     {
-        var doc = await Config.Client.GetHtmlDocWithTriesAsync(url, _encoding);
-
         const string mature = "Текст фанфика доступен только зарегистрированным пользователям старше 18 лет";
-        if (doc.ParsedText.Contains(mature))
+        if (doc.DocumentNode.InnerText.Contains(mature, StringComparison.OrdinalIgnoreCase))
         {
-            throw new Exception($"{mature}. Добавьте авторизацию по ID и паролю.");
+            throw new SiteAccessException(SiteAccessReason.AgeConfirmationRequired, $"{mature}. Добавьте авторизацию по ID и паролю.");
         }
+    }
+
+    private static HtmlDocument ParseChapter(HtmlDocument doc)
+    {
+        CheckAvailability(doc);
+        var content = doc.QuerySelector("#chap_text");
+        if (content == null)
+            throw new InvalidOperationException("HogwartsNet не вернул текст главы. Проверьте доступ к фанфику на сайте; возможно, изменилась его разметка.");
+        content = content.CloneNode(true).RemoveNodes("center, div[id*=yandex], script, style");
+        foreach (var lineBreak in content.QuerySelectorAll("br").ToArray())
+            lineBreak.ParentNode.ReplaceChild(HtmlNode.CreateNode("\n"), lineBreak);
 
         var text = new StringBuilder();
-        using var sr = new StringReader(doc.QuerySelector("#chap_text").RemoveNodes("center, div[id*=yandex]").InnerText.HtmlDecode());
+        using var sr = new StringReader(System.Net.WebUtility.HtmlDecode(content.InnerText));
         while (true)
         {
-            var line = await sr.ReadLineAsync();
+            var line = sr.ReadLine();
             if (line == null)
             {
                 break;
@@ -116,7 +124,11 @@ public class HogwartsNetGetter(BookGetterConfig config) : GetterBase(config)
             text.Append(line.HtmlEncode().CoverTag("p"));
         }
 
-        return text.AsHtmlDoc();
+        if (text.Length == 0)
+            throw new InvalidOperationException("HogwartsNet вернул пустой текст главы. Неполный файл не будет сохранён.");
+        var chapter = new HtmlDocument();
+        chapter.LoadHtml(text.ToString());
+        return chapter;
     }
 
     private IEnumerable<UrlChapter> GetToc(HtmlDocument doc, Uri url)
@@ -125,11 +137,21 @@ public class HogwartsNetGetter(BookGetterConfig config) : GetterBase(config)
 
         foreach (var option in doc.QuerySelectorAll("td.fichead_chapters select[name=chapter] option"))
         {
-            var chapterId = option.Attributes["value"].Value;
+            var chapterId = option.GetAttributeValue("value", null);
+            if (string.IsNullOrWhiteSpace(chapterId))
+                continue;
             var chapterUrl = url.AppendQueryParameter("chapter", chapterId);
             var chapterTitle = option.GetText().StartsWith("глава") ? $"Глава {chapterId}" : option.GetText();
 
             result.Add(new UrlChapter(chapterUrl, chapterTitle));
+        }
+
+        if (result.Count == 0)
+        {
+            var title = doc.GetTextBySelector("td.fichead a[href*=ffshowfic.php]");
+            if (doc.QuerySelector("#chap_text") == null || string.IsNullOrWhiteSpace(title))
+                throw new InvalidOperationException("HogwartsNet не вернул оглавление или текст фанфика. Проверьте доступность книги на сайте.");
+            result.Add(new UrlChapter(url, title));
         }
 
         return SliceToc(result, c => c.Title);

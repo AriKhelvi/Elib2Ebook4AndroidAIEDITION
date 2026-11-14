@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Web;
 using Elib2Ebook.DomainServices.Configs;
+using Elib2Ebook.DomainServices.Getters;
 using Elib2Ebook.DomainServices.Misc.TempFolder;
 using Elib2Ebook.ExternalServices.Litnet.Getters;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -15,6 +16,17 @@ namespace Elib2Ebook.DomainServices.Tests.Getters;
 public class LitnetBatchTests
 {
     private static readonly Uri BookUri = new("https://litnet.com/ru/book/test-b123");
+
+    [Fact]
+    public async Task AnonymousAdultBookReportsTypedAccessRestrictionBeforeRequestingChapters()
+    {
+        var handler = new FakeHandler { AdultOnly = true };
+        using var getter = CreateGetter(new Options(), handler);
+        var error = await Assert.ThrowsAsync<SiteAccessException>(() => getter.Get(BookUri));
+        Assert.Equal(SiteAccessReason.AgeConfirmationRequired, error.Reason);
+        Assert.Empty(handler.Batches);
+        Assert.Equal(0, handler.ContentsRequests);
+    }
 
     [Fact]
     public async Task RequestsAll205ChaptersInBoundedBatchesAndKeepsTocOrder()
@@ -185,6 +197,7 @@ public class LitnetBatchTests
         public int ContentsRequests { get; private set; }
         public bool OmitLastChapter { get; init; }
         public int ChapterCount { get; init; } = 205;
+        public bool AdultOnly { get; init; }
         public long? BrokenChapter { get; init; }
         public string BrokenText { get; init; }
         public Action<int> BeforeBatch { get; init; }
@@ -196,7 +209,7 @@ public class LitnetBatchTests
             switch (uri.AbsolutePath)
             {
                 case "/v1/book/get/123":
-                    result = new { title = "Книга", url = BookUri.ToString(), author_name = "Автор", lang = "ru" };
+                    result = new { title = "Книга", url = BookUri.ToString(), author_name = "Автор", lang = "ru", adult_only = AdultOnly };
                     break;
                 case "/v1/book/contents":
                     ContentsRequests++;

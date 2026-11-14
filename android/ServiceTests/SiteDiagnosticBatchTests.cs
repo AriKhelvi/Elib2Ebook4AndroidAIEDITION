@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Net;
 using E2E.Droid.Services;
+using Elib2Ebook.DomainServices.Getters;
 
 namespace ServiceTests;
 
@@ -127,14 +128,47 @@ public sealed class SiteDiagnosticBatchTests : IDisposable
         Assert.Equal(SiteDiagnosticStatus.Warning, SiteDiagnosticBatch.Evaluate([new(true, "проверено")], 1, true).Status);
     }
 
-    [Fact]
-    public void NotFoundDescribesAnUnavailableExampleWithoutDeclaringBrokenLoader()
+    [Theory]
+    [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.Gone)]
+    public void NotFoundDescribesAnUnavailableExampleWithoutDeclaringBrokenLoader(HttpStatusCode code)
     {
-        var result = SiteDiagnosticBatch.ClassifyFailure(new HttpRequestException("private-session", null, HttpStatusCode.NotFound));
-        Assert.Equal(SiteDiagnosticStatus.Error, result.Status);
-        Assert.Contains("404", result.Detail);
+        var result = SiteDiagnosticBatch.ClassifyFailure(new HttpRequestException("private-session", null, code));
+        Assert.Equal(SiteDiagnosticStatus.ExampleUnavailable, result.Status);
+        Assert.Contains(((int)code).ToString(), result.Detail);
         Assert.Contains("не доказывает", result.Detail);
         Assert.DoesNotContain("private-session", result.Detail);
+    }
+
+    [Fact]
+    public void TypedAgeRestrictionAndNestedHttpFailuresKeepTheirMeaningWithoutExposingMessages()
+    {
+        var age = SiteDiagnosticBatch.ClassifyFailure(new InvalidOperationException("wrapper-secret",
+            new SiteAccessException(SiteAccessReason.AgeConfirmationRequired, "session-secret")));
+        Assert.Equal(SiteDiagnosticStatus.AccessRestricted, age.Status);
+        Assert.Contains("18+", age.Detail);
+        Assert.DoesNotContain("secret", age.Detail);
+
+        var timeout = SiteDiagnosticBatch.ClassifyFailure(new HttpRequestException("request-secret", new TimeoutException()));
+        Assert.Equal(SiteDiagnosticStatus.Timeout, timeout.Status);
+        var network = SiteDiagnosticBatch.ClassifyFailure(new HttpRequestException("ssl-secret", new IOException("EOF")));
+        Assert.Equal(SiteDiagnosticStatus.NetworkError, network.Status);
+        Assert.Contains("не подтверждает ошибку сертификата", network.Detail);
+        Assert.DoesNotContain("secret", network.Detail);
+        Assert.Equal(SiteDiagnosticStatus.Error, SiteDiagnosticBatch.ClassifyFailure(new NullReferenceException()).Status);
+    }
+
+    [Fact]
+    public void SummaryCountsEachCaseSeparatelyFromDistinctSites()
+    {
+        var results = Enum.GetValues<SiteDiagnosticStatus>().Select((status, index) =>
+            new SiteDiagnosticResult(Case(index.ToString()), status, "", TimeSpan.Zero)).ToArray();
+        var summary = SiteDiagnosticBatch.DescribeSummary(results);
+        Assert.Contains("Сайтов 1, примеров 9", summary);
+        Assert.Contains("завершено проб 7", summary);
+        Assert.Contains("OK 1", summary);
+        Assert.Contains("ошибок 1", summary);
+        Assert.Contains("пропущено 1, отменено 1", summary);
     }
 
     private static SiteDiagnosticCase Case(string id) => new(id, "example.test", "https://example.test/book/1", null, null);

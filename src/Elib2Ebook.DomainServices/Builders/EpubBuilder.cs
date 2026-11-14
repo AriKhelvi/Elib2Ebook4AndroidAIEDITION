@@ -19,6 +19,13 @@ public class EpubBuilder(Options options, ILogger logger) : BuilderBase(options,
 
     private List<TempFile> Images { get; set; } = [];
 
+    private static HtmlDocument ParseContent(string html)
+    {
+        var document = new HtmlDocument();
+        document.LoadHtml(html);
+        return document;
+    }
+
     /// <summary>
     /// Создание Xhtml документа из кода части
     /// </summary>
@@ -118,15 +125,37 @@ public class EpubBuilder(Options options, ILogger logger) : BuilderBase(options,
         }
 
         var pattern = FileProvider.Instance.ReadAllText($"{Options.ResourcesPath}/ChapterPattern.xhtml");
-        foreach (var chapter in book.Chapters.Where(c => c.IsValid))
+        var chapters = book.Chapters.Where(c => c.IsValid).Select((chapter, index) => new
         {
+            Chapter = chapter, Id = $"chapter-{index + 1}"
+        }).ToArray();
+        // Держим DOM только одной главы: большие книги не должны одновременно занимать память всеми деревьями.
+        var anchorFiles = chapters.SelectMany(item => ParseContent(item.Chapter.Content).DocumentNode.DescendantsAndSelf()
+                .SelectMany(node => node.Attributes.Where(attribute => attribute.Name == "id" || node.Name == "a" && attribute.Name == "name"))
+                .Select(attribute => (Anchor: WebUtility.HtmlDecode(attribute.Value), File: item.Id + ".html")))
+            .GroupBy(item => item.Anchor, StringComparer.Ordinal)
+            .Where(group => group.Select(item => item.File).Distinct().Count() == 1)
+            .ToDictionary(group => group.Key, group => group.First().File, StringComparer.Ordinal);
+        foreach (var item in chapters)
+        {
+            var chapter = item.Chapter;
+            var document = ParseContent(chapter.Content);
             foreach (var image in chapter.Images)
             {
                 _writer.AddFile(image.FullName, [], GetImageFormat(image.FullName).ToEpubContentType());
                 Images.Add(image);
             }
 
-            _writer.AddChapter(chapter.Title.HtmlDecode().ReplaceNewLine().RemoveInvalidChars(), ApplyPattern(pattern, chapter.Title, chapter.Content));
+            // FB2 использует общие якоря книги; в EPUB они должны указывать на файл нужной главы.
+            foreach (var node in document.DocumentNode.DescendantsAndSelf())
+            {
+                var href = node.Attributes["href"];
+                var value = WebUtility.HtmlDecode(href?.Value);
+                if (value?.StartsWith('#') == true && anchorFiles.TryGetValue(Uri.UnescapeDataString(value[1..]), out var target)
+                    && target != item.Id + ".html") href.Value = target + value;
+            }
+            _writer.AddChapter(chapter.Title.HtmlDecode().ReplaceNewLine().RemoveInvalidChars(),
+                ApplyPattern(pattern, chapter.Title, document.DocumentNode.InnerHtml), item.Id);
         }
 
         WithFiles(Options.ResourcesPath, "*.ttf");

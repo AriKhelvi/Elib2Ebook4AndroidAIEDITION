@@ -2,7 +2,7 @@ namespace E2E.Droid.Services;
 
 /// <summary>Проверяется доступная часть примера, а не полнота всего сайта. Пропуск не считается успехом.</summary>
 public sealed record SiteDiagnosticCase(
-    string Id, string SiteHost, string BookUrl, string Limitation, string SkipReason, bool Images = false)
+    string Id, string SiteHost, string BookUrl, string Limitation, string SkipReason, bool Images = false, int StartChapter = 1)
 {
     public bool CanRun => string.IsNullOrWhiteSpace(SkipReason)
         && Uri.TryCreate(BookUrl, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http";
@@ -16,7 +16,7 @@ public sealed record SiteDiagnosticCase(
 /// </summary>
 public static class SiteDiagnosticCatalog
 {
-    public const string Version = "2026-11-14.1";
+    public const string Version = "2026-11-14.2";
     private const string NoExample = "Подтверждённый адрес отдельной книги пока не найден; проверка скачивания пропущена.";
     private const string WholeBook = "Загрузчик может получить файл или текст всей книги до выделения первой главы; действует общий таймаут случая.";
     private const string TokenRequired = "Загрузчик требует личный token ещё до получения книги; этот сценарий запускается без входа.";
@@ -33,7 +33,7 @@ public static class SiteDiagnosticCatalog
         Sample("books.yandex.ru", "https://books.yandex.ru/books/Xk1d5Skg", WholeBook, TokenRequired, suffix: "books"),
         Sample("books.yandex.ru", "https://books.yandex.ru/comicbooks/oF30TijM", ImagesOnly, TokenRequired, images: true, suffix: "comicbooks"),
         Missing("bookstab.ru", "При поиске 12 ноября вместо книжного каталога отображалась сторонняя страница."),
-        Sample("bookstime.ru", "https://bookstime.ru/book-card/2551"),
+        Sample("bookstime.ru", "https://bookstime.ru/book-card/2551", skip: "14 ноября пример вернул HTTP 404; главная страница содержит материалы о школьной программе вместо прежнего книжного каталога."),
         Sample("bookuruk.com", "https://bookuruk.com/book/tihona-dla-mazora-2"),
         Sample("boosty.to", "https://boosty.to/glvrdru", "Проверяется открытый блог. Загрузчик может запросить несколько постов; действует общий таймаут случая."),
         Sample("boovell.ru", "https://boovell.ru/story/e-e-a-ya-gde/"),
@@ -57,8 +57,8 @@ public static class SiteDiagnosticCatalog
         Missing("i-gram.ru"),
         Sample("jaomix.ru", "https://jaomix.ru/ya-popal-v-neizvestnuyu-mne-mangu/"),
         Sample("hentailib.me", "https://hentailib.me/ru/33052--adabana", ImagesOnly + " Возможны ограничения доступа или возраста.", images: true),
-        Sample("mangalib.me", "https://mangalib.me/ru/29916--ag-yeog-uiending-eunjug-eumppun", ImagesOnly, images: true),
-        Sample("mangalib.org", "https://mangalib.org/ru/29916--ag-yeog-uiending-eunjug-eumppun", ImagesOnly, images: true),
+        Sample("mangalib.me", "https://mangalib.me/ru/18406--nan-hao-shang-feng", ImagesOnly, images: true),
+        Sample("mangalib.org", "https://mangalib.org/ru/18406--nan-hao-shang-feng", ImagesOnly, images: true),
         Sample("ranobelib.me", "https://ranobelib.me/ru/29609--mikkakan-no-koufuku"),
         Sample("v2.slashlib.me", "https://v2.slashlib.me/ru/23435--secret-alliance", ImagesOnly + " Возможны ограничения доступа или возраста.", images: true),
         Sample("libbox.ru", "https://libbox.ru/book/starik-i-more", WholeBook),
@@ -74,7 +74,7 @@ public static class SiteDiagnosticCatalog
         // Свежие примеры из жалоб: оглавление Bllate 100 + 65, цикл на карточке Litnet.
         Sample("litnet.com", "https://litnet.com/ru/book/v-obyatiyah-krasnoi-planety-b640815", "Пример из жалобы на зависание; сайт может ограничить гостевой доступ."),
         Sample("litres.ru", "https://www.litres.ru/book/aleksandr-pushkin/kapitanskaya-dochka-72130255/", WholeBook + " Без входа возможен только отрывок."),
-        Sample("litsovet.ru", "https://litsovet.ru/books/1002110-zhiv"),
+        Sample("litsovet.ru", "https://litsovet.ru/books/1002083-vsyakoe-sluchaetsya", "Карточка и текст первой главы проверены 14 ноября; прежний пример вернул HTTP 404."),
         Missing("mangamammy.ru", "При поиске 12 ноября главная возвращала Redirecting без книжных ссылок.", images: true),
         Missing("mir-knig.com"),
         Sample("mybook.ru", "https://mybook.ru/author/aleksandr-sergeevich-pushkin/kapitanskaya-dochka/", WholeBook + " Возможен отрывок или требование входа."),
@@ -86,7 +86,7 @@ public static class SiteDiagnosticCatalog
         Missing("online-knigi.com.ua"),
         Sample("prodaman.ru", "https://prodaman.ru/Anastasia-Klimova/books/Vsego-lish-18", WholeBook),
         Missing("ранобэ.рф"),
-        Sample("ranobehub.org", "https://ranobehub.org/ranobe/947-alya-san-who-sits-besides-me-and-sometimes-murmurs-aff", "В прежнем аудите разметка не соответствовала загрузчику; этот случай проверяет текущий результат."),
+        Sample("ranobehub.org", "https://ranobehub.org/ranobe/947-alya-san-who-sits-besides-me-and-sometimes-murmurs-aff", "Первая часть состоит из иллюстраций; проверяется следующая текстовая глава через публичный читательский API.", startChapter: 2),
         Sample("manga.ovh", "https://v1.manga.ovh/content/v-temnote", ImagesOnly, "Найденный пример находится на поддомене v1.manga.ovh; текущий загрузчик его не распознаёт.", images: true),
         Missing("novel.ovh"),
         Sample("ranobes.com", "https://ranobes.com/ranobe/177387-mother-of-learning.html"),
@@ -99,7 +99,7 @@ public static class SiteDiagnosticCatalog
         Sample("bllate.org", "https://bllate.org/book/20455", "Оглавление из 165 глав; загрузка первой главы не подтверждает доступ к платным главам."),
         Sample("erolate.com", "https://erolate.com/book/3570", "Возможны ограничения доступа или возраста."),
         Missing("mlate.ru"),
-        Sample("tl.rulate.ru", "https://tl.rulate.ru/book/209502", "Первая глава не заменяет отдельную проверку пагинации после 100-й главы."),
+        Sample("tl.rulate.ru", "https://tl.rulate.ru/book/273770", "Открытая глава проверена 14 ноября; прежний пример 209502 вернул HTTP 410. Первая глава не заменяет проверку пагинации после 100-й."),
         Sample("samlib.ru", "http://samlib.ru/o/obushnaja_j_a/inomirnoeputeshestviezemlaynki.shtml", "Страница произведения приходит целиком по HTTP."),
         Sample("stroki.mts.ru", "https://stroki.mts.ru/book/yevgeniy-onegin-387075", WholeBook, TokenRequired),
         Missing("bigliba.com"),
@@ -133,10 +133,10 @@ public static class SiteDiagnosticCatalog
     }
 
     private static SiteDiagnosticCase Sample(string host, string url, string limitation = null,
-        string skip = null, bool images = false, string suffix = null)
+        string skip = null, bool images = false, string suffix = null, int startChapter = 1)
     {
         host = Host("https://" + host);
-        return new(host + (suffix == null ? "" : "/" + suffix), host, url, limitation, skip, images);
+        return new(host + (suffix == null ? "" : "/" + suffix), host, url, limitation, skip, images, startChapter);
     }
 
     private static SiteDiagnosticCase Missing(string host, string limitation = null, bool images = false)

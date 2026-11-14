@@ -17,10 +17,15 @@
 
     <ItemGroup>
         <Using Include="Xunit"/>
+        <Compile Include="../../android/E2E.Droid/Services/DiagnosticBookChecks.cs" Link="Diagnostics/DiagnosticBookChecks.cs" />
     </ItemGroup>
 
     <ItemGroup>
       <ProjectReference Include="..\..\src\Elib2Ebook.DomainServices\Elib2Ebook.DomainServices.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Acomics/Elib2Ebook.ExternalServices.Acomics.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.HogwartsNet/Elib2Ebook.ExternalServices.HogwartsNet.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Readli/Elib2Ebook.ExternalServices.Readli.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litsovet/Elib2Ebook.ExternalServices.Litsovet.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Rulate/Elib2Ebook.ExternalServices.Rulate.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Ficbook/Elib2Ebook.ExternalServices.Ficbook.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Litgorod/Elib2Ebook.ExternalServices.Litgorod.csproj" />
@@ -49,6 +54,7 @@
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.FictionBook/Elib2Ebook.ExternalServices.FictionBook.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Jaomix/Elib2Ebook.ExternalServices.Jaomix.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.RanobeHub/Elib2Ebook.ExternalServices.RanobeHub.csproj" />
+      <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.LibSocial/Elib2Ebook.ExternalServices.LibSocial.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.TwilightRussia/Elib2Ebook.ExternalServices.TwilightRussia.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.BookInBook/Elib2Ebook.ExternalServices.BookInBook.csproj" />
       <ProjectReference Include="../../src/ExternalServices/Elib2Ebook.ExternalServices.Neobook/Elib2Ebook.ExternalServices.Neobook.csproj" />

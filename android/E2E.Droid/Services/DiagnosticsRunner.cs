@@ -36,8 +36,8 @@ public sealed class DiagnosticsRunner(
     ToastService toasts)
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
-    public const string DefaultTestUrl = "https://tl.rulate.ru/book/209502";
-    public const string ScenarioVersion = "2026-11-14.2";
+    public const string DefaultTestUrl = "https://tl.rulate.ru/book/273770";
+    public const string ScenarioVersion = "2026-11-14.3";
 
     private const int TestChapters = 2;
     private const int MaxLines = 6000;
@@ -58,6 +58,7 @@ public sealed class DiagnosticsRunner(
 
     private readonly List<string> _log = [];
     private readonly List<SiteDiagnosticResult> _siteResults = [];
+    private readonly List<string> _applicationProblems = [];
     private IReadOnlyList<SiteDiagnosticCase> _allSiteCases = [];
     private CancellationTokenSource _cts;
 
@@ -122,7 +123,10 @@ public sealed class DiagnosticsRunner(
             var log = Log;
             var head = log.TakeWhile(l => l.StartsWith('#')).ToList();
             // Строки «#» (шапка, легенда с «[FAIL]» и «[skip]») — не проблемы
-            var problems = log
+            // В массовом режиме итог сайтов уже дан таблицей: не дублируем каждый внутренний FAIL в краткой шапке.
+            IEnumerable<string> problemLog;
+            lock (_log) problemLog = IsAllSitesRun ? _applicationProblems.ToArray() : log;
+            var problems = problemLog
                 .Where(l => !l.StartsWith('#') && (l.Contains("[FAIL]", StringComparison.Ordinal) || l.Contains("[warn]", StringComparison.Ordinal) || l.Contains("[skip]", StringComparison.Ordinal)))
                 .Select(l => "#   " + FirstLine(StripTime(l)))
                 .ToList();
@@ -134,6 +138,8 @@ public sealed class DiagnosticsRunner(
             }
             if (IsAllSitesRun)
             {
+                result.Add("# Итог по сайтам/примерам: " + SiteDiagnosticBatch.DescribeSummary(SiteResults));
+                result.Add($"# Проверки приложения: прошло {_ok}, ошибок {_failed}, предупреждений {_warnings}, пропущено {_skipped}. Эти числа не прибавляются к сайтам.");
                 result.Add($"# Каталог примеров: {SiteDiagnosticCatalog.Version}; итог по каждому примеру сохраняется независимо от ограничения журнала.");
                 result.Add("# Сайт | Статус | Секунды | Пример | Подробности");
                 foreach (var site in SiteResults)
@@ -142,7 +148,9 @@ public sealed class DiagnosticsRunner(
 
             result.Add(_completed ? "# Сценарий выполнен до конца; результат относится только к выполненным проверкам." : "# Сценарий не завершён; отсутствие ошибок не означает успешную проверку.");
             if (_logTruncated) result.Add("# Журнал ограничен по размеру: часть ранних подробностей удалена, итоговые счётчики сохранены.");
-            result.Add(problems.Count == 0 ? "# В сохранённых строках замечаний нет." : $"# Ошибки, предупреждения и пропуски ({problems.Count}):");
+            result.Add(problems.Count == 0
+                ? IsAllSitesRun ? "# В проверках приложения замечаний нет; результаты сайтов перечислены выше." : "# В сохранённых строках замечаний нет."
+                : $"# {(IsAllSitesRun ? "Замечания к проверкам приложения" : "Ошибки, предупреждения и пропуски")} ({problems.Count}):");
             result.AddRange(problems);
             result.AddRange(log.Skip(head.Count));
             return result;
@@ -189,7 +197,7 @@ public sealed class DiagnosticsRunner(
 
             await platform.RequestNotificationPermissionAsync();
 
-            lock (_log) { _log.Clear(); _siteResults.Clear(); }
+            lock (_log) { _log.Clear(); _siteResults.Clear(); _applicationProblems.Clear(); }
             IsAllSitesRun = allSites;
             _ok = _failed = _skipped = _warnings = _logChars = 0;
             _logTruncated = _completed = false;
@@ -265,6 +273,7 @@ public sealed class DiagnosticsRunner(
                         _runLog = null;
                         _log.Clear();
                         _siteResults.Clear();
+                        _applicationProblems.Clear();
                         _allSiteCases = [];
                         IsAllSitesRun = false;
                         _previousDiagnostic = [];
@@ -335,7 +344,7 @@ public sealed class DiagnosticsRunner(
         {
             if (ct.IsCancellationRequested)
             {
-                _skipped += steps.Length - i;
+                _skipped += allSites ? Math.Max(0, steps.Length - i - 1) : steps.Length - i;
                 Line("# Остановлено — остальные шаги пропущены");
                 break;
             }
@@ -352,7 +361,8 @@ public sealed class DiagnosticsRunner(
         }
 
         _completed = !ct.IsCancellationRequested;
-        Summary = $"Проверок {_ok + _failed + _warnings}: прошло {_ok}, ошибок {_failed}, предупреждений {_warnings}, пропущено {_skipped} — за {total.Elapsed:mm\\:ss}" +
+        Summary = (allSites ? SiteDiagnosticBatch.DescribeSummary(SiteResults) + $". Проверки приложения: OK {_ok}, ошибок {_failed}, предупреждений {_warnings}, пропусков {_skipped}"
+            : $"Проверок {_ok + _failed + _warnings}: прошло {_ok}, ошибок {_failed}, предупреждений {_warnings}, пропущено {_skipped}") + $" — за {total.Elapsed:mm\\:ss}" +
                   (ct.IsCancellationRequested ? " (остановлено)" : string.Empty);
         Line(string.Empty);
         Line($"# Итог: {Summary}");
@@ -372,12 +382,15 @@ public sealed class DiagnosticsRunner(
 
         Status = ct.IsCancellationRequested ? "Остановлено" : "Готово";
         var where = Result != null ? $"Журнал: {storage.DestinationLabel}/{Result.Name}" : "Журнал можно скопировать в настройках";
-        var passed = _completed && _failed == 0 && _warnings == 0 && _skipped == 0 && Result != null;
+        var siteErrors = allSites ? SiteResults.Count(site => site.Status == SiteDiagnosticStatus.Error) : 0;
+        var siteIssues = allSites ? SiteResults.Count(site => site.Status is not (SiteDiagnosticStatus.Ok or SiteDiagnosticStatus.Error)) : 0;
+        var failures = _failed + siteErrors;
+        var passed = _completed && failures == 0 && _warnings == 0 && _skipped == 0 && siteIssues == 0 && Result != null;
         var outcome = !_completed ? "остановлена, проверка неполная"
-            : _failed > 0 ? $"ошибок {_failed}"
-            : _warnings > 0 || _skipped > 0 ? "завершена с предупреждениями или пропусками"
+            : failures > 0 ? $"ошибок {failures}"
+            : _warnings > 0 || _skipped > 0 || siteIssues > 0 ? "завершена с предупреждениями, ограничениями или пропусками"
             : Result == null ? "журнал не сохранён" : "выполненные проверки прошли";
-        toasts.Show($"Диагностика: {outcome}. {where}", passed ? ToastKind.Success : _failed > 0 ? ToastKind.Error : ToastKind.Info, 8);
+        toasts.Show($"Диагностика: {outcome}. {where}", passed ? ToastKind.Success : failures > 0 ? ToastKind.Error : ToastKind.Info, 8);
         if (!platform.IsInForeground)
         {
             platform.NotifyFinished("Диагностика E2E завершена", $"{Summary}. {where}");
@@ -775,14 +788,15 @@ public sealed class DiagnosticsRunner(
     {
         lock (_log) _siteResults.Add(result);
         var text = $"{result.Case.SiteHost} ({result.Case.Id}): {result.StatusLabel}; {result.Detail}; {result.Duration.TotalSeconds:0.0} с";
-        switch (result.Status)
+        var kind = result.Status switch
         {
-            case SiteDiagnosticStatus.Ok: Ok(text); break;
-            case SiteDiagnosticStatus.Error: Fail(text); break;
-            case SiteDiagnosticStatus.Skipped:
-            case SiteDiagnosticStatus.Cancelled: Skip(text); break;
-            default: Warn(text); break;
-        }
+            SiteDiagnosticStatus.Ok => "ok",
+            SiteDiagnosticStatus.Error => "FAIL",
+            SiteDiagnosticStatus.Skipped or SiteDiagnosticStatus.Cancelled => "skip",
+            _ => "warn"
+        };
+        // Сайты считаются по результатам случаев, а не вместе с локальными проверками форматов.
+        Line($"[{kind}] {text}");
         Changed?.Invoke();
     }
 
@@ -790,7 +804,7 @@ public sealed class DiagnosticsRunner(
         => new()
         {
             Url = [item.BookUrl], Format = item.Images ? ["cbz"] : ["fb2", "epub"],
-            Start = 1, End = 1, NoImage = !item.Images, Additional = false, Cover = false,
+            Start = item.StartChapter, End = item.StartChapter, NoImage = !item.Images, Additional = false, Cover = false,
             Login = null, Password = null, AuthCachePath = "", ChapterCachePath = "",
             Timeout = Math.Clamp(current.Timeout, 1, 60), Delay = current.Delay, DelayMode = current.DelayMode,
             CustomDelaySeconds = current.CustomDelaySeconds,
@@ -808,7 +822,7 @@ public sealed class DiagnosticsRunner(
         Status = $"Сайт {SiteResults.Count + 1} из {_allSiteCases.Count}: {item.SiteHost}";
         platform.UpdateBackgroundWork("Диагностика E2E — " + Status);
         Changed?.Invoke();
-        Info($"{item.Id}: {item.BookUrl}; {item.Limitation}");
+        Info($"{item.Id}: {item.BookUrl}; глава {item.StartChapter}; {item.Limitation}");
         var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "site-" + Guid.NewGuid().ToString("N"));
         var options = CreateSiteProbeOptions(item, work, settings);
         var hadWarnings = false;
@@ -836,7 +850,7 @@ public sealed class DiagnosticsRunner(
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
-            Line($"[FAIL] {item.SiteHost}: {ex.GetType().Name}: {LogText.Clean(ex.Message)}");
+            Info($"{item.SiteHost}: причина остановки пробы — {ex.GetType().Name}: {LogText.Clean(ex.Message)}");
             throw;
         }
         finally
@@ -1108,6 +1122,14 @@ public sealed class DiagnosticsRunner(
     private void Mark(string kind, string text, ref int counter)
     {
         Interlocked.Increment(ref counter);
+        if (IsAllSitesRun && kind != "ok")
+        {
+            lock (_log)
+            {
+                _applicationProblems.Add(LogText.Clean($"[{kind}] {text}"));
+                if (_applicationProblems.Count > MaxLines) _applicationProblems.RemoveAt(0);
+            }
+        }
         Line($"[{kind}] {text}");
     }
 

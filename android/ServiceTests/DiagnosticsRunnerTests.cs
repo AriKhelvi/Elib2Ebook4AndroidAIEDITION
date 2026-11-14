@@ -83,12 +83,33 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         Assert.Contains(runner.ReportLines, line => line.StartsWith("# example.test | Вход или ограничение") && line.Contains("safe-case") && line.Contains("HTTP 403"));
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void AllSitesOptionsAlwaysUseOneChapterAndFreshAnonymousSession(bool images)
+    [Fact]
+    public void SiteOutcomesDoNotInflateApplicationCountersOrDuplicateSiteFailuresInShortReport()
     {
-        var item = new SiteDiagnosticCase("case", "example.test", "https://example.test/book/1", null, null, images);
+        var runner = CreateRunner();
+        typeof(DiagnosticsRunner).GetProperty(nameof(DiagnosticsRunner.IsAllSitesRun))!.SetValue(runner, true);
+        Invoke(runner, "Ok", "Самопроверка формата");
+        Invoke(runner, "Warn", "Локальное замечание");
+        var item = new SiteDiagnosticCase("case", "example.test", "https://example.test/book/1", null, null);
+        Invoke(runner, "RecordSiteResult", new SiteDiagnosticResult(item, SiteDiagnosticStatus.AccessRestricted, "HTTP 403", TimeSpan.Zero));
+        Invoke(runner, "RecordSiteResult", new SiteDiagnosticResult(item with { Id = "broken" }, SiteDiagnosticStatus.Error, "Парсер", TimeSpan.Zero));
+        for (var index = 0; index < 150; index++) Invoke(runner, "Line", new string('Я', 4000));
+
+        Assert.Equal(1, typeof(DiagnosticsRunner).GetField("_ok", PrivateInstance)!.GetValue(runner));
+        Assert.Equal(1, typeof(DiagnosticsRunner).GetField("_warnings", PrivateInstance)!.GetValue(runner));
+        Assert.Equal(0, typeof(DiagnosticsRunner).GetField("_failed", PrivateInstance)!.GetValue(runner));
+        Assert.Contains(runner.ReportLines, line => line.StartsWith("#   ") && line.Contains("Локальное замечание"));
+        Assert.DoesNotContain(runner.ReportLines, line => line.StartsWith("#   ") && line.Contains("example.test"));
+        Assert.Contains(runner.ReportLines, line => line.StartsWith("# Итог по сайтам/примерам:") && line.Contains("вход/ограничение 1") && line.Contains("ошибок 1"));
+    }
+
+    [Theory]
+    [InlineData(false, 1)]
+    [InlineData(true, 1)]
+    [InlineData(false, 2)]
+    public void AllSitesOptionsAlwaysUseOneChapterAndFreshAnonymousSession(bool images, int chapter)
+    {
+        var item = new SiteDiagnosticCase("case", "example.test", "https://example.test/book/1", null, null, images, chapter);
         var options = (Elib2Ebook.DomainServices.Configs.Options)typeof(DiagnosticsRunner)
             .GetMethod("CreateSiteProbeOptions", BindingFlags.Static | BindingFlags.NonPublic)!
             .Invoke(null, [item, _root, new AppSettings { Timeout = 240, Images = true, Cover = true, Additional = true }])!;
@@ -97,8 +118,8 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         Assert.Null(options.Password);
         Assert.Equal("", options.AuthCachePath);
         Assert.Equal("", options.ChapterCachePath);
-        Assert.Equal(1, options.Start);
-        Assert.Equal(1, options.End);
+        Assert.Equal(chapter, options.Start);
+        Assert.Equal(chapter, options.End);
         Assert.Equal(60, options.Timeout);
         Assert.Equal(!images, options.NoImage);
         Assert.False(options.Cover);
