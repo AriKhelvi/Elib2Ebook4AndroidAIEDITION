@@ -257,13 +257,15 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<T> GetResponse<T>(Uri url)
     {
-        var resp = await Config.Client.GetWithTriesAsync(url);
+        using var resp = await Config.Client.GetWithTriesAsync(url);
         if (resp == null)
         {
             return default;
         }
 
-        return await resp.Content.ReadAsStringAsync().ContinueWith(t => t.Result.Deserialize<LitresStaticResponse<T>>().Payload.Data);
+        resp.EnsureDownloadSuccess();
+        var body = await resp.Content.ReadAsStringAsync(Config.CancellationToken);
+        return body.Deserialize<LitresStaticResponse<T>>().Payload.Data;
     }
 
     public override async Task<Book> Get(Uri url)
@@ -284,12 +286,32 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
         };
 
         await FillAdditional(book, art);
-        foreach (var linked in art.LinkedArts ?? [])
-        {
-            await FillAdditional(book, linked);
-        }
-
+        // Связанные издания не должны подменять основной текст, даже если у них тоже есть FB3.
         var fb3File = book.AdditionalFiles.Get(AdditionalTypeEnum.Books).FirstOrDefault(f => f.Extension == ".fb3");
+        if (Config.Options.Additional)
+        {
+            foreach (var linked in art.LinkedArts ?? [])
+            {
+                var type = linked.ArtType == LitresArtTypeEnum.Audio ? AdditionalTypeEnum.Audio : AdditionalTypeEnum.Books;
+                if (linked.Id == art.Id || !Config.Options.HasAdditionalType(type)) continue;
+                try
+                {
+                    await FillAdditional(book, linked);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (HttpRequestException error)
+                {
+                    Config.CancellationToken.ThrowIfCancellationRequested();
+                    Config.Logger.LogWarning("Литрес: связанное дополнение {Id} недоступно (HTTP {Status}); основной файл будет обработан отдельно.",
+                        linked.Id, error.StatusCode.HasValue ? (int)error.StatusCode.Value : 0);
+                }
+                catch (IOException)
+                {
+                    Config.CancellationToken.ThrowIfCancellationRequested();
+                    Config.Logger.LogWarning("Литрес: не удалось прочитать или сохранить связанное дополнение {Id}; основной файл будет обработан отдельно.", linked.Id);
+                }
+            }
+        }
 
         if (fb3File == null)
         {
@@ -316,6 +338,11 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task FillAdditional(Book book, LitresArt art)
     {
+        if (_authData == null && art.ArtType == LitresArtTypeEnum.Audio)
+        {
+            Config.Logger.LogWarning("Литрес: аудиокнига {Id} пропущена: для загрузки нужен вход; анонимный аудиоотрывок загрузчиком не поддерживается.", art.Id);
+            return;
+        }
         if (_authData != null)
         {
             var type = art.ArtType == LitresArtTypeEnum.Audio ? AdditionalTypeEnum.Audio : AdditionalTypeEnum.Books;
@@ -329,7 +356,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                     using var fileResponse = await GetFileResponse(art, file);
                     if (fileResponse != null)
                     {
-                        var tempFile = await CreateTempFile(fileResponse);
+                        var tempFile = await CreateTempFile(fileResponse, art.Id);
                         book.AdditionalFiles.Add(art.ArtType != LitresArtTypeEnum.Audio ? AdditionalTypeEnum.Books : AdditionalTypeEnum.Audio, tempFile);
                     }
                 }
@@ -339,28 +366,35 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                 using var fileResponse = await GetFileResponse(art, null);
                 if (fileResponse != null)
                 {
-                    var tempFile = await CreateTempFile(fileResponse);
+                    var tempFile = await CreateTempFile(fileResponse, art.Id);
                     book.AdditionalFiles.Add(AdditionalTypeEnum.Books, tempFile);
                 }
             }
         }
 
-        if (_authData == null || (book.AdditionalFiles.Get(AdditionalTypeEnum.Books).Count == 0 && art.ArtType != LitresArtTypeEnum.Audio))
+        if (art.ArtType != LitresArtTypeEnum.Audio && (_authData == null || book.AdditionalFiles.Get(AdditionalTypeEnum.Books).Count == 0))
         {
             using var fileResponse = await GetShortBook(art);
             if (fileResponse != null)
             {
-                book.AdditionalFiles.Add(AdditionalTypeEnum.Books, await CreateTempFile(fileResponse));
+                book.AdditionalFiles.Add(AdditionalTypeEnum.Books, await CreateTempFile(fileResponse, art.Id));
             }
         }
     }
 
-    private async Task<TempFile> CreateTempFile(HttpResponseMessage response)
+    private async Task<TempFile> CreateTempFile(HttpResponseMessage response, long artId)
     {
+        // Разные издания могут вернуть одинаковое имя файла; дополнение не должно затереть основной FB3.
+        var directory = Path.Combine(Config.TempFolder.Path, "litres-" + artId);
+        Directory.CreateDirectory(directory);
+        var serverName = response.Content.Headers.ContentDisposition?.FileName?.Trim('\"');
+        if (string.IsNullOrWhiteSpace(serverName)) serverName = response.RequestMessage.RequestUri.GetFileName();
+        // FullName используется и при экспорте: одной изоляции временных папок недостаточно.
+        var fileName = artId + "-" + Path.GetFileName(serverName.Replace('\\', '/')).RemoveInvalidChars();
         return await TempFile.Create(
             response.RequestMessage.RequestUri,
-            Config.TempFolder.Path,
-            response.Content.Headers.ContentDisposition?.FileName?.Trim('\"') ?? response.RequestMessage.RequestUri.GetFileName(),
+            directory,
+            fileName,
             await response.Content.ReadAsStreamAsync(Config.CancellationToken));
     }
 
