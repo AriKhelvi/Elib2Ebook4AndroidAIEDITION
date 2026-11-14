@@ -1,6 +1,8 @@
 using Elib2Ebook.Domain.Book;
+using System.Net;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
+using HtmlAgilityPack;
 using Microsoft.Extensions.Logging;
 
 namespace Elib2Ebook.DomainServices.Builders;
@@ -23,7 +25,12 @@ public class TxtBuilder(Options options, ILogger logger) : BuilderBase(options, 
             await file.WriteLineAsync("   " + chapter.Title);
             await file.WriteLineAsync();
 
-            var prettyText = chapter.Content.PrettyHtml().AsHtmlDoc().DocumentNode.GetText();
+            // Разбираем HTML без предварительного декодирования: &lt;герой&gt; — текст, а не тег.
+            // Декодируем сущности после разбора ровно один раз, без расширения HtmlDecode/GetText:
+            // оно удаляет &lt;/&gt; и повторяет декодирование до неизменности строки.
+            var document = new HtmlDocument();
+            document.LoadHtml(chapter.Content.PrettyHtml());
+            var prettyText = WebUtility.HtmlDecode(document.DocumentNode.InnerText);
             using var sr = new StringReader(prettyText);
 
             while (true)

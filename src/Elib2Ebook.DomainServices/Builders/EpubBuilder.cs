@@ -1,9 +1,12 @@
 ﻿using Elib2Ebook.Domain.Book;
+using System.Net;
+using System.Text;
 using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using EpubSharp;
 using EpubSharp.Format;
+using HtmlAgilityPack;
 using Microsoft.Extensions.Logging;
 
 namespace Elib2Ebook.DomainServices.Builders;
@@ -21,11 +24,33 @@ public class EpubBuilder(Options options, ILogger logger) : BuilderBase(options,
     /// </summary>
     /// <param name="pattern">Шаблон части</param>
     /// <param name="title">Заголовок части</param>
-    /// <param name="decodeText">Раскодированный текст</param>
+    /// <param name="contentHtml">HTML содержимого главы</param>
     /// <returns></returns>
-    private static string ApplyPattern(string pattern, string title, string decodeText)
+    private static string ApplyPattern(string pattern, string title, string contentHtml)
     {
-        return pattern.Replace("{title}", title.CleanInvalidXmlChars().ReplaceNewLine()).Replace("{body}", decodeText.HtmlDecode().CleanInvalidXmlChars()).AsXHtmlDoc().AsString();
+        // Content уже содержит HTML. Декодирование до разбора повреждает буквальные теги.
+        var document = pattern.Replace("{title}", WebUtility.HtmlEncode(CleanXmlText(title).ReplaceNewLine()))
+            .Replace("{body}", CleanXmlText(contentHtml)).AsXHtmlDoc();
+        // XmlWriter сам экранирует значения. Декодируем сущности только в готовых узлах,
+        // без повторного разбора: буквальный <script> остаётся текстом, а не элементом.
+        foreach (var node in document.DocumentNode.DescendantsAndSelf())
+        {
+            if (node is HtmlTextNode text) text.Text = CleanXmlText(WebUtility.HtmlDecode(text.Text));
+            foreach (var attribute in node.Attributes)
+                attribute.Value = CleanXmlText(WebUtility.HtmlDecode(attribute.Value));
+        }
+        return document.AsString();
+    }
+
+    private static string CleanXmlText(string text)
+    {
+        // Удаляем только запрещённые XML-символы, сохраняя & в HTML-сущностях и целые emoji.
+        var result = new StringBuilder();
+        foreach (var rune in (text ?? string.Empty).EnumerateRunes())
+            if (rune.Value is 0x9 or 0xA or 0xD or >= 0x20 and <= 0xD7FF
+                or >= 0xE000 and <= 0xFFFD or >= 0x10000 and <= 0x10FFFF)
+                result.Append(rune.ToString());
+        return result.ToString();
     }
 
     /// <summary>
