@@ -8,7 +8,7 @@ public static class LogText
     public const int MaxLineLength = 2048;
     public const string Hidden = "[скрыто]";
 
-    private const string SecretNames = @"(?:password|passwd|pwd|pass|secret|client[_-]?secret|api[_-]?key|x-api-key|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|x[_-]?(?:csrf|xsrf)[_-]?token|token|sid|session[_-]?(?:id|token|key)|session|credential|signature|sig|md5|login|username|key|auth|csrf(?:[_-]?token)?|cf_clearance|phpsessid|пароль|токен|секрет)";
+    private const string SecretNames = @"(?:password|passwd|pwd|pass|secret|client[_-]?secret|api[_-]?key|x-api-key|access[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|user[_-]?token|utoken|x[_-]?(?:csrf|xsrf)[_-]?token|token|sid|session[_-]?(?:id|token|key)|session|credential|signature|sign|sig|md5|login|username|email|device[_-]?id|uid|key|auth|csrf(?:[_-]?token)?|cf_clearance|phpsessid|пароль|токен|секрет)";
     private static readonly Regex UserInfo = Pattern(@"(?<scheme>\b[a-z][a-z0-9+.-]*://)[^\s/?#]*@");
     private static readonly Regex TruncatedAuthority = Pattern(@"(?<scheme>\b[a-z][a-z0-9+.-]*://)[^\s/?#]*$");
     private static readonly Regex Header = Pattern(@"(?<prefix>\b(?:proxy-authorization|authorization|set-cookie|cookie)[""']?\s*[:=]\s*)[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*");
@@ -89,6 +89,7 @@ public static class LogText
             or "login" or "username" or "authorization" or "cookie" or "key" or "auth" or "code"
             or "sessiontoken" or "sessionkey" or "csrf" or "csrftoken" or "cfclearance" or "phpsessid"
             or "authtoken" or "xcsrftoken" or "xxsrftoken"
+            or "usertoken" or "utoken" or "sign" or "email" or "deviceid" or "uid"
             or "xamzcredential" or "xamzsignature" or "xamzsecuritytoken";
     }
 }

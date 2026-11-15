@@ -107,6 +107,12 @@ public sealed class DownloadManager(
     /// </summary>
     private int _starting;
 
+    /// <summary>Диагностика резервирует сеть до системных диалогов и до завершения фоновой работы.</summary>
+    private bool _diagnosticActive;
+
+    /// <summary>Включает отменённые задания, пока они фактически не освободили сетевые ресурсы.</summary>
+    private int _activeWorkers;
+
     /// <summary>
     /// Сколько причин держать foreground-сервис: идущее задание (одна, см. Job.HoldsService) плюс каждая
     /// идущая запись в хранилище (см. WriteResultAsync). Меняется только под _sync.
@@ -126,8 +132,8 @@ public sealed class DownloadManager(
 
     public bool IsRunning => State == DownloadState.Running;
 
-    /// <summary>Включает ожидание системных разрешений до начала скачивания.</summary>
-    public bool IsBusy => IsRunning || Volatile.Read(ref _starting) != 0;
+    /// <summary>Включает ожидание системных разрешений и резервирование сети диагностикой.</summary>
+    public bool IsBusy => IsRunning || Volatile.Read(ref _starting) != 0 || Volatile.Read(ref _diagnosticActive);
 
     /// <summary>Последняя строка журнала — показывается в блоке прогресса, как на кнопке веб-версии.</summary>
     public string Status => _job.Status;
@@ -183,6 +189,13 @@ public sealed class DownloadManager(
 
         try
         {
+            bool diagnosticActive;
+            lock (_sync) diagnosticActive = _diagnosticActive;
+            if (diagnosticActive)
+            {
+                toasts.Show("Сейчас идёт диагностика — дождитесь окончания или остановите её в настройках");
+                return false;
+            }
             // Пока запуск занят, Running может выставить только этот вызов — но проверяем ещё раз
             // на случай, если предыдущий запуск закончился между первой проверкой и CompareExchange
             if (IsRunning)
@@ -209,10 +222,15 @@ public sealed class DownloadManager(
                 State = DownloadState.Running;
                 job.HoldsService = true;
                 HoldService(job.Status);
+                Interlocked.Increment(ref _activeWorkers);
             }
 
             Changed?.Invoke();
-            _ = Task.Run(() => RunAsync(job));
+            _ = Task.Run(async () =>
+            {
+                try { await RunAsync(job); }
+                finally { Interlocked.Decrement(ref _activeWorkers); }
+            });
             return true;
         }
         finally
@@ -270,6 +288,30 @@ public sealed class DownloadManager(
         return new ServiceHold(this);
     }
 
+    /// <summary>Взаимно исключает диагностику и скачивание, в том числе пока ожидаются системные разрешения.</summary>
+    public bool TryReserveDiagnostics(out IDisposable lease)
+    {
+        lock (_sync)
+        {
+            lease = null;
+            if (IsBusy || Volatile.Read(ref _activeWorkers) != 0) return false;
+            _diagnosticActive = true;
+            lease = new DiagnosticReservation(this);
+            return true;
+        }
+    }
+
+    private sealed class DiagnosticReservation(DownloadManager owner) : IDisposable
+    {
+        private int _released;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            lock (owner._sync) owner._diagnosticActive = false;
+        }
+    }
+
     private sealed class ServiceHold(DownloadManager owner) : IDisposable
     {
         private int _released;
@@ -310,7 +352,7 @@ public sealed class DownloadManager(
         {
             lock (_sync)
             {
-                if (IsRunning) return false;
+                if (IsRunning || _diagnosticActive) return false;
                 // Отменённое ядро может ещё выдать запоздалую строку: она не должна вернуть очищенный лог.
                 _job.LogCleared = true;
                 lock (_job.Log)
@@ -414,7 +456,7 @@ public sealed class DownloadManager(
                     {
                         if (job.Warnings.Count < 50) job.Warnings.Add(LogText.Clean($"{url}: {line}"));
                     }
-                });
+                }, debug: job.Debug ? line => DebugLine(job, line) : null);
                 await ChapterTextCache.MigrateAsync(Path.Combine(FileSystem.CacheDirectory, "chapter-cache"),
                     options.ChapterCachePath, logger, ct);
                 DebugLine(job, $"Параметры ядра: формат {string.Join(",", options.Format)}, главы {options.Start?.ToString() ?? "-"}..{options.End?.ToString() ?? "-"}" +
@@ -705,6 +747,7 @@ public sealed class DownloadManager(
             AdditionalTypes = additionalTypes,
             BookNamePattern = settings.BookNamePattern,
             ChapterCachePath = Path.Combine(FileSystem.AppDataDirectory, "chapter-cache"),
+            AuthCachePath = Path.Combine(FileSystem.AppDataDirectory, "auth-cache"),
             SavePath = Path.Combine(workDir, "out"), // сюда билдеры пишут готовые файлы
             TempPath = Path.Combine(workDir, "tmp")  // сюда ядро складывает скачанные картинки
         };

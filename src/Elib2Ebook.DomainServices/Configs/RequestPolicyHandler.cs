@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Net;
 using Elib2Ebook.DomainServices.Extensions;
+using Elib2Ebook.DomainServices.Misc;
 using Microsoft.Extensions.Logging;
 
 namespace Elib2Ebook.DomainServices.Configs;
@@ -8,6 +10,7 @@ namespace Elib2Ebook.DomainServices.Configs;
 public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, HttpMessageHandler innerHandler)
     : DelegatingHandler(innerHandler)
 {
+    private long _diagnosticRequestId;
     private static readonly HttpRequestOptionsKey<Uri> ExternalImageOrigin = new("Elib2Ebook.ExternalImageOrigin");
 
     // Список разрешений намеренно не зависит от названий токенов конкретного сайта.
@@ -35,9 +38,49 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
 
     private async Task<HttpResponseMessage> SendWithRedirectsAsync(HttpRequestMessage request, int redirects, CancellationToken cancellationToken)
     {
-        var response = await pacer.SendAsync(() => base.SendAsync(request, cancellationToken), cancellationToken);
+        var trace = logger?.IsEnabled(LogLevel.Debug) == true;
+        var requestId = trace ? Interlocked.Increment(ref _diagnosticRequestId) : 0;
+        var started = trace ? Stopwatch.GetTimestamp() : 0;
+        var networkStarted = 0L;
+        if (trace)
+            logger.LogDebug("HTTP #{RequestId} начало: method={Method}; url={Url}; redirect={Redirect}; request_type={Type}; request_bytes={Bytes}",
+                requestId, DownloadDiagnostics.Method(request.Method), DownloadDiagnostics.SafeUri(request.RequestUri), redirects,
+                DownloadDiagnostics.MediaType(request.Content), request.Content?.Headers.ContentLength);
+        HttpResponseMessage response;
         try
         {
+            response = await pacer.SendAsync(() =>
+            {
+                if (trace)
+                {
+                    networkStarted = Stopwatch.GetTimestamp();
+                    logger.LogDebug("HTTP #{RequestId} отправка: queue_ms={Milliseconds}", requestId,
+                        (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+                }
+                return base.SendAsync(request, cancellationToken);
+            }, cancellationToken);
+        }
+        catch (Exception error)
+        {
+            if (trace)
+                logger.LogDebug("HTTP #{RequestId} ошибка: elapsed_ms={Elapsed}; network_ms={Network}; error={Error}; hresult={HResult}; cancelled={Cancelled}; status={Status}",
+                    requestId, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    networkStarted == 0 ? 0 : (long)Stopwatch.GetElapsedTime(networkStarted).TotalMilliseconds,
+                    error.GetType().Name, error.HResult, cancellationToken.IsCancellationRequested,
+                    error is HttpRequestException http && http.StatusCode.HasValue ? (int)http.StatusCode.Value : 0);
+            throw;
+        }
+        try
+        {
+            if (trace)
+            {
+                DownloadDiagnostics.Register(response, logger);
+                // Не читаем тело: важны потоковое чтение, отмена и отсутствие дополнительного сетевого ожидания.
+                logger.LogDebug("HTTP #{RequestId} заголовки: status={Status}; elapsed_ms={Elapsed}; network_ms={Network}; version={Version}; content_type={Type}; content_bytes={Bytes}; retry_after={RetryAfter}",
+                    requestId, (int)response.StatusCode, (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    (long)Stopwatch.GetElapsedTime(networkStarted).TotalMilliseconds, response.Version,
+                    DownloadDiagnostics.MediaType(response.Content), response.Content?.Headers.ContentLength, DownloadDiagnostics.RetryAfter(response));
+            }
             if (!IsRedirect(response.StatusCode) || response.Headers.Location == null)
             {
                 if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
@@ -46,10 +89,16 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
             }
 
             var location = new Uri(request.RequestUri, response.Headers.Location);
+            if (trace)
+                logger.LogDebug("HTTP #{RequestId} перенаправление: status={Status}; next={Url}; count={Count}",
+                    requestId, (int)response.StatusCode, DownloadDiagnostics.SafeUri(location), redirects + 1);
             // Как HttpClient: не следуем на небезопасный протокол и не уходим в бесконечный цикл.
             if (redirects >= 49 || location.Scheme is not ("http" or "https") ||
                 (request.RequestUri.Scheme == "https" && location.Scheme == "http"))
+            {
+                if (trace) logger.LogDebug("HTTP #{RequestId} перенаправление остановлено: недопустимый протокол или предел переходов", requestId);
                 return response;
+            }
 
             var method = request.Method;
             var preserveContent = true;
@@ -63,7 +112,10 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
             var sameOrigin = SameOrigin(request.RequestUri, location);
             // Тело входа может содержать пароль/токен. Не пересылаем его другому origin.
             if (!sameOrigin && preserveContent && request.Content != null)
+            {
+                if (trace) logger.LogDebug("HTTP #{RequestId} перенаправление остановлено: тело запроса не пересылается другому origin", requestId);
                 return response;
+            }
 
             using (response)
             {

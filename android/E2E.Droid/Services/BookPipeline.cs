@@ -200,48 +200,75 @@ public static class BookPipeline
             }
         });
 
+        var stage = "создание загрузчика";
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        void Stage(string name)
+        {
+            stage = name;
+            if (logger.IsEnabled(LogLevel.Debug))
+                logger.LogDebug("Конвейер: этап={Stage}; прошло={Elapsed} мс; память managed={Memory} байт; отмена={Cancelled}",
+                    stage, elapsed.ElapsedMilliseconds, GC.GetTotalMemory(false), ct.IsCancellationRequested);
+        }
         try
         {
             // Внимание: GetterBase.Dispose() освобождает весь config (HttpClient, временную папку)
             using var getter = GetterResolver.Create(config, url);
 
+            logger.LogDebug("Конвейер: загрузчик={Getter}; вход={Credentials}; предпросмотр={Preview}; кэш глав={ChapterCache}; кэш сеанса={AuthCache}",
+                getter.GetType().FullName, config.HasCredentials, onPreview != null && SupportsPreview(getter.GetType()),
+                !string.IsNullOrWhiteSpace(options.ChapterCachePath), !string.IsNullOrWhiteSpace(options.AuthCachePath));
             logger.LogInformation($"Подключаюсь к {url.Host}");
+            Stage("инициализация");
             await getter.Init();
+            Stage("авторизация");
             await getter.Authorize();
             ct.ThrowIfCancellationRequested();
 
             if (onPreview != null && SupportsPreview(getter.GetType()))
             {
+                Stage("карточка");
                 await TryPreviewAsync(getter, url, options, logger, onPreview, ct);
             }
 
             // Полная загрузка: главы, картинки (если не выбрано «без картинок»), диапазон глав из options.Start/End
+            Stage("скачивание книги");
             using var book = await getter.Get(url);
             ct.ThrowIfCancellationRequested();
+            Stage("проверка полученных глав");
             if (!options.NoChapters) CheckDownloadedContent(book, logger);
 
             // Один и тот же Book собирается во все выбранные форматы; файлы пишутся в options.SavePath
             foreach (var format in options.Format)
             {
+                Stage("сборка " + format);
                 await BuilderProvider.Get(format, options, logger).Build(book);
                 ct.ThrowIfCancellationRequested();
             }
 
             if (options.Additional)
             {
+                Stage("дополнительные файлы");
                 // Дополнительные файлы кладутся в подпапку «Автор - Название/…»
                 await new AdditionaFileBuilder(options, logger).Build(book);
             }
 
             var files = Directory.EnumerateFiles(options.SavePath, "*", SearchOption.AllDirectories).ToList();
+            Stage("готово");
             // Обложку забираем до выхода: временные файлы книги удалятся вместе с book
             return new BookJobResult(BookInfo.From(book), options.SavePath, files);
         }
         catch (Exception ex) when (ct.IsCancellationRequested && ex is not OperationCanceledException)
         {
+            logger.LogDebug("Конвейер отменён на этапе {Stage}; прошло {Elapsed} мс; тип={Type}", stage, elapsed.ElapsedMilliseconds, ex.GetType().FullName);
             // После отмены ядро падает с чем угодно (ObjectDisposedException, HttpRequestException…) —
             // приводим к одному понятному типу
             throw new OperationCanceledException("Скачивание отменено", ex, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug("Конвейер: ошибка на этапе {Stage}; прошло {Elapsed} мс; отмена={Cancelled}", stage, elapsed.ElapsedMilliseconds, ct.IsCancellationRequested);
+            logger.LogDebug("{ExceptionDump}", ex.ToString());
+            throw;
         }
         finally
         {
@@ -254,6 +281,7 @@ public static class BookPipeline
     {
         var chapters = book.Chapters.ToList();
         var missing = chapters.Where(c => !c.IsValid && !c.Images.Any()).ToList();
+        logger.LogDebug("Книга: глав получено={Total}; пустых без иллюстраций={Missing}; обложка={Cover}", chapters.Count, missing.Count, book.Cover != null);
         if (chapters.Count == missing.Count)
             throw new InvalidOperationException("Не получено ни одной главы. Проверьте доступ к книге, выбранный диапазон и журнал; пустой файл не будет сохранён.");
         foreach (var chapter in missing)
@@ -275,6 +303,7 @@ public static class BookPipeline
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
+            logger.LogDebug("Ошибка необязательной карточки: {ExceptionDump}", ex.ToString());
             logger.LogInformation($"Не удалось получить карточку книги, скачиваю без неё: {ex.Message}");
         }
         finally

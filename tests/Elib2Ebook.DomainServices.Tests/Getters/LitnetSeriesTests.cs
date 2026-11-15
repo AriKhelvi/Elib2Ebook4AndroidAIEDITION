@@ -30,6 +30,35 @@ public class LitnetSeriesTests
     }
 
     [Fact]
+    public async Task NewBookCardFindsCycleByItsLabelWithoutLegacyContainer()
+    {
+        const string html = "<section class='new-book-card'><h2>Майя Марук</h2><p><span class='meta-name'>Цикл: </span>" +
+            "<a href='/ru/maiya-maruk-u2799328/novels?sort=cycles&amp;scroll-to=Марсианские+Хроники'>Марсианские Хроники</a></p></section>";
+        var log = new WarningLogger();
+        using var getter = Create(html, 2, log);
+
+        using var book = await getter.Get(BookUrl);
+
+        Assert.Equal("Марсианские Хроники", book.Seria.Name);
+        Assert.Equal("2", book.Seria.Number);
+        Assert.Equal("litnet.com", book.Seria.Url.Host);
+        Assert.Empty(log.Warnings);
+    }
+
+    [Fact]
+    public async Task UnrelatedCycleLinkIsNotUsedAsBookSeries()
+    {
+        const string html = "<aside><a href='/ru/another-author/novels?sort=cycles'>Другой цикл</a></aside>";
+        var log = new WarningLogger();
+        using var getter = Create(html, 2, log);
+
+        using var book = await getter.Get(BookUrl);
+
+        Assert.Null(book.Seria);
+        Assert.Single(log.Warnings);
+    }
+
+    [Fact]
     public async Task BlockedOptionalSeriesPageWarnsWithoutDiscardingBook()
     {
         var log = new WarningLogger();
@@ -67,6 +96,29 @@ public class LitnetSeriesTests
         var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUrl));
 
         Assert.Equal(status, error.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task RejectedLoginStopsOnceAndPreservesHttpStatus(HttpStatusCode status)
+    {
+        var requests = new List<Uri>();
+        using var config = AfAuditSupport.Config(new AfAuditSupport.Handler(request =>
+        {
+            requests.Add(request.RequestUri);
+            Assert.Equal("api.litnet.com", request.Headers.Host);
+            return new HttpResponseMessage(status) { Content = new StringContent("<html>Вход отклонён</html>") };
+        }), new Options { Login = "reader@example.test", Password = "password" });
+        using var getter = new LitnetGetter(config);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(getter.Authorize);
+
+        Assert.Equal(status, error.StatusCode);
+        var login = Assert.Single(requests);
+        Assert.Equal("https", login.Scheme);
+        Assert.Equal("/v1/user/find-by-login", login.AbsolutePath);
     }
 
     private static LitnetGetter Create(string html, int priority, ILogger log,

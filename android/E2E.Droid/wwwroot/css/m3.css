@@ -1144,6 +1144,23 @@ label.list-item {
     padding: 0;
 }
 
+.diagnostic-site-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    color: var(--md-on-surface-variant);
+    overflow-wrap: anywhere;
+}
+
+.diagnostic-site-results li {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--md-outline-variant);
+}
+
+.diagnostic-site-results strong {
+    color: var(--md-on-surface);
+}
+
 /* --- Переключатель, флажок, чипы, сегменты -------------------------------- */
 
 /* Переключатель Material 3 из обычного <input type="checkbox" role="switch"> */

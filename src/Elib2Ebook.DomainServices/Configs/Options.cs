@@ -69,6 +69,9 @@ public class Options
     /// <summary>Необязательная постоянная папка текстов глав для повторной загрузки. По умолчанию кэш выключен.</summary>
     public string ChapterCachePath { get; set; }
 
+    /// <summary>Постоянная папка сессий сайтов. null — системная папка данных пользователя, пустая строка — без кэша.</summary>
+    public string AuthCachePath { get; set; }
+
     [Option("save-temp", Required = false, HelpText = "Сохранять временные файлы", Default = false)]
     public bool SaveTemp { get; set; }
 

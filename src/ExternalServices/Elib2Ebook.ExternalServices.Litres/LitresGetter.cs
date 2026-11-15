@@ -74,84 +74,203 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
             $"https://{host ?? "ios.litres.ru"}/pages/{path}/{art.Id}/{file.Id}.mp3?sid={_authData.Sid}&uilang=ru&libapp={APP}&timestamp={ts}&md5={Convert.ToHexString(hashBytes).ToLower()}");
     }
 
-    private LitresAuthResponseData _authData = new()
-    {
-        Sid = "6ufp4b2wbx1acc4k1f0wdo571762c0fn"
-    };
+    private LitresAuthResponseData _authData;
 
     private LitresMe _me;
 
     public override async Task Authorize()
     {
+        Config.Client.DefaultRequestHeaders.Remove("Session-Id");
+        _authData = null;
+        _me = null;
+        Config.CancellationToken.ThrowIfCancellationRequested();
         if (!Config.HasCredentials)
         {
-            Config.Client.DefaultRequestHeaders.Add("Session-Id", _authData.Sid);
+            Config.Logger.LogDebug("Литрес: анонимный режим, доступен официальный отрывок без сессии.");
             return;
         }
 
-        // Литрес очень не любит много авторизовывать
-        // поэтому пришлось добавить кеширование токенов
-        const string directory = "LitresCache";
-
-        if (!Directory.Exists(directory))
+        // Кэш уменьшает число входов, но отсутствие прав на диск не должно мешать скачиванию.
+        // На Android рабочая директория может быть корнем файловой системы, доступным только для чтения.
+        var cacheFile = GetAuthCacheFile();
+        try
         {
-            Directory.CreateDirectory(directory);
-        }
-
-        var saveCreds = $"{directory}/{Config.Options.Login.RemoveInvalidChars()}";
-        if (File.Exists(saveCreds))
-        {
-            _authData = await File.ReadAllTextAsync(saveCreds).ContinueWith(t => t.Result.Deserialize<LitresAuthResponseData>());
-            Config.Client.DefaultRequestHeaders.Add("Session-Id", _authData.Sid);
-
-            var checkResponse = await Config.Client.GetFromJsonAsync<LitresStaticResponse<LitresMe>>("https://api.litres.ru/foundation/api/users/me/detailed");
-            if (checkResponse?.Payload?.Data != null)
+            var cached = await ReadAuthCache(cacheFile);
+            if (IsValidSession(cached))
             {
-                _me = checkResponse.Payload.Data;
-                return;
+                SetSession(cached.Sid);
+                _me = await ReadCurrentUser(allowExpiredSession: true);
+                if (_me != null)
+                {
+                    _authData = cached;
+                    Config.Logger.LogDebug("Литрес: сохранённая сессия подтверждена.");
+                    return;
+                }
+                Config.Logger.LogDebug("Литрес: сохранённая сессия больше не подтверждается, выполняю новый вход.");
             }
+
+            // Старый SID нельзя отправлять вместе с новым логином и паролем.
+            Config.Client.DefaultRequestHeaders.Remove("Session-Id");
+            Config.Logger.LogDebug("Литрес: выполняю вход по сохранённым учётным данным.");
+            using var content = JsonContent.Create(new LitresAuthData
+            {
+                Login = Config.Options.Login,
+                Password = Config.Options.Password,
+            });
+            using var response = await Config.Client.PostAsync(
+                "https://api.litres.ru/foundation/api/auth/login", content, Config.CancellationToken);
+            Config.Logger.LogDebug("Литрес: ответ входа HTTP {Status}.", (int)response.StatusCode);
+            response.EnsureDownloadSuccess();
+            var auth = await ReadAuthResponse<LitresAuthResponseData>(response);
+            if (!string.IsNullOrWhiteSpace(auth?.Error) || !IsValidSession(auth?.Payload?.Data))
+                throw new InvalidOperationException("Литрес не подтвердил вход. Проверьте логин и пароль.");
+
+            SetSession(auth.Payload.Data.Sid);
+            _me = await ReadCurrentUser(allowExpiredSession: false);
+            _authData = auth.Payload.Data;
+            Config.Logger.LogDebug("Литрес: новый вход и профиль подтверждены.");
+            await WriteAuthCache(cacheFile, _authData);
         }
-
-        var payload = new LitresAuthData
+        finally
         {
-            Login = Config.Options.Login,
-            Password = Config.Options.Password,
-        };
-
-        var response = await Config.Client.PostWithTriesAsync("https://api.litres.ru/foundation/api/auth/login".AsUri(), JsonContent.Create(payload));
-        var responseData = await response.Content.ReadFromJsonAsync<LitresStaticResponse<LitresAuthResponseData>>();
-
-        if (!string.IsNullOrWhiteSpace(responseData.Error))
-        {
-            throw new Exception($"Не удалось авторизоваться. {responseData.Error}");
+            if (_authData == null)
+                Config.Client.DefaultRequestHeaders.Remove("Session-Id");
         }
-
-        _authData = responseData.Payload.Data;
-
-        Config.Client.DefaultRequestHeaders.Add("Session-Id", _authData.Sid);
-        var meResponse = await Config.Client.GetFromJsonAsync<LitresStaticResponse<LitresMe>>("https://api.litres.ru/foundation/api/users/me/detailed");
-        if (meResponse?.Payload?.Data == null)
-        {
-            return;
-        }
-
-        _me = meResponse.Payload.Data;
-        await File.WriteAllTextAsync(saveCreds, JsonSerializer.Serialize(_authData));
     }
+
+    private static bool IsValidSession(LitresAuthResponseData auth)
+        => !string.IsNullOrWhiteSpace(auth?.Sid) && !auth.Sid.Any(char.IsControl);
+
+    private void SetSession(string sid)
+    {
+        Config.Client.DefaultRequestHeaders.Remove("Session-Id");
+        Config.Client.DefaultRequestHeaders.Add("Session-Id", sid);
+    }
+
+    private async Task<LitresMe> ReadCurrentUser(bool allowExpiredSession)
+    {
+        using var response = await Config.Client.GetAsync(
+            "https://api.litres.ru/foundation/api/users/me/detailed", Config.CancellationToken);
+        Config.Logger.LogDebug("Литрес: проверка профиля HTTP {Status}, сохранённая сессия: {Cached}.",
+            (int)response.StatusCode, allowExpiredSession);
+        if (allowExpiredSession && response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            return null;
+
+        // 429, 5xx и сетевые ошибки не означают, что SID истёк. Не делаем лишний вход.
+        response.EnsureDownloadSuccess();
+        var me = await ReadAuthResponse<LitresMe>(response);
+        if (string.IsNullOrWhiteSpace(me?.Error) && me?.Payload?.Data != null)
+            return me.Payload.Data;
+        if (allowExpiredSession)
+            return null;
+        throw new InvalidOperationException("Литрес не подтвердил сессию после входа. Попробуйте позже.");
+    }
+
+    private async Task<LitresStaticResponse<T>> ReadAuthResponse<T>(HttpResponseMessage response)
+    {
+        try
+        {
+            return await response.Content.ReadFromJsonAsync<LitresStaticResponse<T>>(cancellationToken: Config.CancellationToken);
+        }
+        catch (JsonException)
+        {
+            // Тело ответа и исходное исключение могут содержать пароль или SID.
+            throw new InvalidOperationException("Литрес вернул некорректный ответ при проверке входа. Попробуйте позже.");
+        }
+    }
+
+    private string GetAuthCacheFile()
+    {
+        try
+        {
+            var directory = Config.Options.AuthCachePath;
+            if (directory == null)
+            {
+                var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (string.IsNullOrWhiteSpace(localData) || !Path.IsPathFullyQualified(localData))
+                    return null;
+                directory = Path.Combine(localData, "Elib2Ebook", "auth-cache");
+            }
+            if (string.IsNullOrWhiteSpace(directory))
+                return null;
+
+            // Логин не попадает в имя файла и не может превратиться в путь за пределами кэша.
+            var account = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Config.Options.Login))).ToLowerInvariant();
+            return Path.Combine(Path.GetFullPath(directory), "litres-" + account + ".json");
+        }
+        catch (Exception error) when (IsCacheError(error))
+        {
+            LogCacheUnavailable();
+            return null;
+        }
+    }
+
+    private async Task<LitresAuthResponseData> ReadAuthCache(string path)
+    {
+        if (path == null) return null;
+        try
+        {
+            var json = await File.ReadAllTextAsync(path, Config.CancellationToken);
+            var cached = JsonSerializer.Deserialize<LitresAuthResponseData>(json);
+            Config.Logger.LogDebug("Литрес: кэш прочитан, непустая сессия: {Valid}.", IsValidSession(cached));
+            return cached;
+        }
+        catch (FileNotFoundException) { Config.Logger.LogDebug("Литрес: сохранённой сессии пока нет."); return null; }
+        catch (DirectoryNotFoundException) { Config.Logger.LogDebug("Литрес: папки сохранённых сессий пока нет."); return null; }
+        catch (JsonException) { Config.Logger.LogDebug("Литрес: повреждённый кэш сессии будет заменён после входа."); return null; }
+        catch (Exception error) when (IsCacheError(error))
+        {
+            LogCacheUnavailable();
+            return null;
+        }
+    }
+
+    private async Task WriteAuthCache(string path, LitresAuthResponseData auth)
+    {
+        if (path == null) return;
+        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(auth), Config.CancellationToken);
+            Config.CancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, path, overwrite: true);
+            Config.Logger.LogDebug("Литрес: проверенная сессия сохранена для следующих запусков.");
+        }
+        catch (Exception error) when (IsCacheError(error))
+        {
+            LogCacheUnavailable();
+        }
+        finally
+        {
+            try { File.Delete(temporary); }
+            catch (Exception error) when (IsCacheError(error)) { }
+        }
+    }
+
+    private static bool IsCacheError(Exception error)
+        => error is IOException or UnauthorizedAccessException or System.Security.SecurityException
+            or ArgumentException or NotSupportedException;
+
+    private void LogCacheUnavailable()
+        => Config.Logger.LogWarning("Литрес: кэш сессии недоступен. Вход работает без сохранения сессии.");
 
     private async Task<T> GetResponse<T>(Uri url)
     {
-        var resp = await Config.Client.GetWithTriesAsync(url);
+        using var resp = await Config.Client.GetWithTriesAsync(url);
         if (resp == null)
         {
             return default;
         }
 
-        return await resp.Content.ReadAsStringAsync().ContinueWith(t => t.Result.Deserialize<LitresStaticResponse<T>>().Payload.Data);
+        resp.EnsureDownloadSuccess();
+        var body = await resp.Content.ReadAsStringAsync(Config.CancellationToken);
+        return body.Deserialize<LitresStaticResponse<T>>().Payload.Data;
     }
 
     public override async Task<Book> Get(Uri url)
     {
+        Config.CancellationToken.ThrowIfCancellationRequested();
         var bookId = GetBookId(url);
 
         var art = await GetResponse<LitresArt>($"https://api.litres.ru/foundation/api/arts/{bookId}".AsUri());
@@ -167,12 +286,32 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
         };
 
         await FillAdditional(book, art);
-        foreach (var linked in art.LinkedArts ?? [])
-        {
-            await FillAdditional(book, linked);
-        }
-
+        // Связанные издания не должны подменять основной текст, даже если у них тоже есть FB3.
         var fb3File = book.AdditionalFiles.Get(AdditionalTypeEnum.Books).FirstOrDefault(f => f.Extension == ".fb3");
+        if (Config.Options.Additional)
+        {
+            foreach (var linked in art.LinkedArts ?? [])
+            {
+                var type = linked.ArtType == LitresArtTypeEnum.Audio ? AdditionalTypeEnum.Audio : AdditionalTypeEnum.Books;
+                if (linked.Id == art.Id || !Config.Options.HasAdditionalType(type)) continue;
+                try
+                {
+                    await FillAdditional(book, linked);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (HttpRequestException error)
+                {
+                    Config.CancellationToken.ThrowIfCancellationRequested();
+                    Config.Logger.LogWarning("Литрес: связанное дополнение {Id} недоступно (HTTP {Status}); основной файл будет обработан отдельно.",
+                        linked.Id, error.StatusCode.HasValue ? (int)error.StatusCode.Value : 0);
+                }
+                catch (IOException)
+                {
+                    Config.CancellationToken.ThrowIfCancellationRequested();
+                    Config.Logger.LogWarning("Литрес: не удалось прочитать или сохранить связанное дополнение {Id}; основной файл будет обработан отдельно.", linked.Id);
+                }
+            }
+        }
 
         if (fb3File == null)
         {
@@ -186,17 +325,24 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                 var litresBook = await GetBook(stream);
                 book.Chapters = await FillChapters(litresBook, art.Title);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception)
             {
                 Config.Logger.LogInformation($"Не удалось обработать оригинальный файл {fb3File.FullName}");
             }
         }
 
+        Config.CancellationToken.ThrowIfCancellationRequested();
         return book;
     }
 
     private async Task FillAdditional(Book book, LitresArt art)
     {
+        if (_authData == null && art.ArtType == LitresArtTypeEnum.Audio)
+        {
+            Config.Logger.LogWarning("Литрес: аудиокнига {Id} пропущена: для загрузки нужен вход; анонимный аудиоотрывок загрузчиком не поддерживается.", art.Id);
+            return;
+        }
         if (_authData != null)
         {
             var type = art.ArtType == LitresArtTypeEnum.Audio ? AdditionalTypeEnum.Audio : AdditionalTypeEnum.Books;
@@ -210,7 +356,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                     using var fileResponse = await GetFileResponse(art, file);
                     if (fileResponse != null)
                     {
-                        var tempFile = await CreateTempFile(fileResponse);
+                        var tempFile = await CreateTempFile(fileResponse, art.Id);
                         book.AdditionalFiles.Add(art.ArtType != LitresArtTypeEnum.Audio ? AdditionalTypeEnum.Books : AdditionalTypeEnum.Audio, tempFile);
                     }
                 }
@@ -220,29 +366,36 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                 using var fileResponse = await GetFileResponse(art, null);
                 if (fileResponse != null)
                 {
-                    var tempFile = await CreateTempFile(fileResponse);
+                    var tempFile = await CreateTempFile(fileResponse, art.Id);
                     book.AdditionalFiles.Add(AdditionalTypeEnum.Books, tempFile);
                 }
             }
         }
 
-        if (_authData == null || (book.AdditionalFiles.Get(AdditionalTypeEnum.Books).Count == 0 && art.ArtType != LitresArtTypeEnum.Audio))
+        if (art.ArtType != LitresArtTypeEnum.Audio && (_authData == null || book.AdditionalFiles.Get(AdditionalTypeEnum.Books).Count == 0))
         {
-            var fileResponse = await GetShortBook(art);
+            using var fileResponse = await GetShortBook(art);
             if (fileResponse != null)
             {
-                book.AdditionalFiles.Add(AdditionalTypeEnum.Books, await CreateTempFile(fileResponse));
+                book.AdditionalFiles.Add(AdditionalTypeEnum.Books, await CreateTempFile(fileResponse, art.Id));
             }
         }
     }
 
-    private async Task<TempFile> CreateTempFile(HttpResponseMessage response)
+    private async Task<TempFile> CreateTempFile(HttpResponseMessage response, long artId)
     {
+        // Разные издания могут вернуть одинаковое имя файла; дополнение не должно затереть основной FB3.
+        var directory = Path.Combine(Config.TempFolder.Path, "litres-" + artId);
+        Directory.CreateDirectory(directory);
+        var serverName = response.Content.Headers.ContentDisposition?.FileName?.Trim('\"');
+        if (string.IsNullOrWhiteSpace(serverName)) serverName = response.RequestMessage.RequestUri.GetFileName();
+        // FullName используется и при экспорте: одной изоляции временных папок недостаточно.
+        var fileName = artId + "-" + Path.GetFileName(serverName.Replace('\\', '/')).RemoveInvalidChars();
         return await TempFile.Create(
             response.RequestMessage.RequestUri,
-            Config.TempFolder.Path,
-            response.Content.Headers.ContentDisposition?.FileName?.Trim('\"') ?? response.RequestMessage.RequestUri.GetFileName(),
-            await response.Content.ReadAsStreamAsync());
+            directory,
+            fileName,
+            await response.Content.ReadAsStreamAsync(Config.CancellationToken));
     }
 
     private static string GetBookId(Uri url)
@@ -311,6 +464,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
 
         foreach (var section in book.Content.QuerySelectorAll("section"))
         {
+            Config.CancellationToken.ThrowIfCancellationRequested();
             if (section.QuerySelector("> section") != null)
             {
                 continue;
@@ -388,12 +542,13 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                 foreach (var path in paths)
                 {
                     var uri = GetFullUri(art, path, file, host);
-                    var response = await Config.Client.GetAsync(uri);
+                    var response = await Config.Client.GetAsync(uri, Config.CancellationToken);
                     if (response.StatusCode == HttpStatusCode.OK && response.Headers.AcceptRanges.Count != 0)
                     {
                         Config.Logger.LogInformation(LogText.Clean($"Дополнительный файл доступен по ссылке {uri}"));
                         return response;
                     }
+                    response.Dispose();
                 }
             }
         }
@@ -404,8 +559,19 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HttpResponseMessage> GetShortBook(LitresArt art)
     {
         var shortUri = GetShortUri(art);
-        Config.Logger.LogInformation(LogText.Clean($"Дополнительный файл доступен по ссылке {shortUri}"));
-        return await Config.Client.GetAsync(shortUri);
+        Config.Logger.LogInformation(LogText.Clean($"Запрашиваю ознакомительный отрывок по ссылке {shortUri}"));
+        var response = await Config.Client.GetAsync(shortUri, Config.CancellationToken);
+        try
+        {
+            response.EnsureDownloadSuccess();
+            Config.Logger.LogWarning("Литрес: получен ознакомительный отрывок. Полнота книги не подтверждена.");
+            return response;
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
     }
 
     private async Task<LitresBook> GetBook(Stream stream)
@@ -418,7 +584,8 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
         foreach (var entry in zip.Entries)
         {
             using var ms = new MemoryStream();
-            await entry.Open().CopyToAsync(ms);
+            await using var entryStream = entry.Open();
+            await entryStream.CopyToAsync(ms, Config.CancellationToken);
             map[entry.FullName.Replace("fb3/", string.Empty)] = ms.ToArray();
         }
 

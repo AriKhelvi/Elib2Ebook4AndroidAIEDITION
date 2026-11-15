@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using Elib2Ebook.DomainServices.Extensions;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.DomainServices.Misc.TempFolder;
 using FlareSolverrSharp;
 using Microsoft.Extensions.Logging;
@@ -39,6 +40,7 @@ public class BookGetterConfig : IDisposable
         Logger = logger;
         _pacer = new RequestPacer(options);
         Client = client;
+        DownloadDiagnostics.Register(client, logger);
         CookieContainer = cookieContainer;
         Options = options;
         TempFolder = tempFolder;
@@ -103,6 +105,7 @@ public class BookGetterConfig : IDisposable
 
             var cclient = new HttpClient(chandler);
             cclient.Timeout = TimeSpan.FromSeconds(options.Timeout);
+            DownloadDiagnostics.Register(cclient, Logger);
 
             return cclient;
         }
@@ -110,6 +113,7 @@ public class BookGetterConfig : IDisposable
         var client = new HttpClient(policyHandler);
 
         client.Timeout = TimeSpan.FromSeconds(options.Timeout);
+        DownloadDiagnostics.Register(client, Logger);
 
         return client;
     }

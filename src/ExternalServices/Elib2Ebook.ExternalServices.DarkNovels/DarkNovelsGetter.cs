@@ -18,12 +18,12 @@ namespace Elib2Ebook.ExternalServices.DarkNovels;
 
 public class DarkNovelsGetter : GetterBase
 {
-    private static readonly Dictionary<int, char> _map = new();
+    // CLR публикует полностью построенную таблицу один раз; конструкторы её больше не изменяют.
+    private static readonly IReadOnlyDictionary<int, char> _map = CreateMap();
     private const string ALPHABET = "аАбБвВгГдДеЕёЁжЖзЗиИйЙкКлЛмМнНоОпПрРсСтТуУфФхХцЦчЧшШщЩъЪыЫьЬэЭюЮяЯ";
 
     public DarkNovelsGetter(BookGetterConfig config) : base(config)
     {
-        InitMap();
     }
 
     protected override Uri SystemUrl => new("https://dark-novels.ru/");
@@ -62,19 +62,21 @@ public class DarkNovelsGetter : GetterBase
         }
     }
 
-    private static void InitMap()
+    private static IReadOnlyDictionary<int, char> CreateMap()
     {
+        var map = new Dictionary<int, char>();
         var start = 13338;
         const int shift = 38;
         foreach (var c in ALPHABET)
         {
             for (var i = start; i < start + shift; i++)
             {
-                _map[i] = c;
+                map[i] = c;
             }
 
             start += shift;
         }
+        return map;
     }
 
     public override async Task<Book> Get(Uri url)

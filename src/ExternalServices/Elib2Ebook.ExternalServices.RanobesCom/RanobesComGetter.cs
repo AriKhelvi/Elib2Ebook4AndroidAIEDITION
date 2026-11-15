@@ -1,5 +1,3 @@
-using System.Net;
-using System.Net.Http.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 using Elib2Ebook.Domain.Book;
@@ -7,7 +5,6 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
-using Elib2Ebook.ExternalServices.RanobesCom.Types;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
 using Microsoft.Extensions.Logging;
@@ -26,98 +23,23 @@ public class RanobesComGetter(BookGetterConfig config) : GetterBase(config)
         url = await GetMainUrl(url);
         url = SystemUrl.MakeRelativeUri($"/ranobe/{GetId(url)}.html");
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
-        await Antibot(doc, url);
-        doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
+        // Старый antibot8/ab.php удалён сайтом. Нельзя посылать туда запрос на каждой
+        // обычной карточке и принимать HTML ошибки за JSON; проверку браузера не обходим.
+        var titleNode = doc.QuerySelector("h1.title");
+        var title = titleNode?.FirstChild?.InnerText?.Trim().HtmlDecode();
+        if (string.IsNullOrWhiteSpace(title))
+            throw new InvalidOperationException("Ranobes не вернул карточку книги. Возможна проверка браузера, ограничение доступа или изменение разметки.");
 
         var book = new Book(url)
         {
             Cover = await GetCover(doc, url),
             Chapters = await FillChapters(doc, url),
-            Title = doc.QuerySelector("h1.title").FirstChild.InnerText.Trim().HtmlDecode(),
+            Title = title,
             Author = new Author(doc.GetTextBySelector("span[itemprop=creator]") ?? "Ranobes"),
             Annotation = doc.QuerySelector("div[itemprop=description]")?.RemoveNodes("style")?.InnerHtml
         };
 
         return book;
-    }
-
-    private async Task Antibot(HtmlDocument doc, Uri referrer)
-    {
-        var h1 = Regex.Match(doc.ParsedText, "var h1 = \'(?<id>.*?)\'").Groups["id"].Value;
-        var h2 = Regex.Match(doc.ParsedText, "var h2 = \'(?<id>.*?)\'").Groups["id"].Value;
-        var date = Regex.Match(doc.ParsedText, "var date = \'(?<id>.*?)\'").Groups["id"].Value;
-        var cid = Regex.Match(doc.ParsedText, "var cid = \'(?<id>.*?)\'").Groups["id"].Value;
-        var ip = Regex.Match(doc.ParsedText, "var ip = \'(?<id>.*?)\'").Groups["id"].Value;
-        var ptr = Regex.Match(doc.ParsedText, "var ptr = \'(?<id>.*?)\'").Groups["id"].Value;
-        var v = Regex.Match(doc.ParsedText, "var v = \'(?<id>.*?)\'").Groups["id"].Value;
-        var antibot = Regex.Match(doc.ParsedText, "antibot_(?<id>.*?)=").Groups["id"].Value;
-
-        var data = new Dictionary<string, string>
-        {
-            {
-                "hdc", "0"
-            },
-            {
-                "scheme", "https"
-            },
-            {
-                "a", "0"
-            },
-            {
-                "date", date
-            },
-            {
-                "country", "RU"
-            },
-            {
-                "h1", h1
-            },
-            {
-                "h2", h2
-            },
-            {
-                "ip", ip
-            },
-            {
-                "v", v
-            },
-            {
-                "cid", cid
-            },
-            {
-                "ptr", ptr
-            },
-            {
-                "w", "2560"
-            },
-            {
-                "h", "1440"
-            },
-            {
-                "cw", "2560"
-            },
-            {
-                "ch", "770"
-            },
-            {
-                "co", "24"
-            },
-            {
-                "pi", "24"
-            },
-            {
-                "ref", "ranobes.com"
-            },
-            {
-                "xxx", string.Empty
-            },
-        };
-
-        Config.Client.DefaultRequestHeaders.Add("Referer", referrer.ToString());
-        var post = await Config.Client.PostAsync(SystemUrl.MakeRelativeUri("antibot8/ab.php"), new FormUrlEncodedContent(data));
-        var cookie = await post.Content.ReadFromJsonAsync<RanobesCookie>();
-        Config.CookieContainer.Add(SystemUrl, new Cookie($"antibot_{antibot}", cookie.Cookie + "-" + date));
-        Config.Client.DefaultRequestHeaders.Remove("Referer");
     }
 
     private async Task<Uri> GetMainUrl(Uri url)

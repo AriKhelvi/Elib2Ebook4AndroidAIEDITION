@@ -8,6 +8,7 @@ using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.ExternalServices.Litnet.Types;
 using HtmlAgilityPack;
 using HtmlAgilityPack.CssSelectors.NetCore;
@@ -25,6 +26,9 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     protected virtual Uri SiteIp => SystemUrl;
 
     private static readonly string DeviceId = Guid.NewGuid().ToString().ToUpper();
+    // Большой ответ из 100 глав долго собирался целиком без прогресса, в том числе на телефонах.
+    // Обрабатываем небольшую пачку сразу и освобождаем её зашифрованные тексты перед следующей.
+    private const int ChapterBatchSize = 10;
     private const string SECRET = "14a6579a984b3c6abecda6c2dfa83a64";
 
     private string _token { get; set; }
@@ -64,6 +68,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     /// <exception cref="Exception"></exception>
     public override async Task Authorize()
     {
+        Config.Logger.LogDebug("Litnet: этап входа; сохранённые реквизиты={HasCredentials}", Config.HasCredentials);
         var path = Config.HasCredentials ? "user/find-by-login" : "registration/registration-by-device";
 
         var url = ApiIp.MakeRelativeUri(
@@ -90,7 +95,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             throw new InvalidOperationException("Litnet не вернул название или адрес книги. Проверьте доступ к произведению.");
         if (!Config.HasCredentials && data.AdultOnly)
         {
-            throw new Exception("Произведение 18+. Необходимо добавить логин и пароль.");
+            throw new SiteAccessException(SiteAccessReason.AgeConfirmationRequired, "Произведение 18+. Необходимо добавить логин и пароль.");
         }
 
         return data;
@@ -102,35 +107,40 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         return GetApiData<LitnetContentsResponse[]>(url);
     }
 
-    private async Task<IEnumerable<LitnetChapterResponse>> GetToc(string token, IEnumerable<LitnetContentsResponse> contents)
+    private async Task<Dictionary<long, LitnetChapterResponse>> GetChapterBatch(string token, LitnetContentsResponse[] batch)
     {
-        var result = new List<LitnetChapterResponse>();
-        foreach (var batch in contents.Chunk(100))
-        {
-            var chapters = string.Join("&", batch.Select(t => $"chapter_ids[]={t.Id}"));
-            var url = ApiIp.MakeRelativeUri($"/v1/book/get-chapters-texts/?{chapters}&app=android&device_id={DeviceId}&sign={GetSign(token)}&user_token={token}");
-            var data = await GetApiData<LitnetChapterResponse[]>(url) ?? [];
-            var received = data.Select(chapter => chapter.Id).ToHashSet();
-            var missing = batch.Count(chapter => !received.Contains(chapter.Id));
-            if (missing > 0)
-            {
-                throw new InvalidOperationException($"Litnet не вернул {missing} из {batch.Length} запрошенных глав. Проверьте доступ к главам и повторите загрузку. Неполная книга не будет сохранена.");
-            }
-
-            var requested = batch.Select(chapter => chapter.Id).ToHashSet();
-            result.AddRange(data.Where(chapter => requested.Contains(chapter.Id)).DistinctBy(chapter => chapter.Id));
-        }
-
-        return result;
+        var chapters = string.Join("&", batch.Select(t => $"chapter_ids[]={t.Id}"));
+        var url = ApiIp.MakeRelativeUri($"/v1/book/get-chapters-texts/?{chapters}&app=android&device_id={DeviceId}&sign={GetSign(token)}&user_token={token}");
+        var data = await GetApiData<LitnetChapterResponse[]>(url) ?? [];
+        var requested = batch.Select(chapter => chapter.Id).ToHashSet();
+        var received = data.Where(chapter => chapter != null && requested.Contains(chapter.Id))
+            .DistinctBy(chapter => chapter.Id).ToDictionary(chapter => chapter.Id);
+        var missing = requested.Count - received.Count;
+        if (missing > 0)
+            throw new InvalidOperationException($"Litnet не вернул {missing} из {batch.Length} запрошенных глав. Проверьте доступ к главам и повторите загрузку. Неполная книга не будет сохранена.");
+        return received;
     }
 
     private async Task<T> GetApiData<T>(Uri uri)
     {
+        Config.Logger.LogDebug("Litnet API: ожидается={ResponseType}; url={Url}", typeof(T).Name, DownloadDiagnostics.SafeUri(uri));
         using var request = GetDefaultMessage(uri, ApiUrl);
         using var response = await Config.Client.SendAsync(request, Config.CancellationToken);
         response.EnsureDownloadSuccess();
-        var data = await response.Content.ReadFromJsonAsync<T>(Config.CancellationToken);
-        return data;
+        try
+        {
+            var data = await response.Content.ReadFromJsonAsync<T>(Config.CancellationToken);
+            Config.Logger.LogDebug("Litnet API разобран: тип={ResponseType}; empty={Empty}; items={Count}",
+                typeof(T).Name, data == null, data is Array array ? array.Length : (int?)null);
+            return data;
+        }
+        catch (System.Text.Json.JsonException error)
+        {
+            Config.Logger.LogDebug("Litnet API не разобран: тип={ResponseType}; status={Status}; line={Line}; byte={Byte}",
+                typeof(T).Name, (int)response.StatusCode, error.LineNumber, error.BytePositionInLine);
+            // JSON Path/Message могут включать серверные данные; в общий журнал они не переносятся.
+            throw new InvalidOperationException("Litnet вернул некорректный JSON. Проверьте доступ к сайту и повторите попытку.");
+        }
     }
 
     public override async Task<Book> Get(Uri url)
@@ -164,12 +174,16 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             response.EnsureDownloadSuccess();
             await using var stream = await response.Content.ReadAsStreamAsync(Config.CancellationToken);
             var doc = stream.AsHtmlDoc();
-            var a = doc.QuerySelector("div.book-view-info-coll a[href*='sort=cycles']");
+            var a = doc.QuerySelector("div.book-view-info-coll a[href*='sort=cycles']")
+                // В новой карточке подпись «Цикл» осталась, но старой обёртки больше нет.
+                ?? doc.QuerySelectorAll("span.meta-name")
+                    .FirstOrDefault(label => string.Equals(label.GetText()?.Trim().TrimEnd(':').Trim(), "Цикл", StringComparison.OrdinalIgnoreCase))
+                    ?.ParentNode.QuerySelector("a[href*='sort=cycles']");
             if (a != null && !string.IsNullOrWhiteSpace(a.GetText()))
             {
                 return new Seria
                 {
-                    Name = a.GetText(), Url = url.MakeRelativeUri(a.Attributes["href"].Value.HtmlDecode()), Number = book.CyclePriority is > 0 ? book.CyclePriority.Value.ToString() : string.Empty
+                    Name = a.GetText(), Url = url.MakeRelativeUri(WebUtility.HtmlDecode(a.Attributes["href"].Value)), Number = book.CyclePriority is > 0 ? book.CyclePriority.Value.ToString() : string.Empty
                 };
             }
             if (book.CyclePriority is > 0)
@@ -246,34 +260,47 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             return result;
         }
 
+        Config.Logger.LogInformation("Получаю оглавление Litnet");
         var contents = await GetBookContents(token, bookId);
         if (contents == null || contents.Length == 0)
-        {
-            return result;
-        }
+            throw new InvalidOperationException("Litnet не вернул оглавление. Проверьте доступ к книге. Пустая книга не будет сохранена.");
+        if (contents.Any(content => content == null || content.Id <= 0))
+            throw new InvalidOperationException("Litnet вернул некорректное оглавление. Неполная книга не будет сохранена.");
 
         var selected = SliceToc(contents.DistinctBy(content => content.Id).ToList(), content => content.Title).ToList();
-        var chapters = await GetToc(token, selected);
-        var map = chapters.ToDictionary(t => t.Id);
-
-        foreach (var content in selected)
+        foreach (var batch in selected.Chunk(ChapterBatchSize))
         {
-            var litnetChapter = map[content.Id];
-
-            Config.Logger.LogInformation($"Загружаю главу {(content.Title ?? book.Title).Trim().CoverQuotes()}");
-            var chapter = new Chapter
+            Config.CancellationToken.ThrowIfCancellationRequested();
+            Config.Logger.LogInformation("Получаю текст глав Litnet {Start}–{End} из {Total}", result.Count + 1, result.Count + batch.Length, selected.Count);
+            var map = await GetChapterBatch(token, batch);
+            foreach (var content in batch)
             {
-                Title = (content.Title ?? book.Title).Trim()
-            };
+                Config.CancellationToken.ThrowIfCancellationRequested();
+                var litnetChapter = map[content.Id];
+                var title = (content.Title ?? book.Title).Trim();
+                Config.Logger.LogInformation("Загружаю главу {Title}", title.CoverQuotes());
+                if (string.IsNullOrWhiteSpace(litnetChapter.Text))
+                    throw new InvalidOperationException($"Litnet не вернул текст главы {title.CoverQuotes()}. Проверьте доступ к главе. Неполная книга не будет сохранена.");
 
-            if (!string.IsNullOrWhiteSpace(litnetChapter.Text))
-            {
-                var chapterDoc = GetChapterDoc(Encoding.UTF8.GetString(Decrypt(litnetChapter.Text)));
-                chapter.Images = await GetImages(chapterDoc, SystemUrl);
-                chapter.Content = chapterDoc.DocumentNode.InnerHtml;
+                HtmlDocument chapterDoc;
+                try
+                {
+                    chapterDoc = GetChapterDoc(Encoding.UTF8.GetString(Decrypt(litnetChapter.Text)));
+                }
+                catch (Exception ex) when (ex is FormatException or CryptographicException or System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
+                {
+                    // Не выводим тело ответа, токен сеанса или адрес API с учётными данными.
+                    throw new InvalidOperationException($"Litnet вернул некорректный текст главы {title.CoverQuotes()}. Неполная книга не будет сохранена.");
+                }
+                if (string.IsNullOrWhiteSpace(WebUtility.HtmlDecode(chapterDoc.DocumentNode.InnerText)) && chapterDoc.QuerySelector("img, image") == null)
+                    throw new InvalidOperationException($"Litnet вернул пустую главу {title.CoverQuotes()}. Неполная книга не будет сохранена.");
+                result.Add(new Chapter
+                {
+                    Title = title,
+                    Images = await GetImages(chapterDoc, SystemUrl),
+                    Content = chapterDoc.DocumentNode.InnerHtml
+                });
             }
-
-            result.Add(chapter);
         }
 
         return result;
@@ -281,6 +308,9 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     private static HtmlDocument GetChapterDoc(string text)
     {
-        return text.Deserialize<string[]>().Aggregate(new StringBuilder(), (sb, row) => sb.Append(row)).AsHtmlDoc();
+        var rows = text.Deserialize<string[]>();
+        if (rows == null || rows.Any(row => row == null))
+            throw new InvalidOperationException("Некорректная структура текста Litnet");
+        return string.Concat(rows).AsHtmlDoc();
     }
 }

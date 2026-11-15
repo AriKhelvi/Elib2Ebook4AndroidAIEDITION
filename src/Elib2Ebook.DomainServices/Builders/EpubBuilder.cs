@@ -1,9 +1,12 @@
 ﻿using Elib2Ebook.Domain.Book;
+using System.Net;
+using System.Text;
 using Elib2Ebook.Domain.Common;
 using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Extensions;
 using EpubSharp;
 using EpubSharp.Format;
+using HtmlAgilityPack;
 using Microsoft.Extensions.Logging;
 
 namespace Elib2Ebook.DomainServices.Builders;
@@ -16,16 +19,45 @@ public class EpubBuilder(Options options, ILogger logger) : BuilderBase(options,
 
     private List<TempFile> Images { get; set; } = [];
 
+    private static HtmlDocument ParseContent(string html)
+    {
+        var document = new HtmlDocument();
+        document.LoadHtml(html);
+        return document;
+    }
+
     /// <summary>
     /// Создание Xhtml документа из кода части
     /// </summary>
     /// <param name="pattern">Шаблон части</param>
     /// <param name="title">Заголовок части</param>
-    /// <param name="decodeText">Раскодированный текст</param>
+    /// <param name="contentHtml">HTML содержимого главы</param>
     /// <returns></returns>
-    private static string ApplyPattern(string pattern, string title, string decodeText)
+    private static string ApplyPattern(string pattern, string title, string contentHtml)
     {
-        return pattern.Replace("{title}", title.CleanInvalidXmlChars().ReplaceNewLine()).Replace("{body}", decodeText.HtmlDecode().CleanInvalidXmlChars()).AsXHtmlDoc().AsString();
+        // Content уже содержит HTML. Декодирование до разбора повреждает буквальные теги.
+        var document = pattern.Replace("{title}", WebUtility.HtmlEncode(CleanXmlText(title).ReplaceNewLine()))
+            .Replace("{body}", CleanXmlText(contentHtml)).AsXHtmlDoc();
+        // XmlWriter сам экранирует значения. Декодируем сущности только в готовых узлах,
+        // без повторного разбора: буквальный <script> остаётся текстом, а не элементом.
+        foreach (var node in document.DocumentNode.DescendantsAndSelf())
+        {
+            if (node is HtmlTextNode text) text.Text = CleanXmlText(WebUtility.HtmlDecode(text.Text));
+            foreach (var attribute in node.Attributes)
+                attribute.Value = CleanXmlText(WebUtility.HtmlDecode(attribute.Value));
+        }
+        return document.AsString();
+    }
+
+    private static string CleanXmlText(string text)
+    {
+        // Удаляем только запрещённые XML-символы, сохраняя & в HTML-сущностях и целые emoji.
+        var result = new StringBuilder();
+        foreach (var rune in (text ?? string.Empty).EnumerateRunes())
+            if (rune.Value is 0x9 or 0xA or 0xD or >= 0x20 and <= 0xD7FF
+                or >= 0xE000 and <= 0xFFFD or >= 0x10000 and <= 0x10FFFF)
+                result.Append(rune.ToString());
+        return result.ToString();
     }
 
     /// <summary>
@@ -93,15 +125,37 @@ public class EpubBuilder(Options options, ILogger logger) : BuilderBase(options,
         }
 
         var pattern = FileProvider.Instance.ReadAllText($"{Options.ResourcesPath}/ChapterPattern.xhtml");
-        foreach (var chapter in book.Chapters.Where(c => c.IsValid))
+        var chapters = book.Chapters.Where(c => c.IsValid).Select((chapter, index) => new
         {
+            Chapter = chapter, Id = $"chapter-{index + 1}"
+        }).ToArray();
+        // Держим DOM только одной главы: большие книги не должны одновременно занимать память всеми деревьями.
+        var anchorFiles = chapters.SelectMany(item => ParseContent(item.Chapter.Content).DocumentNode.DescendantsAndSelf()
+                .SelectMany(node => node.Attributes.Where(attribute => attribute.Name == "id" || node.Name == "a" && attribute.Name == "name"))
+                .Select(attribute => (Anchor: WebUtility.HtmlDecode(attribute.Value), File: item.Id + ".html")))
+            .GroupBy(item => item.Anchor, StringComparer.Ordinal)
+            .Where(group => group.Select(item => item.File).Distinct().Count() == 1)
+            .ToDictionary(group => group.Key, group => group.First().File, StringComparer.Ordinal);
+        foreach (var item in chapters)
+        {
+            var chapter = item.Chapter;
+            var document = ParseContent(chapter.Content);
             foreach (var image in chapter.Images)
             {
                 _writer.AddFile(image.FullName, [], GetImageFormat(image.FullName).ToEpubContentType());
                 Images.Add(image);
             }
 
-            _writer.AddChapter(chapter.Title.HtmlDecode().ReplaceNewLine().RemoveInvalidChars(), ApplyPattern(pattern, chapter.Title, chapter.Content));
+            // FB2 использует общие якоря книги; в EPUB они должны указывать на файл нужной главы.
+            foreach (var node in document.DocumentNode.DescendantsAndSelf())
+            {
+                var href = node.Attributes["href"];
+                var value = WebUtility.HtmlDecode(href?.Value);
+                if (value?.StartsWith('#') == true && anchorFiles.TryGetValue(Uri.UnescapeDataString(value[1..]), out var target)
+                    && target != item.Id + ".html") href.Value = target + value;
+            }
+            _writer.AddChapter(chapter.Title.HtmlDecode().ReplaceNewLine().RemoveInvalidChars(),
+                ApplyPattern(pattern, chapter.Title, document.DocumentNode.InnerHtml), item.Id);
         }
 
         WithFiles(Options.ResourcesPath, "*.ttf");

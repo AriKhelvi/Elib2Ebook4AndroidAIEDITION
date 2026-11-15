@@ -23,6 +23,19 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
         Config.Client.DefaultRequestHeaders.Add("Host", SystemUrl.Host);
     }
 
+    protected override HttpRequestMessage GetImageRequestMessage(Uri uri)
+    {
+        var request = base.GetImageRequestMessage(uri);
+        // SaveImage получает публичный адрес: он нужен для проверки TLS и области действия заголовков.
+        // Меняем только адрес соединения для собственного HTTPS-хоста; внешние изображения не перенаправляем.
+        if (uri.Scheme == SystemUrl.Scheme && uri.IdnHost == SystemUrl.IdnHost && uri.Port == SystemUrl.Port)
+        {
+            request.RequestUri = uri.ReplaceHost(_host.Host);
+            request.Headers.Host = SystemUrl.Host;
+        }
+        return request;
+    }
+
     public override async Task<Book> Get(Uri url)
     {
         url = await GetMainUrl(url);
@@ -99,7 +112,10 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
     private Task<TempFile> GetCover(HtmlNode doc, Uri bookUri)
     {
         var imagePath = doc.QuerySelector("img")?.Attributes["src"]?.Value;
-        return !string.IsNullOrWhiteSpace(imagePath) ? SaveImage(bookUri.MakeRelativeUri(imagePath).ReplaceHost(_host.Host)) : Task.FromResult(default(TempFile));
+        if (string.IsNullOrWhiteSpace(imagePath)) return Task.FromResult(default(TempFile));
+        var imageUri = bookUri.MakeRelativeUri(imagePath);
+        if (imageUri.IdnHost == _host.IdnHost) imageUri = imageUri.ReplaceHost(SystemUrl.Host);
+        return SaveImage(imageUri);
     }
 
     private async Task AddChapter(ICollection<Chapter> chapters, Chapter chapter, StringBuilder text)
@@ -109,16 +125,11 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
             return;
         }
 
-        var chapterDoc = text.AsHtmlDoc();
-        chapter.Images = await GetImages(chapterDoc, SystemUrl.MakeRelativeUri("/chitat-online/").ReplaceHost(_host.Host));
+        var chapterDoc = new HtmlDocument();
+        chapterDoc.LoadHtml(text.ToString());
+        chapter.Images = await GetImages(chapterDoc, SystemUrl.MakeRelativeUri("/chitat-online/"));
         chapter.Content = chapterDoc.DocumentNode.InnerHtml;
         chapters.Add(chapter);
-    }
-
-    private static bool IsSingleChapter(IEnumerable<HtmlNode> nodes)
-    {
-        var firstNode = nodes.First();
-        return firstNode.Name != "h3" || string.IsNullOrWhiteSpace(firstNode.InnerText);
     }
 
     private static Chapter CreateChapter(string title)
@@ -131,13 +142,10 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
 
     private async Task<HtmlDocument> GetChapter(string bookId, int page)
     {
-        var response = await Config.Client.GetWithTriesAsync(SystemUrl.MakeRelativeUri($"/chitat-online/?b={bookId}&pg={page}").ReplaceHost(_host.Host));
-        if (response == null)
-        {
-            return null;
-        }
-
-        return await response.Content.ReadAsStreamAsync().ContinueWith(t => t.Result.AsHtmlDoc());
+        using var response = await Config.Client.GetWithTriesAsync(SystemUrl.MakeRelativeUri($"/chitat-online/?b={bookId}&pg={page}").ReplaceHost(_host.Host));
+        response.EnsureDownloadSuccess();
+        await using var stream = await response.Content.ReadAsStreamAsync(Config.CancellationToken);
+        return stream.AsHtmlDoc();
     }
 
     private async Task<List<Chapter>> FillChapters(string bookId, long pages, string name)
@@ -149,27 +157,32 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
         }
 
         Chapter chapter = null;
-        var singleChapter = true;
         var text = new StringBuilder();
+        var pending = new List<(Chapter Chapter, StringBuilder Text)>();
+        // Отрицательные индексы и поиск по названию требуют полного оглавления.
+        var earlyEnd = Config.Options.End is > 0 && Config.Options.Start is not < 0 &&
+                       string.IsNullOrWhiteSpace(Config.Options.StartName) && string.IsNullOrWhiteSpace(Config.Options.EndName)
+            ? Config.Options.End : null;
 
         for (var i = 1; i <= pages; i++)
         {
+            Config.CancellationToken.ThrowIfCancellationRequested();
             Config.Logger.LogInformation($"Получаю страницу {i}/{pages}");
             var page = await GetChapter(bookId, i);
-            if (page == null)
-            {
-                Config.Logger.LogInformation("Неожиданный конец");
-                break;
-            }
-
-            var content = page.QuerySelector("div.reading__text").RemoveNodes("script, ins, div[id*=adfox]");
-            var nodes = content.QuerySelectorAll("> h3, > p, > img");
-            nodes = nodes.Count == 0 ? content.ChildNodes : nodes;
-            singleChapter = i == 1 ? IsSingleChapter(nodes) : singleChapter;
-
+            var content = page.QuerySelector("div.reading__text");
+            if (content == null)
+                throw new InvalidOperationException("Readli не вернул текст страницы книги. Проверьте доступность чтения на сайте; неполный файл не будет сохранён.");
+            content.RemoveNodes("script, ins, div[id*=adfox]");
+            if (string.IsNullOrWhiteSpace(content.InnerText) && content.QuerySelector("img") == null)
+                throw new InvalidOperationException("Readli вернул пустую страницу книги. Неполный файл не будет сохранён.");
+            // Составной CSS-селектор этой библиотеки группирует h3/p/img по типу,
+            // поэтому порядок текста и заголовков берём непосредственно из DOM.
+            var nodes = content.ChildNodes.Where(node => node.Name is "h3" or "p" or "img").ToList();
+            if (nodes.Count == 0) nodes = content.ChildNodes.ToList();
             foreach (var node in nodes)
             {
-                if (singleChapter || node.Name != "h3")
+                var headingTitle = node.Name == "h3" ? node.InnerText.HtmlDecode().Trim() : null;
+                if (string.IsNullOrWhiteSpace(headingTitle))
                 {
                     if (node.Name == "img" && node.Attributes["src"] != null)
                     {
@@ -179,20 +192,40 @@ public class ReadliGetter(BookGetterConfig config) : GetterBase(config)
                     {
                         if (!string.IsNullOrWhiteSpace(node.InnerHtml))
                         {
-                            text.Append(node.InnerHtml.HtmlDecode().CoverTag("p"));
+                            text.Append(node.InnerHtml.CoverTag("p"));
                         }
                     }
                 }
                 else
                 {
-                    await AddChapter(result, chapter, text);
-                    text.Clear();
-                    chapter = CreateChapter(node.InnerHtml.HtmlDecode());
+                    if (chapter != null)
+                    {
+                        pending.Add((chapter, text));
+                        // Только следующий заголовок доказывает, что глава закончилась,
+                        // даже если её текст занимал несколько страниц сайта.
+                        if (earlyEnd.HasValue && pending.Count >= earlyEnd.Value)
+                            return await BuildSelectedChapters(pending);
+                        text = new StringBuilder();
+                    }
+                    // Вступление до первого заголовка относится к первой главе,
+                    // даже если заголовок появился лишь на следующей странице.
+                    chapter = CreateChapter(headingTitle);
                 }
             }
         }
 
-        await AddChapter(result, chapter ?? CreateChapter(name), text);
+        pending.Add((chapter ?? CreateChapter(name), text));
+        return await BuildSelectedChapters(pending);
+    }
+
+    private async Task<List<Chapter>> BuildSelectedChapters(List<(Chapter Chapter, StringBuilder Text)> pending)
+    {
+        var result = new List<Chapter>();
+        foreach (var item in SliceToc(pending, item => item.Chapter.Title))
+        {
+            Config.CancellationToken.ThrowIfCancellationRequested();
+            await AddChapter(result, item.Chapter, item.Text);
+        }
         return result;
     }
 }

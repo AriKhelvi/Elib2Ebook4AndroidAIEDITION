@@ -283,18 +283,18 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
             .AppendQueryParameter("fields[]", "summary")
             .AppendQueryParameter("fields[]", "chap_count");
 
-        var response = await Config.Client.GetWithTriesAsync(url);
+        using var response = await Config.Client.GetWithTriesAsync(url);
         if (response == null)
         {
             throw new Exception("Не удалось получить ответ от сайта при загрузке информации о книге");
         }
 
-        if (response.StatusCode != HttpStatusCode.OK)
-        {
-            throw new Exception($"Ошибка загрузки информации о книге. Код {(int)response.StatusCode} ({response.StatusCode}).");
-        }
-
-        return await response.Content.ReadFromJsonAsync<RanobeLibBookDetails>();
+        response.EnsureDownloadSuccess();
+        var details = await response.Content.ReadFromJsonAsync<RanobeLibBookDetails>(cancellationToken: Config.CancellationToken);
+        if (details?.Data == null || string.IsNullOrWhiteSpace(details.Data.SlugUrl))
+            throw new InvalidOperationException($"{SystemUrl.Host} не вернул данные карточки книги; проверьте доступ и ссылку.");
+        Config.Logger.LogDebug("LibSocial: карточка получена; лицензирована={Licensed}.", details.Data.IsLicensed);
+        return details;
     }
 
     private async Task<IEnumerable<SocialLibBookChapter>> GetToc(RanobeLibBookDetails book, string bid)
@@ -303,19 +303,27 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
 
         Config.Logger.LogInformation("Загружаю оглавление");
 
-        var response = await Config.Client.GetWithTriesAsync(url);
+        using var response = await Config.Client.GetWithTriesAsync(url);
         if (response == null)
         {
             throw new Exception("Не удалось получить ответ от сайта при загрузке оглавления");
         }
 
-        if (response.StatusCode != HttpStatusCode.OK)
+        response.EnsureDownloadSuccess();
+        var result = await response.Content.ReadFromJsonAsync<SocialLibBookChapters>(cancellationToken: Config.CancellationToken);
+        if (result?.Chapters == null)
+            throw new InvalidOperationException($"{SystemUrl.Host} не вернул список глав в ожидаемом формате.");
+        Config.Logger.LogDebug("LibSocial: оглавление содержит {Count} глав; ветка указана={Branch}.",
+            result.Chapters.Count, !string.IsNullOrWhiteSpace(bid));
+        if (result.Chapters.Count == 0)
         {
-            throw new Exception($"Ошибка загрузки оглавления. Код {(int)response.StatusCode} ({response.StatusCode}).");
+            var message = $"{SystemUrl.Host} вернул пустое оглавление (0 глав).";
+            if (book.Data.IsLicensed)
+                throw new SiteAccessException(SiteAccessReason.AccessDenied,
+                    message + " В карточке отмечена лицензия; публикация глав может быть ограничена правообладателем.");
+            throw new InvalidOperationException(message + " Главы могут быть сняты с публикации или недоступны без входа.");
         }
-
-        var result = await response.Content.ReadFromJsonAsync<SocialLibBookChapters>().ContinueWith(t => t.Result.Chapters);
-        return SliceToc(WhereBranchIdEqualTo(result, bid), c => c.Name);
+        return SliceToc(WhereBranchIdEqualTo(result.Chapters, bid), c => c.Name);
     }
 
     private List<SocialLibBookChapter> WhereBranchIdEqualTo(List<SocialLibBookChapter> chapters, string bid)
