@@ -150,7 +150,7 @@ public static class SiteDiagnosticBatch
             return new(SiteDiagnosticStatus.Error, "Готовые файлы или содержимое не прошли проверку; см. подробности");
         if (hadWarnings || checks.Any(check => check.Warning) || chapters > 1)
             return new(SiteDiagnosticStatus.Warning, chapters > 1
-                ? $"Получено глав: {chapters}, хотя запрошена одна; сайт мог вернуть книгу целиком"
+                ? $"Получено глав: {chapters}, хотя запрошена одна; полнота книги этим не подтверждается, ограничения загрузчика указаны в журнале"
                 : "Файлы созданы, но есть предупреждения; см. подробности");
         return new(SiteDiagnosticStatus.Ok, "Пример скачан, файлы и содержимое проверены; полнота других книг не проверялась");
     }

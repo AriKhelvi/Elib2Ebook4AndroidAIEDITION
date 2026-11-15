@@ -175,15 +175,26 @@ public static class DiagnosticBookChecks
         var chapterTexts = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < chapters.Count; i++)
         {
-            var nodes = chapters[i].Elements().ToList();
+            var nodes = chapters[i].Elements().Where(HasEpubContent).ToList();
             var title = nodes.FirstOrDefault(x => x.Name == Html + "h1");
             var body = title == nodes.FirstOrDefault() ? nodes.Skip(1).ToList() : nodes;
-            var contentNodes = chapters[i].Nodes().Where(node => node != (title == nodes.FirstOrDefault() ? title : null)).ToList();
-            checks.Add(new(contentNodes.Any(node => node is XText text && !string.IsNullOrWhiteSpace(text.Value)
-                || node is XElement element && (!string.IsNullOrWhiteSpace(element.Value) || element.DescendantsAndSelf().Any(y => y.Name.LocalName is "img" or "image" or "svg"))), $"EPUB: глава {i + 1}, содержимое после заголовка"));
+            var contentNodes = chapters[i].Nodes().Where(node => node != (title == nodes.FirstOrDefault() ? title : null)
+                && HasEpubContent(node)).ToList();
+            checks.Add(new(contentNodes.Count > 0, $"EPUB: глава {i + 1}, содержимое после заголовка"));
             CheckContent(body, title?.Value, $"EPUB: глава {i + 1}", checks);
             CheckRepeatedText(contentNodes, chapterTexts, $"EPUB: глава {i + 1}", checks);
         }
+    }
+
+    private static bool HasEpubContent(XNode node)
+    {
+        // XElement.Value включает код и содержимое неактивного template. Проверяем
+        // текстовые узлы и медиа отдельно, не принимая вложенные служебные поддеревья.
+        var candidates = node is XElement element ? element.DescendantNodesAndSelf() : new[] { node };
+        return candidates.Any(candidate =>
+            (candidate is XText text && !string.IsNullOrWhiteSpace(text.Value)
+             || candidate is XElement media && media.Name.LocalName is "img" or "image" or "svg")
+            && !candidate.Ancestors().Any(parent => parent.Name.LocalName is "script" or "style" or "template"));
     }
 
     private static void CheckRepeatedText(IEnumerable<XNode> nodes, HashSet<string> seen, string label, List<DiagnosticCheck> checks)

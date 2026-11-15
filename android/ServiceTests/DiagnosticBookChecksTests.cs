@@ -96,6 +96,53 @@ public sealed class DiagnosticBookChecksTests : IDisposable
     }
 
     [Theory]
+    [InlineData("<script>window.book = 'not chapter text';</script>")]
+    [InlineData("<style>p { color: red; }</style>")]
+    [InlineData("<template><p>Неактивный текст</p></template>")]
+    [InlineData("<div><section><script>window.book = 'not chapter text';</script><style>p { color: red; }</style></section></div>")]
+    [InlineData("<div><template><p>Неактивный текст</p><img src='image.png'/><svg xmlns='http://www.w3.org/2000/svg'/></template></div>")]
+    public void EpubServiceSubtreesDoNotMakeAnEmptyChapterPass(string content)
+    {
+        var checks = DiagnosticBookChecks.CheckFile(Epub("<h1>Глава</h1>" + content, image: true), 1);
+        var failure = Assert.Single(checks, x => !x.Passed);
+        Assert.False(failure.Warning);
+        Assert.Contains("содержимое после заголовка", failure.Message);
+        Assert.DoesNotContain(checks, x => x.Message.Contains("window.book") || x.Message.Contains("Неактивный"));
+    }
+
+    [Theory]
+    [InlineData("<script>window.book = 1;</script>")]
+    [InlineData("<div><style>p { color: red; }</style><template><p>Неактивный текст</p></template></div>")]
+    public void EpubServiceNodesBeforeTitleDoNotMakeTheTitleChapterContent(string prefix)
+    {
+        var checks = DiagnosticBookChecks.CheckFile(Epub(prefix + "<h1>Глава</h1>"), 1);
+        Assert.Contains(checks, x => !x.Passed && !x.Warning && x.Message.Contains("содержимое после заголовка"));
+    }
+
+    [Theory]
+    [InlineData("<div><script>window.book = 1;</script><p>Настоящий <em>текст</em>.</p><style>p { color: red; }</style></div>")]
+    [InlineData("<div><template><p>Шаблон</p></template><img src='image.png'/></div>")]
+    [InlineData("<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>")]
+    [InlineData("<svg xmlns='http://www.w3.org/2000/svg'><image href='image.png'/></svg>")]
+    public void EpubAcceptsActualTextAndImagesBesideServiceNodes(string content)
+    {
+        var checks = DiagnosticBookChecks.CheckFile(Epub("<script>window.book = 1;</script><h1>Глава</h1>" + content, image: true), 1);
+        Assert.All(checks, check => Assert.True(check.Passed, check.Message));
+    }
+
+    [Fact]
+    public void EpubStillChecksFootnoteTargetsAndDuplicateTitlesWithServiceNodes()
+    {
+        const string chapter = "<script>window.book = 1;</script><h1>Глава</h1><p>Глава</p>"
+            + "<p id='reference'><a href='#note'>1</a></p><aside id='note'><p>Сноска <a href='#reference'>Назад</a></p></aside>";
+        var checks = DiagnosticBookChecks.CheckFile(Epub(chapter), 1);
+        Assert.DoesNotContain(checks, x => !x.Passed && !x.Warning);
+        Assert.Contains(checks, x => x.Warning && x.Message.Contains("повтор названия"));
+        var broken = DiagnosticBookChecks.CheckFile(Epub(chapter.Replace("href='#note'", "href='#missing'")), 1);
+        Assert.Contains(broken, x => !x.Passed && !x.Warning && x.Message.Contains("якорей 1"));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void RepeatedTextWithDifferentTitlesIsWarning(bool epub)
@@ -142,7 +189,7 @@ public sealed class DiagnosticBookChecksTests : IDisposable
         return path;
     }
 
-    private string Epub(string body, bool extraPages = false, bool emptySpine = false, string secondBody = null)
+    private string Epub(string body, bool extraPages = false, bool emptySpine = false, string secondBody = null, bool image = false)
     {
         var path = Path.Combine(_directory, Guid.NewGuid().ToString("N") + ".epub");
         using var zip = ZipFile.Open(path, ZipArchiveMode.Create);
@@ -150,6 +197,7 @@ public sealed class DiagnosticBookChecksTests : IDisposable
         Add(zip, "META-INF/container.xml", "<container xmlns='urn:oasis:names:tc:opendocument:xmlns:container'><rootfiles><rootfile full-path='EPUB/content.opf'/></rootfiles></container>");
         var extras = extraPages ? "<item id='cover' href='front.xhtml' media-type='application/xhtml+xml'/><item id='nav' href='navigation.xhtml' properties='nav' media-type='application/xhtml+xml'/>" : "";
         if (secondBody != null) extras += "<item id='chapter2' href='part2.xhtml' media-type='application/xhtml+xml'/>";
+        if (image) extras += "<item id='image' href='image.png' media-type='image/png'/>";
         var refs = emptySpine ? "" : "<itemref idref='chapter'/>";
         if (secondBody != null) refs += "<itemref idref='chapter2'/>";
         if (extraPages) refs = "<itemref idref='cover'/><itemref idref='nav'/>" + refs;
@@ -157,6 +205,11 @@ public sealed class DiagnosticBookChecksTests : IDisposable
             + (extraPages ? "<guide><reference type='cover' href='front.xhtml'/></guide>" : "") + "</package>");
         Add(zip, "EPUB/part.xhtml", Xhtml(body));
         if (secondBody != null) Add(zip, "EPUB/part2.xhtml", Xhtml(secondBody));
+        if (image)
+        {
+            using var stream = zip.CreateEntry("EPUB/image.png").Open();
+            stream.Write(Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+        }
         if (extraPages)
         {
             Add(zip, "EPUB/front.xhtml", Xhtml("<p>Обложка</p>"));

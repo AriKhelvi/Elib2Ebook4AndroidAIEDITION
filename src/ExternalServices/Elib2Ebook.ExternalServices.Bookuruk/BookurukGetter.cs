@@ -73,10 +73,21 @@ public class BookurukGetter(BookGetterConfig config) : GetterBase(config)
             Chapters = await FillChapters(doc, url),
             Title = title,
             Author = GetAuthor(doc),
-            Annotation = doc.QuerySelector("div.single-prew__desc_anot")?.RemoveNodes(" > b")?.InnerHtml
+            Annotation = GetAnnotation(doc)
         };
 
         return book;
+    }
+
+    private string GetAnnotation(HtmlDocument doc)
+    {
+        var annotation = doc.QuerySelector("div.single-prew__desc_anot")?.CloneNode(true);
+        if (annotation == null) return null;
+        LogContentShape("annotation-before", annotation, 1, 0);
+        // Иллюстрации аннотации не загружаются: не оставляем ссылки без файлов в FB2.
+        annotation.RemoveNodes(" > b, img, image, script, style, template");
+        LogContentShape("annotation-after", annotation, 1, 0);
+        return annotation.InnerHtml;
     }
 
     private Author GetAuthor(HtmlDocument doc)
@@ -143,7 +154,10 @@ public class BookurukGetter(BookGetterConfig config) : GetterBase(config)
             var chapterDoc = await GetChapter(urlChapter.Url);
             if (chapterDoc != null)
             {
-                chapter.Images = await GetImages(chapterDoc, urlChapter.Url);
+                chapter.Images = (await GetImages(chapterDoc, urlChapter.Url)).ToList();
+                LogContentShape("chapter-after", chapterDoc.DocumentNode, 1, chapter.Images.Count());
+                if (string.IsNullOrWhiteSpace(HtmlEntity.DeEntitize(chapterDoc.DocumentNode.InnerText)) && !chapter.Images.Any())
+                    throw new InvalidOperationException("Bookuruk не вернул читаемый текст или доступные иллюстрации главы. Возможно ограничение доступа или изменение разметки; пустая глава не будет сохранена.");
                 chapter.Content = chapterDoc.DocumentNode.InnerHtml;
             }
 
@@ -156,9 +170,30 @@ public class BookurukGetter(BookGetterConfig config) : GetterBase(config)
     private async Task<HtmlDocument> GetChapter(Uri url)
     {
         var doc = await Config.Client.GetHtmlDocWithTriesAsync(url);
-        var content = doc.QuerySelector("div.read-area")
-            ?? throw new InvalidOperationException($"Bookuruk не вернул текст главы ({url}); возможно ограничение доступа или изменение разметки.");
-        return content.InnerHtml.AsHtmlDoc();
+        var containers = doc.QuerySelectorAll("div.read-area");
+        var content = containers.FirstOrDefault();
+        LogContentShape("chapter-before", content ?? doc.DocumentNode, containers.Count, 0);
+        if (content == null)
+            throw new InvalidOperationException($"Bookuruk не вернул текст главы ({url}); возможно ограничение доступа или изменение разметки.");
+        content.RemoveNodes("script, style, template");
+        // Контейнер уже разобран как HTML: повторное декодирование меняет буквальный текст.
+        var result = new HtmlDocument();
+        result.LoadHtml(content.InnerHtml);
+        return result;
+    }
+
+    private void LogContentShape(string stage, HtmlNode content, int containers, int savedImages)
+    {
+        if (!Config.Logger.IsEnabled(LogLevel.Debug)) return;
+        const int maxNodes = 20000;
+        var nodes = content.DescendantsAndSelf().Take(maxNodes + 1).ToList();
+        Config.Logger.LogDebug("Bookuruk DOM: stage={Stage}, containers={Containers}, nodes={Nodes}, truncated={Truncated}, textChars={TextChars}, scripts={Scripts}, styles={Styles}, templates={Templates}, images={Images}, savedImages={SavedImages}",
+            stage, containers, Math.Min(nodes.Count, maxNodes), nodes.Count > maxNodes,
+            nodes.Take(maxNodes).Where(node => node.NodeType == HtmlNodeType.Text).Sum(node => (long)node.InnerText.Length),
+            nodes.Take(maxNodes).Count(node => node.Name == "script"),
+            nodes.Take(maxNodes).Count(node => node.Name == "style"),
+            nodes.Take(maxNodes).Count(node => node.Name == "template"),
+            nodes.Take(maxNodes).Count(node => node.Name is "img" or "image"), savedImages);
     }
 
     private Task<TempFile> GetCover(HtmlDocument doc, Uri uri)
