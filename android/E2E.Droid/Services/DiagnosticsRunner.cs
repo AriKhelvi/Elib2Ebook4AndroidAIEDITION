@@ -37,7 +37,7 @@ public sealed class DiagnosticsRunner(
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
     public const string DefaultTestUrl = "https://tl.rulate.ru/book/273770";
-    public const string ScenarioVersion = "2026-11-15.2";
+    public const string ScenarioVersion = "2026-11-15.3";
 
     private const int TestChapters = 2;
     private const int MaxLines = 6000;

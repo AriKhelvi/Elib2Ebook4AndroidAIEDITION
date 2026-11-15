@@ -107,6 +107,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
     [InlineData(false, 1)]
     [InlineData(true, 1)]
     [InlineData(false, 2)]
+    [InlineData(false, 101)]
     public void AllSitesOptionsAlwaysUseOneChapterAndFreshAnonymousSession(bool images, int chapter)
     {
         var item = new SiteDiagnosticCase("case", "example.test", "https://example.test/book/1", null, null, images, chapter);

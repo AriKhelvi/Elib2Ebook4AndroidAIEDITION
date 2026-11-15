@@ -5,7 +5,9 @@
 // ============================================================================
 
 // Использование: CoreSmoke <url> <formats через запятую> [--start N] [--end N] [--no-image]
+//   [--expected-chapters N] [--limit-minutes N] [--delay-seconds N] [--diagnostics] [--verbose]
 // Качает книгу через BookPipeline/GetterResolver из приложения и проверяет получившиеся файлы.
+using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using System.Xml.Linq;
@@ -62,21 +64,59 @@ try
     Console.WriteLine($"Диагностический каталог {SiteDiagnosticCatalog.Version}: {catalog.Count} случаев, " +
         $"{catalog.Count(test => test.CanRun)} для запуска, {catalog.Count(test => !test.CanRun)} с причиной пропуска.");
 
-    if (args.Length < 2)
+    if (args.Length == 0)
     {
         return;
     }
 
-    var end = args.SkipWhile(a => a != "--end").Skip(1).Select(int.Parse).Cast<int?>().FirstOrDefault();
-    var start = args.SkipWhile(a => a != "--start").Skip(1).Select(int.Parse).Cast<int?>().FirstOrDefault();
+    if (args.Length < 2 || !Uri.TryCreate(args[0], UriKind.Absolute, out var inputUrl) || inputUrl.Scheme is not ("http" or "https"))
+        throw new ArgumentException("Укажите HTTP(S)-адрес книги и форматы через запятую.");
+    var formats = args[1].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    if (formats.Length == 0) throw new ArgumentException("Нужен хотя бы один формат.");
+    int? start = null, end = null, expectedChapters = null;
+    double limitMinutes = 3;
+    double? delaySeconds = null;
+    var noImage = false;
+    var verbose = false;
+    var diagnostics = false;
+    for (var i = 2; i < args.Length; i++)
+    {
+        var option = args[i];
+        switch (option)
+        {
+            case "--no-image": noImage = true; break;
+            case "--verbose": verbose = true; break;
+            case "--diagnostics": diagnostics = true; break;
+            case "--start": start = ReadInteger(args, ref i, option); break;
+            case "--end": end = ReadInteger(args, ref i, option); break;
+            case "--expected-chapters": expectedChapters = ReadInteger(args, ref i, option); break;
+            case "--limit-minutes": limitMinutes = ReadNumber(args, ref i, option); break;
+            case "--delay-seconds": delaySeconds = ReadNumber(args, ref i, option); break;
+            default: throw new ArgumentException("Неизвестный параметр CoreSmoke.");
+        }
+    }
+    if (start == 0 || end == 0 || (start is > 0 && end is > 0 && start > end))
+        throw new ArgumentException("Номер главы не может быть нулём; положительный --start не должен превышать --end.");
+    if (expectedChapters is <= 0)
+        throw new ArgumentException("--expected-chapters должен быть положительным целым числом.");
+    // Эти форматы позволяют проверить число глав непосредственно в готовом файле.
+    if (expectedChapters.HasValue && formats.Any(format => !format.Equals("fb2", StringComparison.OrdinalIgnoreCase) && !format.Equals("epub", StringComparison.OrdinalIgnoreCase)))
+        throw new ArgumentException("--expected-chapters поддерживает проверку готовых файлов FB2 и EPUB.");
+    if (limitMinutes <= 0 || limitMinutes > (uint.MaxValue - 1d) / 60000)
+        throw new ArgumentException("--limit-minutes должен задавать положительный лимит в пределах таймера отмены.");
+    if (delaySeconds.HasValue && (delaySeconds < 0 || delaySeconds > 120 || delaySeconds is > 0 and < 0.01))
+        throw new ArgumentException("--delay-seconds: 0 без паузы либо значение от 0.01 до 120 секунд.");
+
     work = Path.Combine(Path.GetTempPath(), "e2e-smoke-" + Guid.NewGuid().ToString("N")[..8]);
     var options = new Options
     {
         Url = [args[0]],
-        Format = args[1].Split(','),
+        Format = formats,
         End = end,
         Start = start,
-        NoImage = args.Contains("--no-image"),
+        NoImage = noImage,
+        DelayMode = delaySeconds.HasValue ? (delaySeconds == 0 ? 1 : 4) : null,
+        CustomDelaySeconds = delaySeconds ?? 1,
         Timeout = 60,
         SavePath = Path.Combine(work, "out"),
         TempPath = Path.Combine(work, "tmp")
@@ -87,19 +127,25 @@ try
     var logger = new CallbackLogger(line =>
     {
         lines++;
-        if (lines <= 8 || args.Contains("--verbose") || line.Contains("сохран", StringComparison.OrdinalIgnoreCase))
+        if (lines <= 8 || verbose || line.Contains("сохран", StringComparison.OrdinalIgnoreCase))
         {
             Console.WriteLine("  | " + line);
         }
-    });
+    }, debug: diagnostics ? line =>
+    {
+        lines++;
+        Console.WriteLine("  | DEBUG " + line);
+    } : null);
 
     var sw = System.Diagnostics.Stopwatch.StartNew();
-    using var probeLimit = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+    using var probeLimit = new CancellationTokenSource(TimeSpan.FromMinutes(limitMinutes));
     var result = await BookPipeline.RunAsync(options, logger, p => preview = p, probeLimit.Token);
     Console.WriteLine($"Готово за {sw.Elapsed.TotalSeconds:0.0} с, строк лога: {lines}");
     Console.WriteLine($"Превью: «{preview?.Title}» / {preview?.Author}, обложка: {(preview?.Cover == null ? "нет" : $"{preview.Cover.Length} байт, {preview.CoverMime}")}");
     Console.WriteLine($"Книга: «{result.Title}» / {result.Author}");
     var bookInfo = result.Info;
+    if (expectedChapters.HasValue)
+        Check(bookInfo.Chapters == expectedChapters.Value, $"получено глав {bookInfo.Chapters}, ожидается {expectedChapters.Value}");
     Console.WriteLine($"Для «Книг»: глав {bookInfo.Chapters}, последняя «{bookInfo.LastChapter}», серия «{bookInfo.SeriaName}» #{bookInfo.SeriaNumber} ({bookInfo.SeriaUrl}), " +
                       $"соавторы: {string.Join(", ", bookInfo.CoAuthors)}, аннотация: {bookInfo.Annotation?.Length ?? 0} симв., обложка: {bookInfo.Cover?.Length ?? 0} байт");
 
@@ -107,6 +153,12 @@ try
     {
         var info = new FileInfo(file);
         Console.WriteLine($"  {Path.GetRelativePath(result.OutputDir, file)} — {info.Length:N0} байт");
+        foreach (var check in info.Extension.ToLowerInvariant() is ".fb2" or ".epub" or ".cbz"
+            ? DiagnosticBookChecks.CheckFile(file, expectedChapters) : Array.Empty<DiagnosticCheck>())
+        {
+            if (check.Warning) Console.WriteLine($"  [warn] {check.Message}");
+            else Check(check.Passed, check.Message);
+        }
         switch (info.Extension)
         {
             case ".epub":
@@ -149,6 +201,26 @@ finally
             Environment.ExitCode = 1;
         }
     }
+}
+
+static string ReadValue(string[] arguments, ref int index, string option)
+{
+    if (++index >= arguments.Length) throw new ArgumentException($"Для {option} нужно значение.");
+    return arguments[index];
+}
+
+static int ReadInteger(string[] arguments, ref int index, string option)
+{
+    if (!int.TryParse(ReadValue(arguments, ref index, option), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+        throw new ArgumentException($"Для {option} нужно целое число.");
+    return value;
+}
+
+static double ReadNumber(string[] arguments, ref int index, string option)
+{
+    if (!double.TryParse(ReadValue(arguments, ref index, option), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value))
+        throw new ArgumentException($"Для {option} нужно конечное число с точкой в качестве десятичного разделителя.");
+    return value;
 }
 
 static void Check(bool condition, string what)

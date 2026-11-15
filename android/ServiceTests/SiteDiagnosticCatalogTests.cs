@@ -46,6 +46,8 @@ public class SiteDiagnosticCatalogTests
         string[] userReports =
         [
             "https://bllate.org/book/20455",
+            "https://bllate.org/book/17227",
+            "https://tl.rulate.ru/book/129557",
             "https://tl.rulate.ru/book/209502",
             "https://litnet.com/ru/book/v-obyatiyah-krasnoi-planety-b640815"
         ];
@@ -73,6 +75,17 @@ public class SiteDiagnosticCatalogTests
         Assert.All(cases, test => { Assert.NotNull(test.BookUrl); Assert.False(test.CanRun); });
         Assert.Contains("временно отключён", cases[0].SkipReason);
         Assert.Contains("не включён", cases[1].SkipReason);
+    }
+
+    [Theory]
+    [InlineData("bllate.org")]
+    [InlineData("tl.rulate.ru")]
+    public void PaginationExamplesCannotPassUsingOnlyTheFirstHundredChapters(string host)
+    {
+        var sample = Assert.Single(SiteDiagnosticCatalog.ForSites([new("https://" + host, host, true, true)]));
+
+        Assert.True(sample.CanRun);
+        Assert.True(sample.StartChapter > 100, "Проба должна запрашивать главу за пределами первой страницы оглавления.");
     }
 
     [Fact]

@@ -10,13 +10,13 @@ public sealed record SiteDiagnosticCase(
 
 /// <summary>
 /// Версионированные реальные примеры. Источник — docs/CONTENT-AUDIT-2026-11-12.md
-/// (матрица и дополнение 13 ноября), а также сообщения пользователей 13–14 ноября.
+/// (матрица и дополнение 13 ноября), а также сообщения пользователей 13–15 ноября.
 /// Наличие ссылки не обещает текущий доступ: сеть, защита, платные главы и удаление книги проверяются при запуске.
 /// Все неизвестные и выключенные сайты получают отдельную строку пропуска с причиной.
 /// </summary>
 public static class SiteDiagnosticCatalog
 {
-    public const string Version = "2026-11-14.2";
+    public const string Version = "2026-11-15.1";
     private const string NoExample = "Подтверждённый адрес отдельной книги пока не найден; проверка скачивания пропущена.";
     private const string WholeBook = "Загрузчик может получить файл или текст всей книги до выделения первой главы; действует общий таймаут случая.";
     private const string TokenRequired = "Загрузчик требует личный token ещё до получения книги; этот сценарий запускается без входа.";
@@ -96,10 +96,10 @@ public static class SiteDiagnosticCatalog
         Sample("renovels.org", "https://renovels.org/novel/novel-fffclass-trashero/main"),
         Missing("romfant.ru"),
         Sample("royalroad.com", "https://www.royalroad.com/fiction/190085/save-the-heroine"),
-        Sample("bllate.org", "https://bllate.org/book/20455", "Оглавление из 165 глав; загрузка первой главы не подтверждает доступ к платным главам."),
+        Sample("bllate.org", "https://bllate.org/book/17227", "Проверяется 101-я позиция оглавления: первая страница из 100 глав не должна считаться всей книгой. Пример предоставлен пользователем 15 ноября; доступ к другим книгам и платным главам этим не проверяется.", startChapter: 101),
         Sample("erolate.com", "https://erolate.com/book/3570", "Возможны ограничения доступа или возраста."),
         Missing("mlate.ru"),
-        Sample("tl.rulate.ru", "https://tl.rulate.ru/book/273770", "Открытая глава проверена 14 ноября; прежний пример 209502 вернул HTTP 410. Первая глава не заменяет проверку пагинации после 100-й."),
+        Sample("tl.rulate.ru", "https://tl.rulate.ru/book/129557", "Проверяется 101-я позиция оглавления: её название может иметь другой номер части. Пример предоставлен пользователем 15 ноября; загрузка этой главы не подтверждает доступ ко всем платным главам.", startChapter: 101),
         Sample("samlib.ru", "http://samlib.ru/o/obushnaja_j_a/inomirnoeputeshestviezemlaynki.shtml", "Страница произведения приходит целиком по HTTP."),
         Sample("stroki.mts.ru", "https://stroki.mts.ru/book/yevgeniy-onegin-387075", WholeBook, TokenRequired),
         Missing("bigliba.com"),
