@@ -457,13 +457,14 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     protected override HttpRequestMessage GetImageRequestMessage(Uri uri)
     {
-        if (uri.IsSameHost(SystemUrl) || uri.IsSameSubDomain(SystemUrl))
-        {
-            // CDN должен получать запрос на свой адрес: URI, TLS/SNI и Host должны совпадать.
-            return GetDefaultMessage(uri, uri);
-        }
-
-        return base.GetImageRequestMessage(uri);
+        // CDN должен получать запрос на свой адрес: URI, TLS/SNI и Host должны совпадать.
+        var request = uri.IsSameHost(SystemUrl) || uri.IsSameSubDomain(SystemUrl)
+            ? GetDefaultMessage(uri, uri)
+            : base.GetImageRequestMessage(uri);
+        // Как при переходе из браузера на внешний хост картинки: только origin сайта,
+        // без пути книги, параметров ссылки и данных входа.
+        request.Headers.Referrer = new Uri(SystemUrl.GetLeftPart(UriPartial.Authority) + "/");
+        return request;
     }
 
     private HttpRequestMessage GetDefaultMessage(Uri uri, Uri host, HttpContent content = null)
