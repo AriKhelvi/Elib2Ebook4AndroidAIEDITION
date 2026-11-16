@@ -11,6 +11,26 @@ public class CbzBuilder(Options options, ILogger logger) : BuilderBase(options, 
 
     protected override async Task BuildInternal(Book book, string fileName)
     {
+        long pages = 0;
+        long bytes = 0;
+        foreach (var chapter in book.Chapters)
+        {
+            foreach (var image in chapter.Images ?? [])
+            {
+                pages++;
+                // TempFile.Size читает всю картинку в память; для оценки достаточно метаданных файла.
+                var info = new FileInfo(image.FilePath);
+                if (info.Exists) bytes += info.Length;
+            }
+        }
+        if (pages >= 500 || bytes >= 250L * 1024 * 1024)
+        {
+            // Информационный статус, а не ошибка полноты книги: успешное скачивание остаётся успешным.
+            Logger.LogInformation("Собираю большой архив CBZ: {Pages} страниц, {Megabytes:F0} МБ. " +
+                "Это может занять несколько минут или дольше. Дождитесь завершения, не запускайте скачивание заново.",
+                pages, bytes / (1024d * 1024));
+        }
+
         if (File.Exists(fileName))
         {
             File.Delete(fileName);

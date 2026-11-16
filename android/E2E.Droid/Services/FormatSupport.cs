@@ -7,18 +7,12 @@
 namespace E2E.Droid.Services;
 
 /// <summary>
-/// Форматы книги и их совместимость с сайтом.
+/// Политика форматов приложения: манга и комиксы — CBZ, текстовые книги — EPUB/FB2/TXT.
 /// </summary>
 /// <remarks>
-/// Как устроены сборщики ядра (src/Elib2Ebook.DomainServices/Builders):
-/// <list type="bullet">
-/// <item>CBZ — архив только из картинок глав. Для манги и комиксов это лучший формат, а у текстовой книги
-/// в него попадут разве что иллюстрации — сам текст пропадёт.</item>
-/// <item>TXT — только текст. У манги и комиксов глава — это картинки, и TXT получится пустым.</item>
-/// <item>EPUB и FB2 годятся для всего (у комиксов это книга из картинок).</item>
-/// </list>
-/// Различать приходится по домену, а не по загрузчику: один загрузчик ядра иногда обслуживает и мангу, и ранобэ
-/// (LibSocial — mangalib и ranobelib, Renovels — remanga и renovels).
+/// Технические возможности сборщиков ядра не расширяют разрешённые форматы интерфейса.
+/// Учитываем домен и путь: семейства загрузчиков обслуживают и мангу, и ранобэ,
+/// а Яндекс Книги размещают комиксы и текстовые книги на одном домене.
 /// </remarks>
 public static class FormatSupport
 {
@@ -29,11 +23,13 @@ public static class FormatSupport
 
     /// <summary>
     /// Домены, где книга — это картинки (манга, манхва, комиксы). Список ручной: при добавлении сайта-комикса
-    /// в ядро его нужно дописать сюда (иначе просто не будет автовыбора CBZ — скачивание работает и так).
+    /// в ядро его нужно дописать сюда. Распознавание формата не добавляет поддержку зеркала в загрузчик.
     /// </summary>
     private static readonly HashSet<string> ComicHosts = new(StringComparer.OrdinalIgnoreCase)
     {
         "acomics.ru",
+        "desu.me",
+        "desu.uno",
         "mangalib.me",
         "mangalib.org",
         "hentailib.me",
@@ -41,6 +37,8 @@ public static class FormatSupport
         "v2.slashlib.me",
         "mangamammy.ru",
         "manga.ovh",
+        "v1.manga.ovh",
+        "readmanga.live",
         "remanga.org"
     };
 
@@ -53,26 +51,35 @@ public static class FormatSupport
         }
 
         var host = uri.Host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? uri.Host[4..] : uri.Host;
-        return ComicHosts.Contains(host);
+        return ComicHosts.Contains(host) ||
+            (host.Equals("books.yandex.ru", StringComparison.OrdinalIgnoreCase) &&
+             string.Equals(uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(),
+                 "comicbooks", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>Почему формат не подходит для такого сайта; null — подходит.</summary>
     public static string Problem(string format, bool comic) => format switch
     {
-        "txt" when comic => "В комиксах нет текста — TXT получится пустым",
+        _ when !All.Contains(format) => "Неизвестный формат книги",
+        _ when comic && format != "cbz" => "Манга и комиксы сохраняются только в CBZ",
         "cbz" when !comic => "CBZ — это только картинки: текст книги в него не попадёт",
         _ => null
     };
 
     /// <summary>
     /// Формат для ссылки — заново для каждой ссылки, без памяти о прошлой загрузке: манга и комиксы → CBZ
-    /// (если распознавание включено), всё остальное → текстовый формат по умолчанию из настроек.
+    /// без возможности отключения, всё остальное → текстовый формат по умолчанию из настроек.
     /// Так после манги в CBZ следующее ранобэ сразу получает EPUB/FB2/TXT.
     /// </summary>
-    public static string ForUrl(string url, string textFormat, bool detectComics)
+    public static string ForUrl(string url, string textFormat) => Fit(textFormat, IsComic(url));
+
+    /// <summary>Применяет те же ограничения к очереди, повторам из истории и прямому запуску конвейера.</summary>
+    public static IReadOnlyList<string> ForDownload(string url, IEnumerable<string> formats)
     {
-        var comic = IsComic(url);
-        return comic && detectComics ? "cbz" : Fit(textFormat, comic);
+        if (IsComic(url)) return ["cbz"];
+        var selected = (formats ?? []).Select(format => format?.Trim().ToLowerInvariant())
+            .Where(TextFormats.Contains).Distinct().ToArray();
+        return selected.Length > 0 ? selected : ["epub"];
     }
 
     /// <summary>Подходящий формат: выбранный, а если он не годится для сайта — запасной.</summary>

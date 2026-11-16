@@ -33,7 +33,8 @@ public sealed class DiagnosticsRunner(
     IBookStorage storage,
     IPlatformServices platform,
     DownloadManager downloads,
-    ToastService toasts)
+    ToastService toasts,
+    ILogStorage logStorage)
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
     public const string DefaultTestUrl = "https://tl.rulate.ru/book/273770";
@@ -49,17 +50,18 @@ public sealed class DiagnosticsRunner(
     /// Куда ядро ходит по IP в обход блокировок, с настоящим именем сайта в заголовке Host. Адреса — как в
     /// src/ExternalServices: AuthorTodayGetter (_apiIp, _systemIp) и ReadliGetter (_host).
     /// </summary>
-    private static readonly (string Ip, string Host, string Why)[] BypassTargets =
+    private static readonly (string Ip, string Host, string Why, string SiteUrl)[] BypassTargets =
     [
-        ("185.26.98.195", "api.author.today", "author.today: API, когда api.author.today недоступен"),
-        ("185.26.98.195", "author.today", "author.today: сайт в обход блокировки"),
-        ("213.227.140.81", "readli.net", "readli: всегда по IP (обход Cloudflare)")
+        ("185.26.98.195", "api.author.today", "author.today: API, когда api.author.today недоступен", "https://author.today/"),
+        ("185.26.98.195", "author.today", "author.today: сайт в обход блокировки", "https://author.today/"),
+        ("213.227.140.81", "readli.net", "readli: всегда по IP (обход Cloudflare)", "https://readli.net/")
     ];
 
     private readonly List<string> _log = [];
     private readonly List<SiteDiagnosticResult> _siteResults = [];
     private readonly List<string> _applicationProblems = [];
     private IReadOnlyList<SiteDiagnosticCase> _allSiteCases = [];
+    private SiteRateLimitScope _rateLimits = new();
     private CancellationTokenSource _cts;
 
     /// <summary>1 — идёт запуск или сценарий (защита от двойного нажатия, как в DownloadManager).</summary>
@@ -189,9 +191,17 @@ public sealed class DiagnosticsRunner(
                 return;
             }
 
-            if (!await storage.EnsureWriteAccessAsync())
+            try
             {
-                toasts.Show("Без доступа к памяти журнал некуда сохранить", ToastKind.Error);
+                if (!await logStorage.EnsureWriteAccessAsync())
+                {
+                    toasts.Show("Без доступа к памяти журнал некуда сохранить", ToastKind.Error);
+                    return;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                toasts.Show(LogText.Clean(ex.Message), ToastKind.Error, 10);
                 return;
             }
 
@@ -308,6 +318,7 @@ public sealed class DiagnosticsRunner(
 
     private async Task RunAsync(CancellationToken ct, bool allSites)
     {
+        _rateLimits = new SiteRateLimitScope();
         IsAllSitesRun = allSites;
         _allSiteCases = allSites ? SiteDiagnosticCatalog.Entries : [];
         var total = Stopwatch.StartNew();
@@ -381,7 +392,7 @@ public sealed class DiagnosticsRunner(
         }
 
         Status = ct.IsCancellationRequested ? "Остановлено" : "Готово";
-        var where = Result != null ? $"Журнал: {storage.DestinationLabel}/{Result.Name}" : "Журнал можно скопировать в настройках";
+        var where = Result != null ? $"Журнал: {logStorage.DestinationLabel}/{Result.Name}" : "Журнал можно скопировать в настройках";
         var siteErrors = allSites ? SiteResults.Count(site => site.Status == SiteDiagnosticStatus.Error) : 0;
         var siteIssues = allSites ? SiteResults.Count(site => site.Status is not (SiteDiagnosticStatus.Ok or SiteDiagnosticStatus.Error)) : 0;
         var failures = _failed + siteErrors;
@@ -449,7 +460,7 @@ public sealed class DiagnosticsRunner(
 
     private async Task StepFormatsAsync(CancellationToken ct)
     {
-        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "formats-" + Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "formats-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
         try
         {
@@ -492,7 +503,7 @@ public sealed class DiagnosticsRunner(
         Info(Safe(() => $"Время: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz} (UTC {DateTime.UtcNow:HH:mm:ss}), пояс {TimeZoneInfo.Local.Id}, " +
                         $"язык {CultureInfo.CurrentCulture.Name}"));
         Info(Safe(() => $"Память процесса: управляемая {GC.GetTotalMemory(false) / 1048576} МБ, всего {Environment.WorkingSet / 1048576} МБ"));
-        foreach (var line in DescribeSettings(settings, storage))
+        foreach (var line in DescribeSettings(settings, storage, logStorage))
         {
             Info(line);
         }
@@ -548,7 +559,7 @@ public sealed class DiagnosticsRunner(
 
     private async Task StepStorageAsync(CancellationToken ct)
     {
-        var root = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "storage-" + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "storage-" + Guid.NewGuid().ToString("N"));
         var probeDir = Path.Combine(root, "probe");
         var bigDir = Path.Combine(root, "big");
         var stamp = DateTime.Now.ToString("HHmmss", CultureInfo.InvariantCulture);
@@ -696,6 +707,11 @@ public sealed class DiagnosticsRunner(
             await gate.WaitAsync(ct);
             try
             {
+                if (_rateLimits.TryGetReason(url, out var reason))
+                {
+                    Skip(reason);
+                    return null;
+                }
                 var result = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, ProbeTimeout, ct);
                 // Не ответил за 20 с — пробуем ещё раз с таймаутом из настроек (до 120 с): так качает само приложение.
                 // Отличает медленный сайт от недоступного
@@ -718,6 +734,7 @@ public sealed class DiagnosticsRunner(
                         : $"      Проба TLS 1.2: тоже не открылся — {tls12.Outcome}");
                 }
 
+                RecordProbeRateLimit(url, result);
                 Report(result);
                 return result;
             }
@@ -727,16 +744,22 @@ public sealed class DiagnosticsRunner(
             }
         }));
 
-        Info(TlsProbe.DescribeSummary(results));
+        Info(TlsProbe.DescribeSummary(results.Where(result => result != null)));
     }
 
     private async Task StepBypassAsync(CancellationToken ct)
     {
-        foreach (var (ip, host, why) in BypassTargets)
+        foreach (var (ip, host, why, siteUrl) in BypassTargets)
         {
             ct.ThrowIfCancellationRequested();
+            if (_rateLimits.TryGetReason(siteUrl, out var reason))
+            {
+                Skip($"{why}: {reason}");
+                continue;
+            }
             Info($"{why}: https://{ip}/ с Host: {host}");
             var result = await TlsProbe.ProbeAsync(new Uri($"https://{ip}/"), host, settings.Proxy, ProbeTimeout, ct);
+            RecordProbeRateLimit(siteUrl, result);
             Report(result);
             if (result.TlsSeen)
             {
@@ -755,17 +778,26 @@ public sealed class DiagnosticsRunner(
                                  $"({string.Join("; ", bridges.Select(b => $"{b.GetNameInfo(X509NameType.SimpleName, false)} ← {b.GetNameInfo(X509NameType.SimpleName, true)}"))})");
 
         // Старый Android без ISRG Root X1: цепочку author.today (Let's Encrypt) — только по встроенным корням
-        var sample = await TlsProbe.ProbeAsync(new Uri("https://author.today/"), null, settings.Proxy, ProbeTimeout, ct);
-        if (sample.Leaf == null)
+        const string sampleUrl = "https://author.today/";
+        if (_rateLimits.TryGetReason(sampleUrl, out var skippedReason))
         {
-            Skip($"не удалось получить сертификат author.today: {sample.Outcome}");
+            Skip(skippedReason);
         }
         else
         {
-            var reason = CertificatePolicy.TryChainWithBundledRoots(sample.Leaf, sample.Sent);
-            Check(reason == null, reason == null
-                ? "цепочка author.today строится по одним встроенным корням — на Android без ISRG Root X1 сайты Let's Encrypt откроются"
-                : $"по встроенным корням цепочка не строится: {reason}");
+            var sample = await TlsProbe.ProbeAsync(new Uri(sampleUrl), null, settings.Proxy, ProbeTimeout, ct);
+            RecordProbeRateLimit(sampleUrl, sample);
+            if (sample.Leaf == null)
+            {
+                Skip($"не удалось получить сертификат author.today: {sample.Outcome}");
+            }
+            else
+            {
+                var reason = CertificatePolicy.TryChainWithBundledRoots(sample.Leaf, sample.Sent);
+                Check(reason == null, reason == null
+                    ? "цепочка author.today строится по одним встроенным корням — на Android без ISRG Root X1 сайты Let's Encrypt откроются"
+                    : $"по встроенным корням цепочка не строится: {reason}");
+            }
         }
 
         // И обратное: подставной сертификат на то же имя политика не пропускает
@@ -823,7 +855,7 @@ public sealed class DiagnosticsRunner(
         platform.UpdateBackgroundWork("Диагностика E2E — " + Status);
         Changed?.Invoke();
         Info($"{item.Id}: {item.BookUrl}; глава {item.StartChapter}; {item.Limitation}");
-        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "site-" + Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "site-" + Guid.NewGuid().ToString("N"));
         var options = CreateSiteProbeOptions(item, work, settings);
         Info($"{item.Id}: таймаут запроса в пробе {options.Timeout} с (настройка приложения {settings.Timeout} с), общий лимит примера {SiteDiagnosticBatch.SiteTimeout.TotalSeconds:0} с; задержка сохранена из настроек, режим {options.DelayMode}, своя {options.CustomDelaySeconds:0.##} с. Ожидание очереди запросов также расходует эти лимиты.");
         var hadWarnings = false;
@@ -877,9 +909,9 @@ public sealed class DiagnosticsRunner(
             ("Litmarket: названия и диапазон", "https://litmarket.ru/books/devochki-iz-proshloy-zhizni-1", 1, 2),
             ("RanobeLib: содержимое глав", "https://ranobelib.me/ru/29609--mikkakan-no-koufuku", 1, 2)
         };
-        Info("5 коротких примеров, до 10 глав; FB2 и EPUB из одного ответа. Полные книги не запрашиваются намеренно, но некоторые сайты возвращают весь текст одним ответом.");
+        Info("5 коротких примеров, до 10 глав; текст — FB2 и EPUB из одного ответа, манга и комиксы — CBZ. Полные книги не запрашиваются намеренно, но некоторые сайты возвращают весь текст одним ответом.");
         Info("Rulate 129557 и Bllate 17227: проверяются позиции 100–101 на книгах, предоставленных пользователем. Это проверка перехода на вторую страницу оглавления и сохранения обеих глав в FB2/EPUB.");
-        Info("Совпадение количества глав не доказывает их позиции в оглавлении: для анализа сохраняются сообщения загрузчика и последнее название главы. Пробы рассчитаны на текстовые книги.");
+        Info("Совпадение количества глав не доказывает их позиции в оглавлении: для анализа сохраняются сообщения загрузчика и последнее название главы. Для комиксов проверяются архив и изображения.");
         Info("Вход не выполняется. Ошибка доступа не доказывает дефект приложения; выбранные главы не доказывают полноту всей книги. Через 3 минуты запрашивается отмена примера; завершение обработки может занять время.");
         foreach (var probe in probes)
         {
@@ -898,26 +930,32 @@ public sealed class DiagnosticsRunner(
             Fail($"{label}: нужна ссылка HTTP/HTTPS без логина и пароля в адресе");
             return;
         }
+        if (_rateLimits.TryGetReason(text, out var reason))
+        {
+            Skip($"{label}: {reason}");
+            return;
+        }
         if (!GetterResolver.IsSupported(url))
         {
             Skip($"{label}: для {url.Host} нет включённого загрузчика в этой сборке");
             return;
         }
 
-        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "download-" + Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "download-" + Guid.NewGuid().ToString("N"));
+        var comic = FormatSupport.IsComic(text);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
         limit.CancelAfter(TimeSpan.FromMinutes(3));
         var options = new Options
         {
-            Url = [url.ToString()], Format = ["fb2", "epub"],
+            Url = [url.ToString()], Format = FormatSupport.ForDownload(text, ["fb2", "epub"]),
             Timeout = settings.Timeout, Delay = settings.Delay, DelayMode = settings.DelayMode,
             CustomDelaySeconds = settings.CustomDelaySeconds,
             Proxy = string.IsNullOrWhiteSpace(settings.Proxy) ? null : settings.Proxy.Trim(),
-            Start = start, End = end, NoImage = !settings.Images, Additional = false, Cover = false,
+            Start = start, End = end, NoImage = !comic && !settings.Images, Additional = false, Cover = false,
             BookNamePattern = settings.BookNamePattern,
             SavePath = Path.Combine(work, "out"), TempPath = Path.Combine(work, "tmp")
         };
-        Info($"{label}: {url}; позиции {start}–{end}, FB2 + EPUB, картинки {YesNo(settings.Images)}, без входа; файлы временные");
+        Info($"{label}: {url}; позиции {start}–{end}, {(comic ? "CBZ" : "FB2 + EPUB")}, картинки {YesNo(!options.NoImage)}, без входа; файлы временные");
         Action<string> trace = line => Line("  tls | " + line);
         CertificatePolicy.Traced += trace;
         var sw = Stopwatch.StartNew();
@@ -928,19 +966,28 @@ public sealed class DiagnosticsRunner(
             // Необязательное превью отключено: не запрашиваем оглавление и обложку второй раз.
             var result = await BookPipeline.RunAsync(options, logger, null, limit.Token);
             _cover ??= result.Info.Cover;
-            Info($"{label}: за {sw.Elapsed.TotalSeconds:0.0} с получено глав {result.Info.Chapters}, последняя «{result.Info.LastChapter}», обложка {result.Info.Cover?.Length ?? 0} байт");
-            Check(result.Info.Chapters > 0, $"{label}: есть непустые главы");
-            if (result.Info.Chapters != end - start + 1)
-                Warn($"{label}: запрошено {end - start + 1}, получено {result.Info.Chapters}; возможны короткая книга, закрытые главы или ошибка диапазона — см. журнал ядра");
-            else Ok($"{label}: количество глав соответствует диапазону {start}–{end}");
-            var books = result.Files.Where(f => f.EndsWith(".fb2", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase)).ToList();
-            Check(books.Count == 2 && books.Select(Path.GetExtension).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,
-                $"{label}: созданы оба формата, файлов книги {books.Count}, дополнительных {result.Files.Count - books.Count}");
-            foreach (var file in books)
+            if (comic)
             {
-                limit.Token.ThrowIfCancellationRequested();
-                Info($"{label}: {Path.GetExtension(file)} — {new FileInfo(file).Length} байт");
-                foreach (var check in DiagnosticBookChecks.CheckFile(file, result.Info.Chapters)) Report(check);
+                Info($"{label}: за {sw.Elapsed.TotalSeconds:0.0} с получено файлов {result.Files.Count}; проверяю CBZ и изображения");
+                var item = new SiteDiagnosticCase("download-probe", url.Host, text, null, null, Images: true, StartChapter: start);
+                foreach (var check in SiteDiagnosticBatch.CheckOutput(item, result.Info.Chapters, result.Files, limit.Token)) Report(check);
+            }
+            else
+            {
+                Info($"{label}: за {sw.Elapsed.TotalSeconds:0.0} с получено глав {result.Info.Chapters}, последняя «{result.Info.LastChapter}», обложка {result.Info.Cover?.Length ?? 0} байт");
+                Check(result.Info.Chapters > 0, $"{label}: есть непустые главы");
+                if (result.Info.Chapters != end - start + 1)
+                    Warn($"{label}: запрошено {end - start + 1}, получено {result.Info.Chapters}; возможны короткая книга, закрытые главы или ошибка диапазона — см. журнал ядра");
+                else Ok($"{label}: количество глав соответствует диапазону {start}–{end}");
+                var books = result.Files.Where(f => f.EndsWith(".fb2", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase)).ToList();
+                Check(books.Count == 2 && books.Select(Path.GetExtension).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,
+                    $"{label}: созданы оба формата, файлов книги {books.Count}, дополнительных {result.Files.Count - books.Count}");
+                foreach (var file in books)
+                {
+                    limit.Token.ThrowIfCancellationRequested();
+                    Info($"{label}: {Path.GetExtension(file)} — {new FileInfo(file).Length} байт");
+                    foreach (var check in DiagnosticBookChecks.CheckFile(file, result.Info.Chapters)) Report(check);
+                }
             }
             limit.Token.ThrowIfCancellationRequested();
         }
@@ -951,6 +998,7 @@ public sealed class DiagnosticsRunner(
         }
         catch (Exception ex)
         {
+            _rateLimits.Record(text, ex);
             Fail($"{label}: скачивание не удалось за {sw.Elapsed.TotalSeconds:0.0} с: {ex}");
             if (CertificatePolicy.LastRejection != null) Info($"последний отказ по сертификату: {CertificatePolicy.LastRejection}");
         }
@@ -1010,6 +1058,12 @@ public sealed class DiagnosticsRunner(
 
     // ---------------------------------------------------------------- проверка одного адреса
 
+    private void RecordProbeRateLimit(string siteUrl, TlsProbeResult result)
+    {
+        _rateLimits.Record(siteUrl, result.HttpStatusCode);
+        _rateLimits.Record(siteUrl, result.Tls12HttpStatusCode);
+    }
+
     /// <summary>Строки проверки — одним блоком (сайты проверяются параллельно) и в счётчики.</summary>
     private void Report(TlsProbeResult result)
     {
@@ -1051,18 +1105,20 @@ public sealed class DiagnosticsRunner(
                      $"коммит {BuildInfo.Commit}, ядро Elib2Ebook {BuildInfo.CoreVersion}";
         yield return $"# {BuildInfo.AgentNote(platform.AppVersion)}";
         yield return $"# Записано: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}";
+        yield return $"# Папка журналов: {logStorage.DestinationLabel}";
     }
 
     /// <summary>Настройки одной-двумя строками — без паролей и адреса прокси с логином.</summary>
-    public static IEnumerable<string> DescribeSettings(AppSettings s, IBookStorage storage)
+    public static IEnumerable<string> DescribeSettings(AppSettings s, IBookStorage storage, ILogStorage logs = null)
     {
-        yield return $"Настройки: формат по умолчанию {s.TextFormat}, авто-CBZ {YesNo(s.AutoFormat)}, картинки {YesNo(s.Images)}, " +
+        yield return $"Настройки: текстовый формат по умолчанию {s.TextFormat}, манга и комиксы — CBZ, картинки {YesNo(s.Images)}, " +
                      $"обложка файлом {YesNo(s.Cover)}, доп. файлы {YesNo(s.Additional)} [{string.Join(",", s.AdditionalTypes)}], " +
                      $"шаблон имени «{s.BookNamePattern}»";
         yield return $"Настройки: таймаут {s.Timeout} с, режим задержки {s.DelayMode}, своя задержка {s.CustomDelaySeconds} с, прокси {MaskProxy(s.Proxy)}, " +
                      $"не проверять сертификаты {YesNo(s.AllowInsecureTls)}, подробный журнал {YesNo(s.DebugLog)}, " +
                      $"пропускать диалог скачивания {YesNo(s.AutoStartOnShare)}";
-        yield return $"Сохранение: {storage.DestinationLabel}";
+        yield return $"Сохранение книг: {storage.DestinationLabel}";
+        if (logs != null) yield return $"Сохранение журналов: {logs.DestinationLabel}";
     }
 
     /// <summary>Прокси без логина и пароля: схема, хост, порт.</summary>
@@ -1080,12 +1136,14 @@ public sealed class DiagnosticsRunner(
 
     private async Task<SavedFile> SaveTextAsync(string fileName, IEnumerable<string> lines)
     {
-        var dir = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "out-" + Guid.NewGuid().ToString("N"));
+        if (!await logStorage.EnsureWriteAccessAsync())
+            throw new InvalidOperationException("Нет доступа к папке журналов. Разрешите запись или выберите папку в «Отладке».");
+        var dir = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "out-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
             await File.WriteAllLinesAsync(Path.Combine(dir, fileName), LogText.CleanLines(lines), new UTF8Encoding(false));
-            var saved = await storage.SaveTreeAsync(dir, f =>
+            var saved = await logStorage.SaveTreeAsync(dir, f =>
             {
                 f.BookTitle = Path.GetFileNameWithoutExtension(fileName);
                 return f;

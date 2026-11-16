@@ -1,0 +1,83 @@
+@implements IDisposable
+@inject LitnetAuthService LitnetAuth
+@inject ToastService Toasts
+
+<div class="litnet-login-panel">
+    <h3 class="section-label">Litnet</h3>
+    <p class="supporting-text" role="status">@(!_ready ? "Проверяю сохранённый вход…" : LitnetAuth.HasSession ? "Вход выполнен. Доступные аккаунту книги можно скачивать." : "Для купленных книг войдите в свой аккаунт Litnet.")</p>
+    <p class="card-note">Вход откроется на сайте id.litnet.com. Пароль в приложении не сохраняется.</p>
+    @if (_error != null)
+    {
+        <p class="supporting-text" role="alert">@_error</p>
+    }
+    @if (LitnetAuth.LegacyCleanupWarning != null)
+    {
+        <p class="supporting-text" role="alert">@LitnetAuth.LegacyCleanupWarning</p>
+        <button type="button" class="btn btn-text" disabled="@_working" @onclick="RetryCleanup">Удалить старый пароль</button>
+    }
+    <div class="row">
+        <button type="button" class="btn btn-tonal" disabled="@(_working || LitnetAuth.IsBusy)" @onclick="SignIn">
+            <Icon Name="person" Size="18" />@(LitnetAuth.IsBusy ? "Выполняется вход…" : LitnetAuth.HasSession ? "Сменить аккаунт" : "Войти в Litnet")
+        </button>
+        @if (LitnetAuth.HasSession || LitnetAuth.NeedsSignOutRetry)
+        {
+            <button type="button" class="btn btn-text" disabled="@_working" @onclick="SignOut">Выйти</button>
+        }
+    </div>
+</div>
+
+@code {
+    private bool _ready;
+    private bool _working;
+    private string _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        LitnetAuth.Changed += OnChanged;
+        try { await LitnetAuth.InitializeAsync(); }
+        catch (Exception error) { _error = Message(error); }
+        _ready = true;
+    }
+
+    private async Task SignIn()
+    {
+        _working = true;
+        _error = null;
+        try
+        {
+            await LitnetAuth.SignInAsync();
+            Toasts.Show("Вход в Litnet сохранён", ToastKind.Success, 3);
+        }
+        catch (OperationCanceledException) { Toasts.Show("Вход в Litnet отменён", ToastKind.Info, 3); }
+        catch (Exception error) { _error = Message(error); }
+        finally { _working = false; }
+    }
+
+    private async Task SignOut()
+    {
+        _working = true;
+        _error = null;
+        try
+        {
+            await LitnetAuth.SignOutAsync();
+            Toasts.Show("Вы вышли из Litnet", ToastKind.Info, 3);
+        }
+        catch (Exception error) { _error = Message(error); }
+        finally { _working = false; }
+    }
+
+    private async Task RetryCleanup()
+    {
+        _working = true;
+        try { await LitnetAuth.RetryLegacyCleanupAsync(); }
+        catch (Exception error) { _error = Message(error); }
+        finally { _working = false; }
+    }
+
+    private static string Message(Exception error) => error is LitnetAuthStorageException or InvalidOperationException
+        or System.Net.Http.HttpRequestException or TimeoutException or System.IO.InvalidDataException
+        ? error.Message : "Не удалось выполнить вход в Litnet. Повторите попытку.";
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() => LitnetAuth.Changed -= OnChanged;
+}

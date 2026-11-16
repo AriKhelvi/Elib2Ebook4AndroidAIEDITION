@@ -28,8 +28,8 @@ public static class CoverThumbnails
     /// <summary>Миниатюры записей «Книг»: covers/&lt;Id&gt;.jpg в личной папке; удаляются вместе с записью (HistoryStore).</summary>
     public static string RecordsDir => Path.Combine(FileSystem.AppDataDirectory, "covers");
 
-    /// <summary>Миниатюры карточки во время скачивания: в кэше, чистятся при новом задании и при запуске приложения.</summary>
-    public static string PreviewsDir => Path.Combine(FileSystem.CacheDirectory, "covers-preview");
+    /// <summary>Миниатюры текущей сессии: чистятся при новом задании; прошлые сессии — при запуске приложения.</summary>
+    public static string PreviewsDir => TemporaryWorkspace.PreviewsDirectory;
 
     /// <summary>Куда сохранить миниатюру записи «Книг».</summary>
     public static string RecordPath(string recordId) => Path.Combine(RecordsDir, recordId + Extension);

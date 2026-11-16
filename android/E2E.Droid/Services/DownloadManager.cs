@@ -7,7 +7,7 @@
 // Жизненный цикл одного «задания» (нажатие «Скачать», объект Job):
 //
 //   StartAsync  → спросить разрешения, создать Job, удержать foreground-сервис, уйти в фон (Task.Run)
-//   RunAsync    → для каждой ссылки: BookPipeline в рабочую папку cache/jobs/<guid> → копия в «Загрузки»
+//   RunAsync    → для каждой ссылки: BookPipeline в личную папку work/<session>/jobs/<guid> → копия в «Загрузки»
 //                 (или выбранную папку) → запись в историю → удаление рабочей папки
 //   Finish      → отпустить сервис, показать тост и (если приложение свёрнуто) уведомление «Книга готова»
 //
@@ -21,6 +21,12 @@ using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Misc;
 
 namespace E2E.Droid.Services;
+
+/// <summary>Получение или обновление входа Litnet из защищённого хранилища приложения.</summary>
+public interface ILitnetSessionProvider
+{
+    Task<BrowserAuthSession> GetAsync(string rejectedToken, CancellationToken cancellationToken);
+}
 
 /// <summary>Что скачивать — собирается из формы на главном экране.</summary>
 public sealed class DownloadRequest
@@ -38,7 +44,8 @@ public sealed class DownloadRequest
     public IReadOnlyDictionary<string, string> FormatByUrl { get; init; }
 
     public IReadOnlyList<string> FormatsFor(string url)
-        => FormatByUrl != null && FormatByUrl.TryGetValue(url, out var format) ? [format] : Formats;
+        => FormatSupport.ForDownload(url,
+            FormatByUrl != null && FormatByUrl.TryGetValue(url, out var format) ? [format] : Formats);
 
     public string Login { get; init; }
     public string Password { get; init; }
@@ -77,7 +84,8 @@ public sealed class DownloadManager(
     IBookStorage storage,
     IPlatformServices platform,
     HistoryStore history,
-    ToastService toasts)
+    ToastService toasts,
+    ILitnetSessionProvider litnetSessions = null)
 {
     /// <summary>Журнал ограничен, чтобы книга на тысячу глав не съела память.</summary>
     private const int MaxLogLines = 3000;
@@ -168,6 +176,9 @@ public sealed class DownloadManager(
     /// <summary>Короткие сообщения об ошибках по каждой не скачавшейся ссылке.</summary>
     public IReadOnlyList<string> Errors => Copy(_job.Errors);
 
+    /// <summary>Отдельная иллюстрация для превышения лимита манги в текущем задании.</summary>
+    public bool MangaLimitExceeded => _job.MangaLimitExceeded;
+
     /// <summary>
     /// Запускает задание. Вызывать из UI-потока (запрос разрешения показывает системный диалог).
     /// Повторный вызов, пока идёт запуск или скачивание, ничего не делает.
@@ -204,9 +215,17 @@ public sealed class DownloadManager(
             }
 
             // Android 7–9: без разрешения на запись книгу некуда сохранить — не начинаем зря
-            if (!await storage.EnsureWriteAccessAsync())
+            try
             {
-                toasts.Show("Без доступа к памяти книги некуда сохранить. Разрешите доступ или выберите папку в настройках", ToastKind.Error, 8);
+                if (!await storage.EnsureWriteAccessAsync())
+                {
+                    toasts.Show("Без доступа к памяти книги некуда сохранить. Разрешите доступ или выберите папку в настройках", ToastKind.Error, 8);
+                    return false;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                toasts.Show(LogText.Clean(ex.Message), ToastKind.Error, 10);
                 return false;
             }
 
@@ -402,7 +421,7 @@ public sealed class DownloadManager(
             if (!job.Cancelled)
             {
                 lock (job.Errors) job.Errors.Add(LogText.Clean(ex.Message));
-                Write(job, $"Непредвиденная ошибка: {ex}");
+                WriteException(job, $"Непредвиденная ошибка: {ex.Message}", ex);
             }
         }
         finally
@@ -417,9 +436,11 @@ public sealed class DownloadManager(
     {
         var request = job.Request;
         var ct = job.Cts.Token;
+        var rateLimits = new SiteRateLimitScope();
 
-        // Рабочие папки — в кэше приложения: Android может их чистить сам, а мы удаляем их после каждой книги
-        var jobsRoot = Path.Combine(FileSystem.CacheDirectory, "jobs");
+        // Рабочие папки — в личных данных: очистка Android-кэша не должна оборвать сборку книги.
+        // После каждой книги удаляем её папку; остатки предыдущих сессий убираются при запуске.
+        var jobsRoot = TemporaryWorkspace.JobsDirectory;
 
         lock (_sync)
         {
@@ -447,6 +468,19 @@ public sealed class DownloadManager(
 
             try
             {
+                if (rateLimits.TryGetReason(url, out var reason))
+                {
+                    lock (job.Errors) job.Errors.Add(LogText.Clean($"{url}: {reason}"));
+                    Write(job, $"{url}: {reason}");
+                    await WriteResultAsync(job, () =>
+                    {
+                        var skipped = NewRecord(url, request);
+                        skipped.Error = reason;
+                        history.Add(skipped);
+                        return Task.CompletedTask;
+                    });
+                    continue;
+                }
                 Write(job, $"Начинаю генерацию книги {url}");
                 var options = BuildOptions(request, url, workDir);
                 var logger = new CallbackLogger(line => Write(job, line), line =>
@@ -545,7 +579,8 @@ public sealed class DownloadManager(
                     return; // после отмены ядро падает с чем угодно — это не ошибка книги
                 }
 
-                // Ошибка одной книги не останавливает остальные ссылки.
+                // Другие сайты продолжаются, но после 429 новые книги того же сайта не запрашиваем.
+                rateLimits.Record(url, ex);
                 // TaskCanceledException без отмены = сработал таймаут HttpClient;
                 // AuthenticationException внутри = сертификат сайта не прошёл проверку (см. CertificatePolicy).
                 var message = ex is TaskCanceledException
@@ -555,9 +590,10 @@ public sealed class DownloadManager(
                           "Если сеть надёжная, проверку можно выключить: «Настройки» → «Сеть»"
                         : ex.Message;
                 message = LogText.Clean(message);
+                if (ex is MangaChapterLimitException) job.MangaLimitExceeded = true;
                 lock (job.Errors) job.Errors.Add(LogText.Clean($"{url}: {message}"));
                 // В журнал — полный текст исключения со стеком: пригодится для отчёта об ошибке
-                Write(job, $"Генерация книги {url} завершилась с ошибкой. {ex}");
+                WriteException(job, $"Генерация книги {url} завершилась с ошибкой. {message}", ex);
 
                 // Неудачная загрузка тоже попадает в «Книги» — с пометкой и кнопкой «Скачать заново»
                 await WriteResultAsync(job, () =>
@@ -657,7 +693,7 @@ public sealed class DownloadManager(
         string text;
         if (errors.Count == 0 && job.WarningCount > 0)
         {
-            text = $"Сохранено с предупреждениями: {job.WarningCount}. Проверьте полноту книги и журнал";
+            text = $"Сохранено с предупреждениями: {job.WarningCount}. Подробности — в журнале";
             toasts.Show(text, ToastKind.Info, 10);
         }
         else if (errors.Count == 0)
@@ -720,18 +756,22 @@ public sealed class DownloadManager(
     /// </summary>
     private Options BuildOptions(DownloadRequest request, string url, string workDir)
     {
+        var browserLogin = Uri.TryCreate(url, UriKind.Absolute, out var parsedUrl) &&
+            (parsedUrl.IdnHost.Equals("litnet.com", StringComparison.OrdinalIgnoreCase) ||
+             parsedUrl.IdnHost.Equals("www.litnet.com", StringComparison.OrdinalIgnoreCase)) && litnetSessions != null;
         var additionalTypes = settings.AdditionalTypes
             .Select(t => Enum.TryParse<AdditionalTypeEnum>(t, true, out var type) ? (AdditionalTypeEnum?)type : null)
             .Where(t => t.HasValue)
             .Select(t => t!.Value)
             .ToList();
 
-        return new Options
+        var options = new Options
         {
             Url = [url],
             Format = request.FormatsFor(url),
-            Login = NullIfEmpty(request.Login),
-            Password = NullIfEmpty(request.Password),
+            Login = browserLogin ? null : NullIfEmpty(request.Login),
+            Password = browserLogin ? null : NullIfEmpty(request.Password),
+            LitnetSessionProvider = browserLogin ? litnetSessions.GetAsync : null,
             Proxy = NullIfEmpty(settings.Proxy),
             Timeout = settings.Timeout,
             Delay = settings.Delay,
@@ -751,6 +791,8 @@ public sealed class DownloadManager(
             SavePath = Path.Combine(workDir, "out"), // сюда билдеры пишут готовые файлы
             TempPath = Path.Combine(workDir, "tmp")  // сюда ядро складывает скачанные картинки
         };
+        BookPipeline.NormalizeAdditionalTypes(options);
+        return options;
     }
 
     private static BookRecord NewRecord(string url, DownloadRequest request) => new()
@@ -792,6 +834,28 @@ public sealed class DownloadManager(
         record.Annotation = preview.Annotation;
         // Битая картинка — SaveThumbnail вернёт null, запись будет без обложки
         record.CoverPath = preview.Cover == null ? null : platform.SaveThumbnail(preview.Cover, CoverThumbnails.RecordPath(record.Id));
+    }
+
+    /// <summary>Короткая ошибка — в статус; очищенный стек — построчно в обычный журнал.</summary>
+    private void WriteException(Job job, string summary, Exception exception)
+    {
+        if (job.Cancelled) return;
+        Write(job, LogText.CleanLines(ReadLines(summary)).FirstOrDefault());
+        // Очищаем строки вместе до добавления времени: продолжения заголовков и ключей тоже секретны.
+        // AppendLog сохраняет прежние лимиты журнала, но больше не обрезает весь стек как одну строку.
+        foreach (var line in LogText.CleanLines(ReadLines(exception.ToString())))
+        {
+            if (job.Cancelled) break;
+            AppendLog(job, line);
+        }
+        NotifyChanged();
+
+        static IEnumerable<string> ReadLines(string text)
+        {
+            using var reader = new StringReader(text);
+            for (var count = 0; count < 128 && reader.ReadLine() is { } line; count++)
+                yield return line;
+        }
     }
 
     /// <summary>Строка журнала от ядра или от нас: в журнал, в статус и (не чаще раза в секунду) в шторку.</summary>
@@ -888,14 +952,9 @@ public sealed class DownloadManager(
     }
 
     /// <summary>
-    /// При запуске приложения удаляет рабочие папки и миниатюры карточек, оставшиеся от прошлого (например, после краша).
+    /// Удаляет остатки прошлых запусков, сохраняя все рабочие файлы текущей сессии.
     /// </summary>
-    public static void CleanupLeftovers()
-    {
-        TryDelete(Path.Combine(FileSystem.CacheDirectory, "jobs"));
-        TryDelete(CoverThumbnails.PreviewsDir);
-        TryDelete(Path.Combine(FileSystem.CacheDirectory, "diagnostics"));
-    }
+    public static void CleanupLeftovers() => TemporaryWorkspace.CleanupPreviousSessions();
 
     private static void TryDeleteFile(string path)
     {
@@ -964,6 +1023,7 @@ public sealed class DownloadManager(
         public volatile string Status = "Подготовка…";
         public volatile BookPreview Preview;
         public volatile int Current;
+        public volatile bool MangaLimitExceeded;
 
         /// <summary>Миниатюра обложки карточки: адрес для интерфейса и файл в кэше (его удаляем при смене карточки).</summary>
         public volatile string PreviewCoverUrl;

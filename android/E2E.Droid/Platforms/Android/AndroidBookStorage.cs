@@ -34,10 +34,24 @@ namespace E2E.Droid;
 /// Наружу (в читалку, «Поделиться») file:// отдавать нельзя — такие ссылки заворачиваются в content://
 /// через FileProvider (см. ShareableUri).</para>
 /// </remarks>
-public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
+public class AndroidBookStorage(AppSettings settings, bool forLogs = false) : IBookStorage
 {
     /// <summary>Подпапка в «Загрузках» по умолчанию.</summary>
-    private const string DefaultFolder = "Elib2Ebook";
+    private string DefaultFolder => forLogs ? "Elib2Ebook/Logs" : "Elib2Ebook";
+
+    private string SelectedFolderUri
+    {
+        get => forLogs ? settings.LogFolderUri : settings.SaveFolderUri;
+        set { if (forLogs) settings.LogFolderUri = value; else settings.SaveFolderUri = value; }
+    }
+
+    private string SelectedFolderName
+    {
+        get => forLogs ? settings.LogFolderName : settings.SaveFolderName;
+        set { if (forLogs) settings.LogFolderName = value; else settings.SaveFolderName = value; }
+    }
+
+    private string OtherFolderUri => forLogs ? settings.SaveFolderUri : settings.LogFolderUri;
 
     /// <summary>Адрес FileProvider из AndroidManifest.xml (пути — Resources/xml/e2e_file_paths.xml).</summary>
     private const string FileProviderAuthority = "e2e.droid.files";
@@ -55,7 +69,15 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     private static ContentResolver Resolver => Platform.AppContext.ContentResolver!;
 
     public string DestinationLabel
-        => HasTree() ? settings.SaveFolderName : $"Загрузки/{DefaultFolder}";
+    {
+        get
+        {
+            var selectedUri = SelectedFolderUri;
+            return string.IsNullOrEmpty(selectedUri)
+                ? $"Загрузки/{DefaultFolder}"
+                : GetDestinationLabel(selectedUri, SelectedFolderName);
+        }
+    }
 
     /// <summary>
     /// Переносит всё, что ядро собрало в рабочей папке задания (книги, обложку, подпапки с доп. файлами),
@@ -67,7 +89,10 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         return Task.Run<IReadOnlyList<SavedFile>>(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var tree = HasTree() ? AUri.Parse(settings.SaveFolderUri) : null;
+            // Проверяем сохранённое назначение ещё раз непосредственно перед экспортом.
+            // Потеря доступа после скачивания не должна перенаправлять файлы в другое место.
+            var selectedUri = ResolveSelectedUriForWrite();
+            var tree = selectedUri == null ? null : AUri.Parse(selectedUri);
             var result = new List<SavedFile>();
             // Кэш принадлежит одному сохранению: не устаревает при смене папки или разрешений.
             var directories = new Dictionary<string, AUri>(StringComparer.Ordinal);
@@ -147,7 +172,8 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// </summary>
     public async Task<bool> EnsureWriteAccessAsync()
     {
-        if (UseMediaStore || HasTree())
+        // SAF проверяется и на Android 10+: наличие MediaStore не заменяет выбранную папку.
+        if (ResolveSelectedUriForWrite() != null || UseMediaStore)
         {
             return true;
         }
@@ -174,7 +200,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         catch (ActivityNotFoundException)
         {
             throw new InvalidOperationException(
-                $"На этом устройстве нет системного выбора папки. Книги сохраняются в «Загрузки/{DefaultFolder}» — " +
+                $"На этом устройстве нет системного выбора папки. Файлы сохраняются в «Загрузки/{DefaultFolder}» — " +
                 "их видно в файловом менеджере и по USB.");
         }
         var uri = data?.Data;
@@ -201,20 +227,21 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
             throw new InvalidOperationException(
                 "Не удалось сохранить доступ к выбранной папке. Выберите её повторно или укажите другую папку");
         }
-        // Права на старую папку больше не нужны — отпускаем (у Android есть лимит на число таких прав)
-        ReleaseTree(except: uri);
-
-        settings.SaveFolderName = QueryTreeName(uri);
-        settings.SaveFolderUri = uri.ToString();
+        var previousUri = SelectedFolderUri;
+        SelectedFolderName = QueryTreeName(uri);
+        SelectedFolderUri = uri.ToString();
+        // Одна папка может одновременно использоваться книгами и журналами.
+        ReleasePreviousTree(previousUri, SelectedFolderUri);
         return true;
     }
 
-    /// <summary>Возврат к «Загрузки/Elib2Ebook».</summary>
+    /// <summary>Возврат к папке назначения по умолчанию для книг или журналов.</summary>
     public void ResetFolder()
     {
-        ReleaseTree(except: null);
-        settings.SaveFolderUri = string.Empty;
-        settings.SaveFolderName = string.Empty;
+        var previousUri = SelectedFolderUri;
+        SelectedFolderUri = string.Empty;
+        SelectedFolderName = string.Empty;
+        ReleasePreviousTree(previousUri, nextUri: null);
     }
 
     /// <summary>
@@ -370,7 +397,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// Android 7–9: копирование в /sdcard/Download/Elib2Ebook[/подпапка] по пути (нужно разрешение на запись,
     /// см. EnsureWriteAccessAsync). Имена при совпадении нумеруются так же, как это делает MediaStore.
     /// </summary>
-    private static AUri SaveToLegacyDownloads(string folder, string name, string sourcePath, CancellationToken cancellationToken, Action<long> report)
+    private AUri SaveToLegacyDownloads(string folder, string name, string sourcePath, CancellationToken cancellationToken, Action<long> report)
     {
 #pragma warning disable CA1422 // устарело в Android 10 — но это как раз ветка для Android 7–9
         var downloads = AEnvironment.GetExternalStoragePublicDirectory(AEnvironment.DirectoryDownloads)!.AbsolutePath;
@@ -417,7 +444,7 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     /// IsPending=1 прячет файл от других приложений, пока он не дописан; после копирования снимаем флаг.
     /// </summary>
     [SupportedOSPlatform("android29.0")]
-    private static AUri SaveToDownloads(string folder, string name, string sourcePath, CancellationToken cancellationToken, Action<long> report)
+    private AUri SaveToDownloads(string folder, string name, string sourcePath, CancellationToken cancellationToken, Action<long> report)
     {
         var relativePath = string.Join('/', new[] { AEnvironment.DirectoryDownloads, DefaultFolder, folder }.Where(s => !string.IsNullOrEmpty(s))) + "/";
 
@@ -525,41 +552,43 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         cancellationToken.ThrowIfCancellationRequested();
     }
 
-    /// <summary>Выбрана ли своя папка и есть ли к ней ещё доступ (иначе тихо возвращаемся к «Загрузкам»).</summary>
-    private bool HasTree()
+    /// <summary>Снимок назначения для одной операции; настройки при проверке не меняются.</summary>
+    private string ResolveSelectedUriForWrite()
     {
-        if (string.IsNullOrEmpty(settings.SaveFolderUri))
+        var selectedUri = SelectedFolderUri;
+        return StorageDestinationPolicy.ResolveForWrite(selectedUri,
+            string.IsNullOrEmpty(selectedUri) ? null : GetDestinationLabel(selectedUri, SelectedFolderName),
+            HasWritePermission);
+    }
+
+    private static bool HasWritePermission(string selectedUri)
+    {
+        try
+        {
+            return Resolver.PersistedUriPermissions.Any(p => p.Uri?.ToString() == selectedUri && p.IsWritePermission);
+        }
+        catch (Java.Lang.SecurityException)
         {
             return false;
         }
-
-        // Если доступ к папке отозван (например, её удалили), откатываемся на «Загрузки»
-        var uri = settings.SaveFolderUri;
-        var granted = Resolver.PersistedUriPermissions.Any(p => p.Uri?.ToString() == uri && p.IsWritePermission);
-        if (!granted)
-        {
-            settings.SaveFolderUri = string.Empty;
-            settings.SaveFolderName = string.Empty;
-        }
-
-        return granted;
     }
 
-    private void ReleaseTree(AUri except)
+    private void ReleasePreviousTree(string previousUri, string nextUri)
     {
-        foreach (var permission in Resolver.PersistedUriPermissions)
+        if (!StorageDestinationPolicy.ShouldReleasePermission(previousUri, nextUri, OtherFolderUri)) return;
+        try
         {
-            if (permission.Uri != null && !permission.Uri.Equals(except))
-            {
-                try
-                {
-                    Resolver.ReleasePersistableUriPermission(permission.Uri, TreeFlags);
-                }
-                catch
-                {
-                    // уже отозвано
-                }
-            }
+            // Отпускаем только прежний URI этого назначения и только реально выданные права.
+            // Остальные grants принадлежат другому назначению или другим функциям приложения.
+            var permission = Resolver.PersistedUriPermissions.FirstOrDefault(p => p.Uri?.ToString() == previousUri);
+            if (permission?.Uri == null) return;
+            var flags = (permission.IsReadPermission ? ActivityFlags.GrantReadUriPermission : 0) |
+                        (permission.IsWritePermission ? ActivityFlags.GrantWriteUriPermission : 0);
+            if (flags != 0) Resolver.ReleasePersistableUriPermission(permission.Uri, flags);
+        }
+        catch
+        {
+            // Уже отозванное разрешение не мешает пользоваться новым назначением.
         }
     }
 
@@ -586,14 +615,48 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
     {
         var document = DocumentsContract.BuildDocumentUriUsingTree(tree, DocumentsContract.GetTreeDocumentId(tree));
         var name = document == null ? null : QueryDisplayName(document);
-        if (!string.IsNullOrEmpty(name))
-        {
-            return name;
-        }
+        return GetDestinationLabel(tree.ToString(), name);
+    }
 
-        // primary:Books/Fantasy → Books/Fantasy
-        var id = DocumentsContract.GetTreeDocumentId(tree) ?? tree.ToString();
-        return id.Contains(':') ? id[(id.IndexOf(':') + 1)..] : id;
+    /// <summary>Подпись обновляется и для старых настроек с одним именем папки; ContentResolver не опрашивается.</summary>
+    private static string GetDestinationLabel(string selectedUri, string displayName)
+    {
+        try
+        {
+            var tree = AUri.Parse(selectedUri);
+            var id = DocumentsContract.GetTreeDocumentId(tree);
+            var volumeDescription = tree.Authority == "com.android.externalstorage.documents"
+                ? GetVolumeDescription(id)
+                : null;
+            // DocumentsContract уже декодировал ID: повторное Unescape испортит имена с %2F и подобными символами.
+            return StorageFolderLabel.Format(tree.Authority, id, displayName, volumeDescription);
+        }
+        catch
+        {
+            // Повреждённая настройка не должна ронять экран; перед записью URI проверяется отдельно.
+            return StorageFolderLabel.Format(null, null, displayName);
+        }
+    }
+
+    private static string GetVolumeDescription(string documentId)
+    {
+        var separator = documentId?.IndexOf(':') ?? -1;
+        if (separator <= 0) return null;
+        var volumeId = documentId[..separator];
+        if (volumeId.Equals("primary", StringComparison.OrdinalIgnoreCase)) return null;
+        try
+        {
+            // StorageVolumes/Uuid/GetDescription доступны с API 24 (минимальная версия приложения).
+            var manager = Platform.AppContext.GetSystemService(Android.Content.Context.StorageService) as Android.OS.Storage.StorageManager;
+            var volume = manager?.StorageVolumes.FirstOrDefault(item =>
+                string.Equals(item.Uuid, volumeId, StringComparison.OrdinalIgnoreCase));
+            return volume?.GetDescription(Platform.AppContext);
+        }
+        catch
+        {
+            // Без описания formatter покажет «Накопитель <UUID>», не объявляя USB-носитель SD-картой.
+            return null;
+        }
     }
 
     /// <summary>Подпапка файла относительно корня рабочей папки, через «/» («» — файл в корне).</summary>
@@ -603,3 +666,6 @@ public sealed class AndroidBookStorage(AppSettings settings) : IBookStorage
         return folder == "." ? string.Empty : folder.Replace('\\', '/');
     }
 }
+
+/// <summary>Независимое назначение журналов; использует те же SAF/MediaStore проверки, что и книги.</summary>
+public sealed class AndroidLogStorage(AppSettings settings) : AndroidBookStorage(settings, forLogs: true), ILogStorage;

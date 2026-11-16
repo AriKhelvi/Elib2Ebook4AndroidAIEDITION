@@ -46,6 +46,37 @@ public class LitnetSeriesTests
     }
 
     [Fact]
+    public async Task ObservedAngularHeaderSuppliesCycleNameWithoutInventingItsUrl()
+    {
+        // Минимальный фрагмент публичной HTML-карточки книги 640815, проверенной 16.11.2026.
+        const string html = "<p _ngcontent-ng-c3891098187 class='view-book-page-header-desktop__cycle ng-star-inserted' jsaction='click:;'>" +
+            " В цикле: <span _ngcontent-ng-c3891098187>Марсианские Хроники</span></p>";
+        var log = new WarningLogger();
+        using var getter = Create(html, 2, log);
+
+        using var book = await getter.Get(BookUrl);
+
+        Assert.Equal("Марсианские Хроники", book.Seria.Name);
+        Assert.Equal("2", book.Seria.Number);
+        Assert.Null(book.Seria.Url);
+        Assert.Empty(log.Warnings);
+    }
+
+    [Fact]
+    public async Task EmptyAngularHeaderDoesNotUseUnrelatedRecommendationCycle()
+    {
+        const string html = "<p class='view-book-page-header-desktop__cycle'>В цикле: <span>   </span></p>" +
+            "<aside><a href='/ru/another-author/novels?sort=cycles'>Чужой цикл</a></aside>";
+        var log = new WarningLogger();
+        using var getter = Create(html, 3, log);
+
+        using var book = await getter.Get(BookUrl);
+
+        Assert.Null(book.Seria);
+        Assert.Single(log.Warnings);
+    }
+
+    [Fact]
     public async Task UnrelatedCycleLinkIsNotUsedAsBookSeries()
     {
         const string html = "<aside><a href='/ru/another-author/novels?sort=cycles'>Другой цикл</a></aside>";
@@ -69,6 +100,16 @@ public class LitnetSeriesTests
         Assert.Equal("Книга", book.Title);
         Assert.Null(book.Seria);
         Assert.Contains("403", Assert.Single(log.Warnings));
+    }
+
+    [Fact]
+    public async Task RateLimitedOptionalSeriesPropagatesToStopPreviewFallback()
+    {
+        using var getter = Create("", 1, new WarningLogger(), HttpStatusCode.TooManyRequests);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUrl));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, error.StatusCode);
     }
 
     [Theory]
@@ -108,7 +149,7 @@ public class LitnetSeriesTests
         using var config = AfAuditSupport.Config(new AfAuditSupport.Handler(request =>
         {
             requests.Add(request.RequestUri);
-            Assert.Equal("api.litnet.com", request.Headers.Host);
+            Assert.Equal("sapi.litnet.com", request.Headers.Host);
             return new HttpResponseMessage(status) { Content = new StringContent("<html>Вход отклонён</html>") };
         }), new Options { Login = "reader@example.test", Password = "password" });
         using var getter = new LitnetGetter(config);

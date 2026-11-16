@@ -6,6 +6,7 @@
 @inject AppSettings Settings
 @inject FormState Form
 @inject CredentialStore Credentials
+@inject LitnetAuthService LitnetAuth
 @inject IBookStorage Storage
 @inject ToastService Toasts
 @inject IJSRuntime Js
@@ -64,11 +65,19 @@
                 }
             </div>
             <div class="card-body">
+                @if (Downloads.MangaLimitExceeded)
+                {
+                    <img class="manga-limit-image" src="images/manga-chapter-limit.png" width="1191" height="1321"
+                         alt="Иллюстрация к превышению лимита глав манги" />
+                }
                 @foreach (var error in errors)
                 {
                     <p class="error-text">@error</p>
                 }
-                <p class="card-subtitle">Подробности — в журнале ниже. Если сайт требует входа, заполните «Вход на сайт»; при таймаутах увеличьте таймаут в настройках.</p>
+                @if (!Downloads.MangaLimitExceeded)
+                {
+                    <p class="card-subtitle">Подробности — в журнале ниже. Если сайт требует входа, заполните «Вход на сайт»; при таймаутах увеличьте таймаут в настройках.</p>
+                }
             </div>
         </section>
     }
@@ -78,7 +87,14 @@
         <section class="card" aria-label="Предупреждения загрузки">
             <div class="card-body">
                 <h2 class="card-title">Предупреждения: @Downloads.WarningCount</h2>
-                <p>Книга сохранена, но часть содержимого может отсутствовать. Проверьте её перед чтением.</p>
+                @if (saved.Any(file => file.IsBook))
+                {
+                    <p>Сохранённые файлы показаны выше. Ниже — предупреждения, полученные при скачивании.</p>
+                }
+                else
+                {
+                    <p>Книга не сохранена. Ниже — предупреждения, полученные при скачивании.</p>
+                }
                 @foreach (var warning in Downloads.Warnings.Take(10))
                 {
                     <p class="card-subtitle">@warning</p>
@@ -182,20 +198,8 @@
             <p class="supporting-text flush">@FormatHint</p>
         </section>
 
-        <!-- Картинки, вход, диапазон глав -->
+        <!-- Вход и диапазон глав -->
         <section class="card" aria-label="Параметры">
-            <label class="list-item two-line">
-                <span class="list-item-leading"><Icon Name="image" /></span>
-                <span class="list-item-text">
-                    <span class="list-item-headline">Картинки в книге</span>
-                    <span class="list-item-supporting">@(_format == "cbz" ? "Для CBZ картинки нужны всегда" : Settings.Images ? "Обложка и иллюстрации" : "Только текст — файл легче")</span>
-                </span>
-                <input type="checkbox" role="switch" class="switch" checked="@(Settings.Images || _format == "cbz")" disabled="@(_format == "cbz")"
-                       @onchange="e => Settings.Images = (bool)e.Value!" />
-            </label>
-
-            <hr class="divider" />
-
             <button type="button" class="list-item two-line" aria-expanded="@(Form.ShowAuth ? "true" : "false")" @onclick="() => Form.ShowAuth = !Form.ShowAuth">
                 <span class="list-item-leading"><Icon Name="lock" /></span>
                 <span class="list-item-text">
@@ -207,6 +211,12 @@
             @if (Form.ShowAuth)
             {
                 <div class="expand-body">
+                    @if (CurrentHost == "litnet.com")
+                    {
+                        <LitnetLoginPanel />
+                    }
+                    else
+                    {
                     <div class="text-field">
                         <label class="text-field-label" for="login">Логин</label>
                         <input id="login" type="text" class="text-field-input" placeholder="Логин или почта" autocomplete="username" autocapitalize="off" spellcheck="false"
@@ -225,6 +235,7 @@
                         <input type="checkbox" class="checkbox" @bind="Form.RememberCredentials" />
                         <span>Запомнить для @(CurrentHost ?? "этого сайта")</span>
                     </label>
+                    }
                 </div>
             }
 
@@ -357,14 +368,14 @@
     {
         get
         {
+            if (_comic)
+            {
+                return "Манга и комиксы сохраняются только в CBZ. Формат выбран автоматически.";
+            }
+
             if (_manual)
             {
                 return FormatDescription(_format) + " Выбран только для этой ссылки.";
-            }
-
-            if (_comic && _format == "cbz" && Settings.AutoFormat)
-            {
-                return "CBZ выбран автоматически: сайт распознан как манга или комиксы (экспериментально, отключается в настройках).";
             }
 
             if (_format == Settings.TextFormat)
@@ -387,6 +398,8 @@
     {
         get
         {
+            if (CurrentHost == "litnet.com")
+                return LitnetAuth.HasSession ? "Litnet: вход выполнен" : "Litnet: вход для купленных книг";
             if (HasSavedLogin && Form.CredentialsAutoFilled)
             {
                 return $"Сохранён для {CurrentHost}: {Form.Login}";
@@ -418,6 +431,9 @@
     protected override async Task OnInitializedAsync()
     {
         Downloads.Changed += OnChanged;
+        LitnetAuth.Changed += OnChanged;
+        try { await LitnetAuth.InitializeAsync(); }
+        catch (LitnetAuthStorageException error) { Toasts.Show(error.Message, ToastKind.Error, 8); }
         // Ссылка могла остаться в поле с прошлого раза (переход между вкладками) — сразу проверяем сайт и формат
         await CheckSite();
         SharedLinkInbox.Arrived += OnSharedLink;
@@ -469,6 +485,13 @@
 
         // Подставляем сохранённый логин, когда в поле появилась ссылка на другой сайт
         var host = CurrentHost;
+        if (host == "litnet.com")
+        {
+            Form.Login = Form.Password = string.Empty;
+            Form.CredentialsAutoFilled = false;
+            Form.CredentialsHost = host;
+            return;
+        }
         if (host == null || host == Form.CredentialsHost)
         {
             return;
@@ -513,7 +536,7 @@
 
     /// <summary>
     /// Проверки по ссылке в поле: есть ли загрузчик для сайта и какой формат взять.
-    /// Формат выбирается заново для каждой новой ссылки: манга и комиксы → CBZ (если распознавание включено),
+    /// Формат выбирается заново для каждой новой ссылки: манга и комиксы → только CBZ,
     /// остальное → текстовый формат по умолчанию из настроек. Ручной выбор живёт до смены ссылки.
     /// </summary>
     private async Task CheckSite()
@@ -525,7 +548,7 @@
         if (url != _formatUrl)
         {
             _formatUrl = url;
-            _format = FormatSupport.ForUrl(url, Settings.TextFormat, Settings.AutoFormat);
+            _format = FormatSupport.ForUrl(url, Settings.TextFormat);
             _manual = false;
         }
 
@@ -541,7 +564,7 @@
     /// <summary>Ручной выбор — только для текущей ссылки; формат по умолчанию задаётся в настройках.</summary>
     private void PickFormat(string format)
     {
-        _format = format;
+        _format = FormatSupport.Fit(format, _comic);
         _manual = true;
     }
 
@@ -620,7 +643,7 @@
             }
         }
 
-        var hasLogin = !string.IsNullOrWhiteSpace(Form.Login) && !string.IsNullOrWhiteSpace(Form.Password);
+        var hasLogin = CurrentHost != "litnet.com" && !string.IsNullOrWhiteSpace(Form.Login) && !string.IsNullOrWhiteSpace(Form.Password);
         if (hasLogin && Form.RememberCredentials && CurrentHost != null)
         {
             if (await Credentials.SaveAsync(CurrentHost, new SiteCredential(Form.Login.Trim(), Form.Password)))
@@ -637,8 +660,10 @@
         {
             Urls = urls,
             Formats = [_format],
-            // Без ручного выбора у каждой ссылки свой формат по сайту: манга → CBZ, остальное → текстовый по умолчанию
-            FormatByUrl = _manual ? null : urls.ToDictionary(u => u, u => FormatSupport.ForUrl(u, Settings.TextFormat, Settings.AutoFormat)),
+            // Ручной выбор относится только к текущей ссылке; остальные получают свой формат по сайту.
+            FormatByUrl = urls.ToDictionary(u => u, u => _manual && u == _formatUrl
+                ? FormatSupport.Fit(_format, FormatSupport.IsComic(u))
+                : FormatSupport.ForUrl(u, Settings.TextFormat)),
             Login = hasLogin ? Form.Login : null,
             Password = hasLogin ? Form.Password : null,
             // Для CBZ «без картинок» не применяется (см. DownloadManager.BuildOptions) — архив вышел бы пустым
@@ -671,6 +696,7 @@
     public void Dispose()
     {
         Downloads.Changed -= OnChanged;
+        LitnetAuth.Changed -= OnChanged;
         SharedLinkInbox.Arrived -= OnSharedLink;
     }
 }

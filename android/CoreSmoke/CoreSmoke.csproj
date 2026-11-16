@@ -25,12 +25,15 @@
     <ItemGroup>
         <Compile Include="..\E2E.Droid\Services\GetterResolver.cs" Link="Shared\GetterResolver.cs" />
         <Compile Include="..\E2E.Droid\Services\BookPipeline.cs" Link="Shared\BookPipeline.cs" />
+        <Compile Include="..\E2E.Droid\Services\MangaDownloadLimit.cs" Link="Shared\MangaDownloadLimit.cs" />
+        <Compile Include="..\E2E.Droid\Services\FormatSupport.cs" Link="Shared\FormatSupport.cs" />
         <Compile Include="..\E2E.Droid\Services\CallbackLogger.cs" Link="Shared\CallbackLogger.cs" />
         <Compile Include="..\E2E.Droid\Services\Formatting.cs" Link="Shared\Formatting.cs" />
         <Compile Include="..\E2E.Droid\Services\SharedLinkInbox.cs" Link="Shared\SharedLinkInbox.cs" />
         <Compile Include="..\E2E.Droid\Services\SupportedSites.cs" Link="Shared\SupportedSites.cs" />
         <Compile Include="..\E2E.Droid\Services\SiteDiagnosticCatalog.cs" Link="Shared\SiteDiagnosticCatalog.cs" />
         <Compile Include="..\E2E.Droid\Services\SiteDiagnosticBatch.cs" Link="Shared\SiteDiagnosticBatch.cs" />
+        <Compile Include="..\E2E.Droid\Services\SiteRateLimitScope.cs" Link="Shared\SiteRateLimitScope.cs" />
         <Compile Include="..\E2E.Droid\Services\DiagnosticBookChecks.cs" Link="Shared\DiagnosticBookChecks.cs" />
         <Compile Include="..\E2E.Droid\Services\CertificatePolicy.cs" Link="Shared\CertificatePolicy.cs" />
         <EmbeddedResource Include="..\..\README.md" LogicalName="Elib2Ebook.README.md" />

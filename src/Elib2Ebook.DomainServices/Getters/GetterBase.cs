@@ -107,6 +107,8 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
             return image;
         }
         catch (OperationCanceledException) { throw; }
+        // После ограничения частоты нельзя продолжать закачку остальных картинок как после обычного 404.
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests) { throw; }
         catch (Exception ex)
         {
             Config.Logger.LogWarning($"Не удалось загрузить изображение {label}: {LogText.Clean(ex.Message)}");
@@ -297,6 +299,12 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         var images = new List<TempFile>();
         foreach (var img in doc.QuerySelectorAll("img"))
         {
+            if (Config.Options.NoImage)
+            {
+                img.Remove();
+                continue;
+            }
+
             var path = img.Attributes["src"]?.Value;
             if (string.IsNullOrWhiteSpace(path))
             {
@@ -343,27 +351,30 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
             end = GetIndexByName(toc, selector, endName);
         }
 
+        IEnumerable<T> selected;
         if (start.HasValue && end.HasValue)
         {
             var startIndex = start.Value >= 0 ? start.Value : toc.Count + start.Value + 1;
             var endIndex = end.Value >= 0 ? end.Value : toc.Count + end.Value;
 
-            return toc.Skip(startIndex - 1).Take(endIndex - startIndex + 1);
+            selected = toc.Skip(startIndex - 1).Take(endIndex - startIndex + 1);
         }
-
-        if (start.HasValue)
+        else if (start.HasValue)
         {
             var startIndex = start.Value >= 0 ? start.Value : toc.Count + start.Value + 1;
-            return toc.Skip(startIndex - 1);
+            selected = toc.Skip(startIndex - 1);
         }
-
-        if (end.HasValue)
+        else if (end.HasValue)
         {
             var endIndex = end.Value >= 0 ? end.Value : toc.Count + end.Value;
-            return toc.Take(endIndex);
+            selected = toc.Take(endIndex);
         }
+        else selected = toc;
 
-        return toc;
+        // Проверяем оглавление до первого запроса главы, чтобы не тратить трафик
+        // и не превращать превышение лимита в молча обрезанную книгу.
+        Config.ValidateSelectedChapterCount?.Invoke(selected.Count());
+        return selected;
     }
 
     private static HtmlDocument GetContent(EpubBook epubBook, EpubChapter epubChapter)
@@ -446,6 +457,12 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
     }
 
     public abstract Task<Book> Get(Uri url);
+
+    /// <summary>
+    /// Быстрая карточка при включённом NoChapters. По умолчанию сохраняет обычное поведение загрузчика;
+    /// отдельные сайты могут отложить необязательные сетевые метаданные до полной загрузки.
+    /// </summary>
+    public virtual Task<Book> GetPreview(Uri url) => Get(url);
 
     public virtual Task Init()
     {

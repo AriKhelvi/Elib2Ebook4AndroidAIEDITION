@@ -133,4 +133,28 @@ public static class GetterResolver
 
         throw new ArgumentException($"Сайт {url.Host} не поддерживается");
     }
+
+    /// <summary>Основной сайт загрузчика: его зеркала делят ограничение запросов в одном запуске.</summary>
+    internal static string SiteHost(Uri url)
+    {
+        var site = url;
+        try
+        {
+            // Только распознаём ссылку: Init/Authorize/Get не вызываются, сетевых запросов нет.
+            using var config = new BookGetterConfig(new Options(), null, null, null,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+            var getter = Create(config, url);
+            if (typeof(GetterBase).GetProperty("SystemUrl", BindingFlags.Instance | BindingFlags.NonPublic)
+                    ?.GetValue(getter) is Uri systemUrl)
+                site = systemUrl;
+        }
+        catch
+        {
+            // Неподдерживаемый адрес или загрузчик с нестандартным конструктором: сравниваем сам домен.
+        }
+        var host = site.IdnHost.ToLowerInvariant();
+        if (host.StartsWith("www.", StringComparison.Ordinal)) host = host[4..];
+        // MangaLibOrgGetter выделен в отдельный класс, но использует тот же сайт API (SiteId=1).
+        return host == "mangalib.org" ? "mangalib.me" : host;
+    }
 }

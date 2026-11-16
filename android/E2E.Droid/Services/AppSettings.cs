@@ -10,6 +10,9 @@ namespace E2E.Droid.Services;
 public sealed class AppSettings
 {
     public const string DefaultBookNamePattern = "{Author.Name} - {Book.Title}";
+    private const string AdditionalTypesMigrationKey = "AdditionalTypesAudioImagesV1";
+    private static readonly object AdditionalTypesMigrationSync = new();
+    private static readonly string[] AvailableAdditionalTypes = ["audio", "images"];
 
     /// <summary>Android SharedPreferences через MAUI Essentials: простые значения, переживают перезапуск.</summary>
     private static IPreferences P => Preferences.Default;
@@ -42,13 +45,6 @@ public sealed class AppSettings
             return Formats.FirstOrDefault(FormatSupport.TextFormats.Contains) ?? "epub";
         }
         set => Set(nameof(TextFormat), FormatSupport.TextFormats.Contains(value) ? value : "epub");
-    }
-
-    /// <summary>Экспериментально: распознавать сайты с мангой и комиксами и выбирать для них CBZ.</summary>
-    public bool AutoFormat
-    {
-        get => P.Get(nameof(AutoFormat), true);
-        set => Set(nameof(AutoFormat), value);
     }
 
     /// <summary>Таймаут одного запроса в секундах (--timeout, по умолчанию 120).</summary>
@@ -163,7 +159,7 @@ public sealed class AppSettings
         set => Set(nameof(BookNamePattern), string.IsNullOrWhiteSpace(value) ? DefaultBookNamePattern : value.Trim());
     }
 
-    /// <summary>Картинки в книге (обложка и иллюстрации). Выключено — как --no-image консольной версии.</summary>
+    /// <summary>Иллюстрации в главах. Выключено — как --no-image; встроенная обложка EPUB/FB2 остаётся.</summary>
     public bool Images
     {
         get => P.Get(nameof(Images), true);
@@ -177,18 +173,59 @@ public sealed class AppSettings
         set => Set(nameof(Cover), value);
     }
 
-    /// <summary>Сохранять дополнительные файлы со страницы книги (--additional).</summary>
+    /// <summary>Сохранять дополнительные аудиофайлы и картинки глав (--additional).</summary>
     public bool Additional
     {
-        get => P.Get(nameof(Additional), false);
-        set => Set(nameof(Additional), value);
+        get
+        {
+            MigrateAdditionalTypes();
+            return P.Get(nameof(Additional), false);
+        }
+        set
+        {
+            MigrateAdditionalTypes();
+            // Пользователь явно включает дополнения после снятия последнего типа.
+            if (value && AdditionalTypes.Count == 0)
+                P.Set(nameof(AdditionalTypes), string.Join(',', AvailableAdditionalTypes));
+            Set(nameof(Additional), value);
+        }
     }
 
-    /// <summary>books, audio, images; пусто — все типы.</summary>
+    /// <summary>Явно выбранные audio/images. Пустой набор выключает дополнительные файлы.</summary>
     public IReadOnlyList<string> AdditionalTypes
     {
-        get => Split(P.Get(nameof(AdditionalTypes), string.Empty));
-        set => Set(nameof(AdditionalTypes), string.Join(',', value));
+        get
+        {
+            MigrateAdditionalTypes();
+            return NormalizeAdditionalTypes(Split(P.Get(nameof(AdditionalTypes), string.Empty)));
+        }
+        set
+        {
+            MigrateAdditionalTypes();
+            var selected = NormalizeAdditionalTypes(value);
+            if (selected.Count == 0) P.Set(nameof(Additional), false);
+            Set(nameof(AdditionalTypes), string.Join(',', selected));
+        }
+    }
+
+    private static IReadOnlyList<string> NormalizeAdditionalTypes(IEnumerable<string> types)
+        => (types ?? []).Select(type => type?.Trim().ToLowerInvariant())
+            .Where(type => AvailableAdditionalTypes.Contains(type)).Distinct().ToArray();
+
+    private static void MigrateAdditionalTypes()
+    {
+        if (P.Get(AdditionalTypesMigrationKey, false)) return;
+        lock (AdditionalTypesMigrationSync)
+        {
+            if (P.Get(AdditionalTypesMigrationKey, false)) return;
+            var previous = Split(P.Get(nameof(AdditionalTypes), string.Empty));
+            // Раньше пустой список означал все типы, включая исходные файлы книг.
+            var selected = previous.Count == 0 ? AvailableAdditionalTypes : NormalizeAdditionalTypes(previous);
+            // Выбор только удалённого типа не должен неожиданно включить аудио и картинки.
+            if (selected.Count == 0) P.Set(nameof(Additional), false);
+            P.Set(nameof(AdditionalTypes), string.Join(',', selected));
+            P.Set(AdditionalTypesMigrationKey, true);
+        }
     }
 
     /// <summary>Начинать скачивание сразу, как только ссылка пришла через «Поделиться».</summary>
@@ -212,6 +249,19 @@ public sealed class AppSettings
     {
         get => P.Get(nameof(SaveFolderName), string.Empty);
         set => Set(nameof(SaveFolderName), value ?? string.Empty);
+    }
+
+    /// <summary>Папка журналов из «Отладки»; пусто — Загрузки/Elib2Ebook/Logs.</summary>
+    public string LogFolderUri
+    {
+        get => P.Get(nameof(LogFolderUri), string.Empty);
+        set => Set(nameof(LogFolderUri), value ?? string.Empty);
+    }
+
+    public string LogFolderName
+    {
+        get => P.Get(nameof(LogFolderName), string.Empty);
+        set => Set(nameof(LogFolderName), value ?? string.Empty);
     }
 
     private void Set<T>(string key, T value)

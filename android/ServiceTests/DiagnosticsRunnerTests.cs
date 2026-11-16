@@ -40,6 +40,117 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         Assert.False((bool)typeof(DiagnosticsRunner).GetField("_completed", PrivateInstance)!.GetValue(runner)!);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TlsRateLimitSkipsLaterBookOnMirrorButAllowsAnotherSite(bool alternativeTls)
+    {
+        using var fixture = RateLimitFixture.Use();
+        var runner = CreateRunner();
+        var probe = alternativeTls
+            ? new TlsProbeResult { Tls12HttpStatusCode = 429 }
+            : new TlsProbeResult { Ok = true, HttpStatusCode = 429 };
+        Invoke(runner, "RecordProbeRateLimit", RateLimitFixture.Site, probe);
+
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Зеркало", RateLimitFixture.Mirror + "/next", 1, 1, CancellationToken.None);
+
+        Assert.Empty(RateLimitFixture.Requests);
+        Assert.Contains(runner.Log, line => line.Contains("[skip]") && line.Contains("HTTP 429"));
+        Assert.Equal(1, typeof(DiagnosticsRunner).GetField("_skipped", PrivateInstance)!.GetValue(runner));
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Другой сайт", RateLimitFixture.Other + "/next", 1, 1, CancellationToken.None);
+        Assert.Contains(RateLimitFixture.Other + "/next", RateLimitFixture.Requests);
+        Assert.Equal(0, typeof(DiagnosticsRunner).GetField("_failed", PrivateInstance)!.GetValue(runner));
+    }
+
+    [Fact]
+    public async Task DownloadProbeRateLimitSkipsFollowingAliasAndNewRunClearsTheLimit()
+    {
+        using var fixture = RateLimitFixture.Use();
+        var runner = CreateRunner();
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Первая книга", RateLimitFixture.Site + "/limited", 1, 1, CancellationToken.None);
+        var requestsAfterFailure = RateLimitFixture.Requests.Count;
+        Assert.True(requestsAfterFailure > 0);
+
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Следующая книга", RateLimitFixture.Mirror + "/next", 1, 1, CancellationToken.None);
+
+        Assert.Equal(requestsAfterFailure, RateLimitFixture.Requests.Count);
+        Assert.Contains(runner.Log, line => line.Contains("[skip]") && line.Contains("HTTP 429"));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        // Начало нового запуска сбрасывает лимит; отмена до первого шага исключает сеть из теста.
+        await InvokeAsync(runner, "RunAsync", cancelled.Token, false);
+        var scope = (SiteRateLimitScope)typeof(DiagnosticsRunner).GetField("_rateLimits", PrivateInstance)!.GetValue(runner)!;
+        Assert.False(scope.TryGetReason(RateLimitFixture.Mirror + "/next", out _));
+    }
+
+    [Fact]
+    public async Task OldDeviceStepSkipsRateLimitedNetworkProbeButStillChecksForgedCertificate()
+    {
+        var runner = CreateRunner();
+        Invoke(runner, "RecordProbeRateLimit", "https://author.today/", new TlsProbeResult { Ok = true, HttpStatusCode = 429 });
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+
+        // Отменённый токен не должен дойти до сетевого вызова; локальные проверки продолжаются.
+        await InvokeAsync(runner, "StepOldDeviceAsync", stop.Token);
+
+        Assert.Contains(runner.Log, line => line.Contains("[skip]") && line.Contains("author.today") && line.Contains("HTTP 429"));
+        Assert.Contains(runner.Log, line => line.Contains("подставной сертификат отклонён"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ComicDownloadProbeChecksCbzPagesWithoutRequiringTextEvenWhenImagesSettingIsOff(bool invalidImage)
+    {
+        using var fixture = new DiagnosticComicResolverScope();
+        var settings = new AppSettings { Images = false, BookNamePattern = "diagnostic-comic" };
+        var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
+        var url = "https://mangalib.me/ru/manga/" + (invalidImage ? "invalid" : "valid");
+
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Пробный комикс", url, 1, 1, CancellationToken.None);
+
+        Assert.Contains(runner.Log, line => line.Contains(".cbz: файлов 1"));
+        Assert.Contains(runner.Log, line => line.Contains("CBZ: изображений 1"));
+        Assert.Contains(runner.Log, line => line.Contains(invalidImage ? "[FAIL]" : "[ok]") &&
+            line.Contains($"CBZ: неверных сигнатур изображений {(invalidImage ? 1 : 0)}"));
+        Assert.DoesNotContain(runner.Log, line => line.Contains("FB2 + EPUB") || line.Contains("есть непустые главы") || line.Contains("созданы оба формата"));
+        Assert.Equal(invalidImage ? 1 : 0, typeof(DiagnosticsRunner).GetField("_failed", PrivateInstance)!.GetValue(runner));
+        Assert.Equal(0, typeof(DiagnosticsRunner).GetField("_warnings", PrivateInstance)!.GetValue(runner));
+        Assert.Contains(runner.Log, line => line.Contains("временные книги удалены"));
+    }
+
+    [Fact]
+    public async Task DownloadLogExportUsesIndependentDestinationWhenBookFolderIsUnavailable()
+    {
+        var books = new CapturingStorage { WriteAccess = Task.FromException<bool>(new InvalidOperationException("Карта недоступна")) };
+        var manager = new DownloadManager(new AppSettings(), books, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(new AppSettings(), books, _platform, manager, _toasts, _storage);
+
+        var file = await runner.SaveDownloadLogAsync();
+
+        Assert.NotNull(file);
+        Assert.Contains("журнал скачивания", _storage.Text);
+        Assert.Contains("# Папка журналов:", _storage.Text);
+        Assert.Null(books.Text);
+    }
+
+    [Fact]
+    public async Task DeniedLogFolderDoesNotSendExportToBookFolder()
+    {
+        var books = new CapturingStorage();
+        _storage.WriteAccess = Task.FromResult(false);
+        var manager = new DownloadManager(new AppSettings(), books, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(new AppSettings(), books, _platform, manager, _toasts, _storage);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => runner.SaveDownloadLogAsync());
+
+        Assert.Contains("папке журналов", exception.Message);
+        Assert.Null(books.Text);
+        Assert.Null(_storage.Text);
+    }
+
     [Fact]
     public void WarningIsIncludedInTheShortReportAndDoesNotBecomeSuccessfulCheck()
     {
@@ -227,7 +338,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
     {
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        return new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        return new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
     }
 
     [Fact]
@@ -261,7 +372,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         foreach (var path in new[] { book, history, exported }) File.WriteAllText(path, "Сохранённые данные");
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
         var job = typeof(DownloadManager).GetField("_job", PrivateInstance)!.GetValue(downloads);
         var append = typeof(DownloadManager).GetMethod("AppendLog", PrivateInstance)!;
         append.Invoke(downloads, [job, "Старый журнал скачивания"]);
@@ -288,7 +399,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         _storage.WriteAccess = permission.Task;
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
         var starting = downloads.StartAsync(new DownloadRequest { Urls = ["https://example.test/book/1"] });
         try
         {
@@ -310,7 +421,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         _storage.WriteAccess = permission.Task;
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
         var starting = runner.StartAllSitesAsync();
         Task<bool> ordinary = null;
         try
@@ -369,7 +480,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         public void Set<T>(string key, T value, string sharedName = null) => _values[key] = value;
     }
 
-    private sealed class CapturingStorage : IBookStorage
+    private sealed class CapturingStorage : ILogStorage
     {
         public string DestinationLabel => "Тестовая папка";
         public string Text { get; private set; }

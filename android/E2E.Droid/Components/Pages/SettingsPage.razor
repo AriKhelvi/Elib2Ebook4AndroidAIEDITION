@@ -8,6 +8,7 @@
 @inject DiagnosticsRunner Diagnostics
 @inject DownloadManager Downloads
 @inject IBookStorage Storage
+@inject ILogStorage LogStorage
 @inject CredentialStore Credentials
 @inject IPlatformServices Platform
 @inject ToastService Toasts
@@ -53,8 +54,21 @@
 
             <hr class="divider" />
 
-            <label class="list-item">
-                <span class="list-item-text"><span class="list-item-headline">Обложка отдельным файлом</span></span>
+            <label class="list-item two-line">
+                <span class="list-item-text">
+                    <span class="list-item-headline">Иллюстрации в главах</span>
+                    <span class="list-item-supporting">Картинки внутри текста. Обложка EPUB/FB2 остаётся при выключении. Для CBZ страницы скачиваются всегда</span>
+                </span>
+                <input type="checkbox" role="switch" class="switch" checked="@Settings.Images" @onchange="e => Settings.Images = (bool)e.Value!" />
+            </label>
+
+            <hr class="divider" />
+
+            <label class="list-item two-line">
+                <span class="list-item-text">
+                    <span class="list-item-headline">Обложка отдельным файлом</span>
+                    <span class="list-item-supporting">На обложку внутри EPUB/FB2 эта настройка не влияет</span>
+                </span>
                 <input type="checkbox" role="switch" class="switch" checked="@Settings.Cover" @onchange="e => Settings.Cover = (bool)e.Value!" />
             </label>
 
@@ -63,7 +77,7 @@
             <label class="list-item two-line">
                 <span class="list-item-text">
                     <span class="list-item-headline">Дополнительные файлы</span>
-                    <span class="list-item-supporting">Вложения со страницы книги: аудио, файлы, картинки глав</span>
+                    <span class="list-item-supporting">Аудио и картинки глав — отдельными файлами</span>
                 </span>
                 <input type="checkbox" role="switch" class="switch" checked="@Settings.Additional" @onchange="e => Settings.Additional = (bool)e.Value!" />
             </label>
@@ -83,7 +97,7 @@
                             </button>
                         }
                     </div>
-                    <p class="supporting-text flush">Ничего не выбрано — все типы.</p>
+                    <p class="supporting-text flush">«Картинки глав» — отдельные копии загруженных иллюстраций. Сохранение обложки задаётся переключателем выше.</p>
                 </div>
             }
         </div>
@@ -110,20 +124,10 @@
                 </div>
                 <p class="supporting-text flush">
                     Для книг и ранобэ: этот формат получает каждая новая ссылка. Манга и комиксы распознаются по сайту
-                    и получают CBZ — поэтому после манги следующая книга снова будет в текстовом формате.
-                    На главном экране формат можно поменять для одной ссылки.
+                    и сохраняются только в CBZ — поэтому после манги следующая книга снова будет в текстовом формате.
+                    На главном экране текстовый формат можно поменять для одной ссылки.
                 </p>
             </div>
-
-            <hr class="divider" />
-
-            <label class="list-item two-line">
-                <span class="list-item-text">
-                    <span class="list-item-headline wrap">Распознавать мангу и комиксы (экспериментально)</span>
-                    <span class="list-item-supporting">Для сайтов с мангой и комиксами выбирать CBZ. Выключено — всем ссылкам текстовый формат по умолчанию</span>
-                </span>
-                <input type="checkbox" role="switch" class="switch" checked="@Settings.AutoFormat" @onchange="e => Settings.AutoFormat = (bool)e.Value!" />
-            </label>
 
             <hr class="divider" />
 
@@ -166,7 +170,7 @@
                         <p>
                             <b>Да</b> — книга начинает скачиваться сразу, без нажатия «Скачать». Формат выбирается сам: CBZ для
                             манги и комиксов, для остального — текстовый формат по умолчанию. Подставляется сохранённый вход на сайт,
-                            главы — все, картинки — как в переключателе на главном экране. Ход загрузки виден на главном экране
+                            главы — все, иллюстрации — по настройке «Иллюстрации в главах». Ход загрузки виден на главном экране
                             и в шторке, там же её можно отменить.
                         </p>
                         <p>
@@ -310,10 +314,11 @@
 
     <section class="section">
         <h2 class="section-title">Входы на сайты</h2>
+        <div class="card expand-body"><LitnetLoginPanel /></div>
         <div class="card list">
             @if (_hosts.Count == 0 && _editHost == null)
             {
-                <p class="card-note standalone">Пока нет. Вход сохраняется при скачивании, если в «Вход на сайт» отмечено «Запомнить», — или добавьте его здесь.</p>
+                <p class="card-note standalone">Для остальных сайтов входов пока нет. Они сохраняются при скачивании, если в «Вход на сайт» отмечено «Запомнить», — или добавьте их здесь.</p>
             }
 
             @foreach (var host in _hosts)
@@ -378,7 +383,7 @@
                         Запросит до 10 глав: пробную текстовую книгу, Rulate и Bllate (100–101), Litmarket и RanobeLib.
                         Некоторые сайты возвращают весь текст одним ответом.
                         Потребуется интернет. Через 3 минуты пример отменяется; завершение обработки может занять время. Временные книги удаляются.
-                        Идёт в фоне — приложение можно свернуть. Файл отчёта сохранится в «@Storage.DestinationLabel».
+                        Идёт в фоне — приложение можно свернуть. Файл отчёта сохранится в «@LogStorage.DestinationLabel».
                     </p>
                     <div class="text-field">
                         <label class="text-field-label" for="debug-url">Пробная книга</label>
@@ -429,7 +434,7 @@
                         <div class="card-actions compact">
                             @if (Diagnostics.Result != null)
                             {
-                                <button type="button" class="btn btn-tonal" @onclick="() => Storage.Share([Diagnostics.Result])"><Icon Name="share" Size="18" />Поделиться журналом</button>
+                                <button type="button" class="btn btn-tonal" @onclick="() => LogStorage.Share([Diagnostics.Result])"><Icon Name="share" Size="18" />Поделиться журналом</button>
                             }
                             <button type="button" class="btn btn-text" @onclick="CopyDiagnostics"><Icon Name="copy" Size="18" />Скопировать</button>
                         </div>
@@ -437,10 +442,23 @@
 
                     <hr class="divider" />
 
+                    <div class="list-item two-line">
+                        <span class="list-item-leading"><Icon Name="folder" /></span>
+                        <span class="list-item-text">
+                            <span class="list-item-headline">Папка журналов</span>
+                            <span class="list-item-supporting">@LogStorage.DestinationLabel</span>
+                        </span>
+                    </div>
+                    <div class="card-actions compact">
+                        <button type="button" class="btn btn-tonal" @onclick="PickLogFolder"><Icon Name="folder" Size="18" />Выбрать папку журналов</button>
+                        <button type="button" class="btn btn-text" @onclick="ResetLogFolder">В «Загрузки»</button>
+                    </div>
+                    <p class="supporting-text flush">По умолчанию: «Загрузки/Elib2Ebook/Logs». Эта настройка не меняет папку книг.</p>
+
                     <button type="button" class="btn btn-tonal btn-block" disabled="@(Downloads.Log.Count == 0 && !HasStartupLog)" aria-describedby="download-log-status" @onclick="SaveDownloadLog">
                         <Icon Name="log" Size="18" />Сохранить журнал скачивания и запуска
                     </button>
-                    <p id="download-log-status" class="supporting-text flush">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{Storage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</p>
+                    <p id="download-log-status" class="supporting-text flush">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{LogStorage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{LogStorage.DestinationLabel}»")</p>
                     <button type="button" class="btn btn-outlined btn-block" disabled="@(!Diagnostics.CanClearLogs)" @onclick="ClearLogs">
                         Очистить логи
                     </button>
@@ -509,9 +527,8 @@
 
     private static readonly (string Id, string Title)[] AdditionalTypes =
     [
-        ("books", "Книги"),
         ("audio", "Аудио"),
-        ("images", "Картинки")
+        ("images", "Картинки глав")
     ];
 
     private static readonly (bool Value, string Title)[] YesNo = [(true, "Да"), (false, "Нет")];
@@ -604,7 +621,7 @@
 
     private async Task LoadCredentials()
     {
-        _hosts = Credentials.Hosts;
+        _hosts = Credentials.Hosts.Where(host => host != "litnet.com").ToArray();
         foreach (var host in _hosts)
         {
             _logins[host] = (await Credentials.GetAsync(host))?.Login ?? "логин не прочитан";
@@ -634,6 +651,38 @@
     {
         Storage.ResetFolder();
         Toasts.Show($"Книги будут сохраняться в «{Storage.DestinationLabel}»", ToastKind.Info);
+    }
+
+    private async Task PickLogFolder()
+    {
+        try
+        {
+            if (await LogStorage.PickFolderAsync())
+            {
+                Toasts.Show($"Журналы будут сохраняться в «{LogStorage.DestinationLabel}»", ToastKind.Success);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Toasts.Show(ex.Message, ToastKind.Error, 10);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show($"Не удалось выбрать папку журналов: {ex.Message}", ToastKind.Error);
+        }
+    }
+
+    private void ResetLogFolder()
+    {
+        try
+        {
+            LogStorage.ResetFolder();
+            Toasts.Show($"Журналы будут сохраняться в «{LogStorage.DestinationLabel}»", ToastKind.Info);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show($"Не удалось изменить папку журналов: {ex.Message}", ToastKind.Error);
+        }
     }
 
     private void SavePattern()
@@ -729,13 +778,20 @@
         {
             <div class="text-field">
                 <label class="text-field-label" for="cred-site">Сайт</label>
-                <input id="cred-site" class="text-field-input" placeholder="author.today или ссылка на книгу" autocapitalize="off" spellcheck="false" inputmode="url" @bind="_editSite" />
+                <input id="cred-site" class="text-field-input" placeholder="author.today или ссылка на книгу" autocapitalize="off" spellcheck="false" inputmode="url" @bind="_editSite" @bind:event="oninput" />
             </div>
         }
         else
         {
             <h3 class="section-label">@_editHost</h3>
         }
+        @if (EditingLitnet)
+        {
+            <LitnetLoginPanel />
+            <button type="button" class="btn btn-text" @onclick="CloseEditor">Закрыть</button>
+        }
+        else
+        {
         <div class="text-field">
             <label class="text-field-label" for="cred-login">Логин</label>
             <input id="cred-login" class="text-field-input" autocomplete="off" autocapitalize="off" spellcheck="false" @bind="_editLogin" />
@@ -756,7 +812,12 @@
                 <button type="button" class="btn btn-text btn-danger push-end" @onclick="RemoveCredential">Удалить</button>
             }
         </div>
+        }
     </div>;
+
+    private bool EditingLitnet => _editHost == "litnet.com"
+        || (string.IsNullOrEmpty(_editHost) && CredentialStore.NormalizeHost(
+            (_editSite ?? "").Contains("://", StringComparison.Ordinal) ? _editSite : "https://" + _editSite) == "litnet.com");
 
     private void AddCredential()
     {
@@ -795,6 +856,11 @@
             }
         }
 
+        if (host == "litnet.com")
+        {
+            Toasts.Show("Для Litnet используйте кнопку «Войти в Litnet»", ToastKind.Info);
+            return;
+        }
         if (string.IsNullOrWhiteSpace(_editLogin) || string.IsNullOrEmpty(_editPassword))
         {
             Toasts.Show("Нужны и логин, и пароль", ToastKind.Error);
@@ -855,7 +921,7 @@
             }
 
             Toasts.Show($"Сохранено: {file.Name}", ToastKind.Success, 4);
-            Storage.Share([file]);
+            LogStorage.Share([file]);
         }
         catch (Exception ex)
         {

@@ -8,6 +8,7 @@ using Elib2Ebook.DomainServices.Configs;
 using Elib2Ebook.DomainServices.Builders;
 using Elib2Ebook.DomainServices.Extensions;
 using Elib2Ebook.DomainServices.Getters;
+using Elib2Ebook.DomainServices.Misc;
 using Elib2Ebook.DomainServices.Misc.TempFolder;
 using Microsoft.Extensions.Logging.Abstractions;
 using E2E.Droid.Services;
@@ -16,6 +17,85 @@ namespace Elib2Ebook.DomainServices.Tests.Getters;
 
 public class EpubImportContentTests
 {
+    private static readonly byte[] Png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a52kAAAAASUVORK5CYII=");
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(false, false)]
+    public async Task ImportedEpubHonorsIllustrationSwitchWithAndWithoutToc(bool noImage, bool withToc)
+    {
+        using var config = new BookGetterConfig(new Options { NoImage = noImage }, new HttpClient(), new CookieContainer(), TempFolderFactory.Create(null), NullLogger.Instance);
+        using var getter = new ImportGetter(config);
+        using var file = await TempFile.Create(null, config.TempFolder.Path, "book.epub", CreateIllustratedEpub(withToc));
+
+        var chapter = Assert.Single(await getter.Import(file));
+        var doc = chapter.Content.AsHtmlDoc();
+        Assert.Contains("Текст главы", chapter.Content);
+        Assert.Contains("После рисунка", chapter.Content);
+        var link = Assert.Single(doc.DocumentNode.Descendants("a"), node => node.Attributes["href"] != null);
+        Assert.NotNull(doc.GetElementbyId(link.Attributes["href"].Value[1..]));
+        if (noImage)
+        {
+            Assert.Empty(chapter.Images);
+            Assert.Empty(doc.DocumentNode.Descendants("img"));
+            Assert.DoesNotContain("illustration.png", chapter.Content);
+            Assert.Single(Directory.GetFiles(config.TempFolder.Path, "*", SearchOption.AllDirectories)); // Только исходный EPUB.
+        }
+        else
+        {
+            var image = Assert.Single(chapter.Images);
+            Assert.Equal(Png, image.Content);
+            Assert.Equal(image.FullName, Assert.Single(doc.DocumentNode.Descendants("img")).Attributes["src"].Value);
+            Assert.True(File.Exists(image.FilePath));
+        }
+    }
+
+    [Theory]
+    [InlineData("epub")]
+    [InlineData("fb2")]
+    public async Task EpubImportWithoutIllustrationsStillEmbedsCover(string format)
+    {
+        var options = new Options { NoImage = true, Cover = false, BookNamePattern = "rebuilt" };
+        using var config = new BookGetterConfig(options, new HttpClient(), new CookieContainer(), TempFolderFactory.Create(null), NullLogger.Instance);
+        using var getter = new ImportGetter(config);
+        using var file = await TempFile.Create(null, config.TempFolder.Path, "book.epub", CreateIllustratedEpub(true));
+        options.SavePath = Path.Combine(config.TempFolder.Path, "output");
+        using var book = new Book(new Uri("https://example.test/book"))
+        {
+            Title = "Книга", Author = new Author("Автор"), Chapters = await getter.Import(file),
+            Cover = await TempFile.Create(null, config.TempFolder.Path, "cover.png", Png)
+        };
+
+        await BuilderProvider.Get(format, options, NullLogger.Instance).Build(book);
+
+        Assert.Empty(Assert.Single(book.Chapters).Images);
+        var output = Assert.Single(Directory.GetFiles(options.SavePath)); // Отдельного файла обложки нет.
+        if (format == "fb2")
+        {
+            var xml = XDocument.Load(output);
+            XNamespace ns = "http://www.gribuser.ru/xml/fictionbook/2.0";
+            Assert.Single(xml.Descendants(ns + "coverpage"));
+            Assert.Equal(Png, Convert.FromBase64String(Assert.Single(xml.Descendants(ns + "binary")).Value));
+            Assert.Empty(xml.Descendants(ns + "body").Descendants(ns + "image"));
+        }
+        else
+        {
+            using var zip = ZipFile.OpenRead(output);
+            using var packageStream = zip.Entries.Single(entry => entry.FullName.EndsWith(".opf")).Open();
+            var package = XDocument.Load(packageStream);
+            var image = Assert.Single(package.Descendants(), node => node.Name.LocalName == "item" &&
+                ((string)node.Attribute("media-type") ?? "").StartsWith("image/", StringComparison.Ordinal));
+            Assert.Contains("cover-image", (string)image.Attribute("properties") ?? "");
+            using var imageStream = zip.Entries.Single(entry => entry.FullName.EndsWith((string)image.Attribute("href")!, StringComparison.Ordinal)).Open();
+            using var bytes = new MemoryStream();
+            await imageStream.CopyToAsync(bytes);
+            Assert.Equal(Png, bytes.ToArray());
+            Assert.DoesNotContain(zip.Entries, entry => entry.FullName.EndsWith("illustration.png", StringComparison.Ordinal));
+        }
+    }
+
     [Fact]
     public async Task ImportedEpubRemovesItsTitleButPreservesInnerHeadingsAndAnchors()
     {
@@ -155,6 +235,36 @@ public class EpubImportContentTests
             Add(zip, "book.opf", "<package xmlns='http://www.idpf.org/2007/opf' version='2.0' unique-identifier='id'><metadata xmlns:dc='http://purl.org/dc/elements/1.1/'><dc:identifier id='id'>synthetic-book</dc:identifier><dc:title>Книга</dc:title><dc:language>ru</dc:language></metadata><manifest><item id='chapter' href='chapter.xhtml' media-type='application/xhtml+xml'/><item id='ncx' href='toc.ncx' media-type='application/x-dtbncx+xml'/></manifest><spine toc='ncx'><itemref idref='chapter'/></spine></package>");
             Add(zip, "toc.ncx", "<ncx xmlns='http://www.daisy.org/z3986/2005/ncx/' version='2005-1'><head><meta name='dtb:uid' content='synthetic-book'/></head><docTitle><text>Книга</text></docTitle><navMap><navPoint id='one' playOrder='1'><navLabel><text>Глава 1</text></navLabel><content src='chapter.xhtml#start'/></navPoint></navMap></ncx>");
             Add(zip, "chapter.xhtml", "<html xmlns='http://www.w3.org/1999/xhtml'><head><title>Глава 1</title></head><body><h1 id='start'>Глава 1</h1><p>Текст главы.</p><h2 id='sub'>Подзаголовок</h2><p>Дальше.</p><h2>Глава 1</h2><h3>Другой раздел</h3><p><a href='#sub'>Назад</a></p></body></html>");
+        }
+        return memory.ToArray();
+    }
+
+    private static byte[] CreateIllustratedEpub(bool withToc)
+    {
+        using var memory = new MemoryStream();
+        memory.Write(CreateEpub());
+        using (var zip = new ZipArchive(memory, ZipArchiveMode.Update, true))
+        {
+            string Read(string path)
+            {
+                using var reader = new StreamReader(zip.GetEntry(path)!.Open());
+                return reader.ReadToEnd();
+            }
+            var package = Read("book.opf").Replace("</manifest>", "<item id='illustration' href='illustration.png' media-type='image/png'/></manifest>");
+            var chapter = Read("chapter.xhtml").Replace("<p>Текст главы.</p>", "<p>Текст главы.</p><p><img src='illustration.png' alt='Рисунок' /></p><p>После рисунка.</p>");
+            zip.GetEntry("book.opf")!.Delete();
+            zip.GetEntry("chapter.xhtml")!.Delete();
+            Add(zip, "book.opf", package);
+            Add(zip, "chapter.xhtml", chapter);
+            if (!withToc)
+            {
+                var toc = XDocument.Parse(Read("toc.ncx"));
+                toc.Descendants().Single(node => node.Name.LocalName == "navMap").RemoveNodes();
+                zip.GetEntry("toc.ncx")!.Delete();
+                Add(zip, "toc.ncx", toc.ToString());
+            }
+            using var image = zip.CreateEntry("illustration.png").Open();
+            image.Write(Png);
         }
         return memory.ToArray();
     }

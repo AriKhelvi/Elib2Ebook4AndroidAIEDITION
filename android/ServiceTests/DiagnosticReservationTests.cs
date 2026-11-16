@@ -34,6 +34,49 @@ public sealed class DiagnosticReservationTests : IDisposable
     }
 
     [Fact]
+    public async Task LostFolderAccessShowsErrorWithoutStartingDownloadOrBlockingRetry()
+    {
+        var storage = new PermissionStorage();
+        storage.Permission.SetException(new InvalidOperationException("Доступ к выбранной папке утрачен"));
+        var toasts = new ToastService();
+        var manager = new DownloadManager(null, storage, null, null, toasts);
+
+        Assert.False(await manager.StartAsync(Request));
+        Assert.False(await manager.StartAsync(Request));
+
+        Assert.False(manager.IsBusy);
+        Assert.False(manager.IsRunning);
+        Assert.Equal(2, storage.Requests);
+        Assert.All(toasts.Toasts, toast =>
+        {
+            Assert.Equal(ToastKind.Error, toast.Kind);
+            Assert.Contains("Доступ к выбранной папке утрачен", toast.Text);
+        });
+    }
+
+    [Fact]
+    public async Task LostLogFolderAccessDoesNotCrashDiagnosticsOrKeepDownloadReservation()
+    {
+        var books = new PermissionStorage();
+        var logs = new PermissionStorage();
+        logs.Permission.SetException(new InvalidOperationException("Доступ к выбранной папке утрачен"));
+        var toasts = new ToastService();
+        var manager = new DownloadManager(null, books, null, null, toasts);
+        var runner = new DiagnosticsRunner(null, books, null, manager, toasts, logs);
+
+        await runner.StartAsync();
+        await runner.StartAllSitesAsync();
+
+        Assert.False(runner.IsRunning);
+        Assert.False(manager.IsBusy);
+        Assert.Equal(2, logs.Requests);
+        Assert.Equal(0, books.Requests);
+        Assert.All(toasts.Toasts, toast => Assert.Equal(ToastKind.Error, toast.Kind));
+        Assert.True(manager.TryReserveDiagnostics(out var lease));
+        lease.Dispose();
+    }
+
+    [Fact]
     public async Task DownloadAwaitingPermissionBlocksDiagnosticsUntilDenied()
     {
         var storage = new PermissionStorage();
@@ -131,7 +174,7 @@ public sealed class DiagnosticReservationTests : IDisposable
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
     }
 
-    private sealed class PermissionStorage : IBookStorage
+    private sealed class PermissionStorage : ILogStorage
     {
         public TaskCompletionSource<bool> Permission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Requests { get; private set; }
