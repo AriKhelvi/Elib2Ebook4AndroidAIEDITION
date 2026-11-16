@@ -197,20 +197,8 @@
             <p class="supporting-text flush">@FormatHint</p>
         </section>
 
-        <!-- Картинки, вход, диапазон глав -->
+        <!-- Вход и диапазон глав -->
         <section class="card" aria-label="Параметры">
-            <label class="list-item two-line">
-                <span class="list-item-leading"><Icon Name="image" /></span>
-                <span class="list-item-text">
-                    <span class="list-item-headline">Иллюстрации в главах</span>
-                    <span class="list-item-supporting">@(_format == "cbz" ? "Для CBZ страницы нужны всегда" : Settings.Images ? "Скачивать изображения внутри глав" : "Обложка EPUB/FB2 остаётся, иллюстрации не скачиваются")</span>
-                </span>
-                <input type="checkbox" role="switch" class="switch" checked="@(Settings.Images || _format == "cbz")" disabled="@(_format == "cbz")"
-                       @onchange="e => Settings.Images = (bool)e.Value!" />
-            </label>
-
-            <hr class="divider" />
-
             <button type="button" class="list-item two-line" aria-expanded="@(Form.ShowAuth ? "true" : "false")" @onclick="() => Form.ShowAuth = !Form.ShowAuth">
                 <span class="list-item-leading"><Icon Name="lock" /></span>
                 <span class="list-item-text">

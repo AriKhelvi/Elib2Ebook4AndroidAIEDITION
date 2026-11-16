@@ -56,6 +56,16 @@
 
             <label class="list-item two-line">
                 <span class="list-item-text">
+                    <span class="list-item-headline">Иллюстрации в главах</span>
+                    <span class="list-item-supporting">Картинки внутри текста. Обложка EPUB/FB2 остаётся при выключении. Для CBZ страницы скачиваются всегда</span>
+                </span>
+                <input type="checkbox" role="switch" class="switch" checked="@Settings.Images" @onchange="e => Settings.Images = (bool)e.Value!" />
+            </label>
+
+            <hr class="divider" />
+
+            <label class="list-item two-line">
+                <span class="list-item-text">
                     <span class="list-item-headline">Обложка отдельным файлом</span>
                     <span class="list-item-supporting">На обложку внутри EPUB/FB2 эта настройка не влияет</span>
                 </span>
@@ -67,7 +77,7 @@
             <label class="list-item two-line">
                 <span class="list-item-text">
                     <span class="list-item-headline">Дополнительные файлы</span>
-                    <span class="list-item-supporting">Вложения со страницы книги: аудио, файлы, картинки глав</span>
+                    <span class="list-item-supporting">Файлы с сайта и картинки глав — отдельно от созданной книги</span>
                 </span>
                 <input type="checkbox" role="switch" class="switch" checked="@Settings.Additional" @onchange="e => Settings.Additional = (bool)e.Value!" />
             </label>
@@ -88,6 +98,8 @@
                         }
                     </div>
                     <p class="supporting-text flush">Ничего не выбрано — все типы.</p>
+                    <p class="supporting-text flush">«Файлы книг с сайта» — готовые EPUB, FB3 и другие файлы, которые отдаёт сайт, иногда связанные издания. Сохраняются дополнительно к выбранному формату.</p>
+                    <p class="supporting-text flush">«Картинки глав» — отдельные копии загруженных иллюстраций. Сохранение обложки задаётся переключателем выше.</p>
                 </div>
             }
         </div>
@@ -170,7 +182,7 @@
                         <p>
                             <b>Да</b> — книга начинает скачиваться сразу, без нажатия «Скачать». Формат выбирается сам: CBZ для
                             манги и комиксов, для остального — текстовый формат по умолчанию. Подставляется сохранённый вход на сайт,
-                            главы — все, картинки — как в переключателе на главном экране. Ход загрузки виден на главном экране
+                            главы — все, иллюстрации — по настройке «Иллюстрации в главах». Ход загрузки виден на главном экране
                             и в шторке, там же её можно отменить.
                         </p>
                         <p>
@@ -526,9 +538,9 @@
 
     private static readonly (string Id, string Title)[] AdditionalTypes =
     [
-        ("books", "Книги"),
+        ("books", "Файлы книг с сайта"),
         ("audio", "Аудио"),
-        ("images", "Картинки")
+        ("images", "Картинки глав")
     ];
 
     private static readonly (bool Value, string Title)[] YesNo = [(true, "Да"), (false, "Нет")];

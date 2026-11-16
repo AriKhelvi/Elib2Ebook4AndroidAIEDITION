@@ -73,6 +73,9 @@ public class AdditionaFileBuilder(Options options, ILogger logger)
 
         foreach (var files in book.AdditionalFiles.Collection)
         {
+            // В коллекции могут быть исходники, загруженные для разбора книги, а не для экспорта.
+            if (!options.HasAdditionalType(files.Key)) continue;
+
             var subPath = Path.Combine(additionalPath, files.Key.ToString());
             CreateDirectory(subPath);
 
