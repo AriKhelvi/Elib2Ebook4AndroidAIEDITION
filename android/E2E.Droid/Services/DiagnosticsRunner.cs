@@ -449,7 +449,7 @@ public sealed class DiagnosticsRunner(
 
     private async Task StepFormatsAsync(CancellationToken ct)
     {
-        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "formats-" + Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "formats-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
         try
         {
@@ -548,7 +548,7 @@ public sealed class DiagnosticsRunner(
 
     private async Task StepStorageAsync(CancellationToken ct)
     {
-        var root = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "storage-" + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "storage-" + Guid.NewGuid().ToString("N"));
         var probeDir = Path.Combine(root, "probe");
         var bigDir = Path.Combine(root, "big");
         var stamp = DateTime.Now.ToString("HHmmss", CultureInfo.InvariantCulture);
@@ -823,7 +823,7 @@ public sealed class DiagnosticsRunner(
         platform.UpdateBackgroundWork("Диагностика E2E — " + Status);
         Changed?.Invoke();
         Info($"{item.Id}: {item.BookUrl}; глава {item.StartChapter}; {item.Limitation}");
-        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "site-" + Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "site-" + Guid.NewGuid().ToString("N"));
         var options = CreateSiteProbeOptions(item, work, settings);
         Info($"{item.Id}: таймаут запроса в пробе {options.Timeout} с (настройка приложения {settings.Timeout} с), общий лимит примера {SiteDiagnosticBatch.SiteTimeout.TotalSeconds:0} с; задержка сохранена из настроек, режим {options.DelayMode}, своя {options.CustomDelaySeconds:0.##} с. Ожидание очереди запросов также расходует эти лимиты.");
         var hadWarnings = false;
@@ -904,7 +904,7 @@ public sealed class DiagnosticsRunner(
             return;
         }
 
-        var work = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "download-" + Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "download-" + Guid.NewGuid().ToString("N"));
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
         limit.CancelAfter(TimeSpan.FromMinutes(3));
         var options = new Options
@@ -1080,7 +1080,7 @@ public sealed class DiagnosticsRunner(
 
     private async Task<SavedFile> SaveTextAsync(string fileName, IEnumerable<string> lines)
     {
-        var dir = Path.Combine(FileSystem.CacheDirectory, "diagnostics", "out-" + Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "out-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {

@@ -7,7 +7,7 @@
 // Жизненный цикл одного «задания» (нажатие «Скачать», объект Job):
 //
 //   StartAsync  → спросить разрешения, создать Job, удержать foreground-сервис, уйти в фон (Task.Run)
-//   RunAsync    → для каждой ссылки: BookPipeline в рабочую папку cache/jobs/<guid> → копия в «Загрузки»
+//   RunAsync    → для каждой ссылки: BookPipeline в личную папку work/<session>/jobs/<guid> → копия в «Загрузки»
 //                 (или выбранную папку) → запись в историю → удаление рабочей папки
 //   Finish      → отпустить сервис, показать тост и (если приложение свёрнуто) уведомление «Книга готова»
 //
@@ -402,7 +402,7 @@ public sealed class DownloadManager(
             if (!job.Cancelled)
             {
                 lock (job.Errors) job.Errors.Add(LogText.Clean(ex.Message));
-                Write(job, $"Непредвиденная ошибка: {ex}");
+                WriteException(job, $"Непредвиденная ошибка: {ex.Message}", ex);
             }
         }
         finally
@@ -418,8 +418,9 @@ public sealed class DownloadManager(
         var request = job.Request;
         var ct = job.Cts.Token;
 
-        // Рабочие папки — в кэше приложения: Android может их чистить сам, а мы удаляем их после каждой книги
-        var jobsRoot = Path.Combine(FileSystem.CacheDirectory, "jobs");
+        // Рабочие папки — в личных данных: очистка Android-кэша не должна оборвать сборку книги.
+        // После каждой книги удаляем её папку; остатки предыдущих сессий убираются при запуске.
+        var jobsRoot = TemporaryWorkspace.JobsDirectory;
 
         lock (_sync)
         {
@@ -557,7 +558,7 @@ public sealed class DownloadManager(
                 message = LogText.Clean(message);
                 lock (job.Errors) job.Errors.Add(LogText.Clean($"{url}: {message}"));
                 // В журнал — полный текст исключения со стеком: пригодится для отчёта об ошибке
-                Write(job, $"Генерация книги {url} завершилась с ошибкой. {ex}");
+                WriteException(job, $"Генерация книги {url} завершилась с ошибкой. {message}", ex);
 
                 // Неудачная загрузка тоже попадает в «Книги» — с пометкой и кнопкой «Скачать заново»
                 await WriteResultAsync(job, () =>
@@ -794,6 +795,28 @@ public sealed class DownloadManager(
         record.CoverPath = preview.Cover == null ? null : platform.SaveThumbnail(preview.Cover, CoverThumbnails.RecordPath(record.Id));
     }
 
+    /// <summary>Короткая ошибка — в статус; очищенный стек — построчно в обычный журнал.</summary>
+    private void WriteException(Job job, string summary, Exception exception)
+    {
+        if (job.Cancelled) return;
+        Write(job, LogText.CleanLines(ReadLines(summary)).FirstOrDefault());
+        // Очищаем строки вместе до добавления времени: продолжения заголовков и ключей тоже секретны.
+        // AppendLog сохраняет прежние лимиты журнала, но больше не обрезает весь стек как одну строку.
+        foreach (var line in LogText.CleanLines(ReadLines(exception.ToString())))
+        {
+            if (job.Cancelled) break;
+            AppendLog(job, line);
+        }
+        NotifyChanged();
+
+        static IEnumerable<string> ReadLines(string text)
+        {
+            using var reader = new StringReader(text);
+            for (var count = 0; count < 128 && reader.ReadLine() is { } line; count++)
+                yield return line;
+        }
+    }
+
     /// <summary>Строка журнала от ядра или от нас: в журнал, в статус и (не чаще раза в секунду) в шторку.</summary>
     private void Write(Job job, string line)
     {
@@ -888,14 +911,9 @@ public sealed class DownloadManager(
     }
 
     /// <summary>
-    /// При запуске приложения удаляет рабочие папки и миниатюры карточек, оставшиеся от прошлого (например, после краша).
+    /// Удаляет остатки прошлых запусков, сохраняя все рабочие файлы текущей сессии.
     /// </summary>
-    public static void CleanupLeftovers()
-    {
-        TryDelete(Path.Combine(FileSystem.CacheDirectory, "jobs"));
-        TryDelete(CoverThumbnails.PreviewsDir);
-        TryDelete(Path.Combine(FileSystem.CacheDirectory, "diagnostics"));
-    }
+    public static void CleanupLeftovers() => TemporaryWorkspace.CleanupPreviousSessions();
 
     private static void TryDeleteFile(string path)
     {
