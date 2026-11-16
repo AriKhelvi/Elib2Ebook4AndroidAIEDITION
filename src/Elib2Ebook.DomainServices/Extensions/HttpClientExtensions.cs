@@ -65,17 +65,20 @@ public static class HttpClientExtensions
         return null;
     }
 
-    public static async Task<HttpResponseMessage> SendWithTriesAsync(this HttpClient client, Func<HttpRequestMessage> message, TimeSpan errorTimeout = default)
+    public static async Task<HttpResponseMessage> SendWithTriesAsync(this HttpClient client, Func<HttpRequestMessage> message,
+        TimeSpan errorTimeout = default, CancellationToken cancellationToken = default,
+        HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead)
     {
         Exception lastEx = null;
 
         for (var i = 0; i < MAX_TRY_COUNT; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             HttpRequestMessage attempted = null;
             try
             {
                 attempted = message();
-                var response = await client.SendAsync(attempted);
+                var response = await client.SendAsync(attempted, completionOption, cancellationToken);
 
                 // Повтор не исправляет отсутствие доступа и усугубляет ограничение частоты.
                 if ((int)response.StatusCode is >= 400 and < 500)
@@ -90,7 +93,7 @@ public static class HttpClientExtensions
 
                     response.Dispose();
                     DownloadDiagnostics.Retry(client, attempted.Method, attempted.RequestUri, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), response.StatusCode);
-                    await Task.Delay(GetTimeout(errorTimeout));
+                    await Task.Delay(GetTimeout(errorTimeout), cancellationToken);
                     continue;
                 }
 
@@ -104,7 +107,8 @@ public static class HttpClientExtensions
                 lastEx = ex;
                 if (i < MAX_TRY_COUNT - 1)
                     DownloadDiagnostics.Retry(client, attempted?.Method, attempted?.RequestUri, i + 2, MAX_TRY_COUNT, GetTimeout(errorTimeout), exception: ex);
-                await Task.Delay(GetTimeout(errorTimeout));
+                if (i < MAX_TRY_COUNT - 1)
+                    await Task.Delay(GetTimeout(errorTimeout), cancellationToken);
             }
         }
 

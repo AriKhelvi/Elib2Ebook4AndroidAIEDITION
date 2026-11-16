@@ -51,11 +51,15 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
     /// <summary>Обязательная страница комикса: ошибка не должна превращаться в пропуск изображения.</summary>
     protected Task<TempFile> SaveRequiredImage(Uri uri) => SaveImageCore(uri, required: true);
 
+    /// <summary>Предел сетевого ожидания необязательной картинки, без паузы очереди.</summary>
+    protected virtual TimeSpan OptionalImageTimeout => TimeSpan.FromSeconds(30);
+
     private async Task<TempFile> SaveImageCore(Uri uri, bool required)
     {
         var label = uri.Scheme == "data" ? "встроенное изображение" : LogText.Clean(uri.ToString());
         try
         {
+            Config.CancellationToken.ThrowIfCancellationRequested();
             Config.Logger.LogInformation($"Загружаю картинку {label}");
             if (uri.Scheme == "data")
             {
@@ -81,12 +85,15 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
                 return embedded;
             }
             if (uri.Scheme is not ("http" or "https")) throw new FormatException("Неподдерживаемая схема адреса изображения");
+            var imageBudget = required ? null : new RequestPolicyHandler.ImageRequestBudget(OptionalImageTimeout);
             using var response = await Config.Client.SendWithTriesAsync(() =>
             {
                 var request = GetImageRequestMessage(uri);
                 RequestPolicyHandler.ScopeImageCredentials(request, SystemUrl, uri);
+                if (imageBudget != null) RequestPolicyHandler.SetOptionalImageTimeout(request, imageBudget);
                 return request;
-            });
+            }, cancellationToken: Config.CancellationToken,
+                completionOption: required ? HttpCompletionOption.ResponseContentRead : HttpCompletionOption.ResponseHeadersRead);
             response.EnsureDownloadSuccess();
             if (response.Content.Headers.ContentType?.MediaType is "text/html" or "application/json")
                 throw new FormatException("Сайт вернул страницу ошибки вместо изображения");
@@ -106,11 +113,17 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
             Config.Logger.LogInformation($"Загружена картинка {label}");
             return image;
         }
+        catch (OperationCanceledException ex) when (!required && !Config.CancellationToken.IsCancellationRequested && ex.InnerException is TimeoutException)
+        {
+            Config.Logger.LogWarning("Не удалось загрузить изображение {Image}: истекло время ожидания. Книга будет сохранена без этой картинки.", label);
+            return null;
+        }
         catch (OperationCanceledException) { throw; }
         // После ограничения частоты нельзя продолжать закачку остальных картинок как после обычного 404.
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests) { throw; }
         catch (Exception ex)
         {
+            Config.CancellationToken.ThrowIfCancellationRequested();
             Config.Logger.LogWarning($"Не удалось загрузить изображение {label}: {LogText.Clean(ex.Message)}");
             if (required) throw;
             return null;

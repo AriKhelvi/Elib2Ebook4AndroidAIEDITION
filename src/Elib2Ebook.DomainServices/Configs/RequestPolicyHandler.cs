@@ -12,6 +12,18 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
 {
     private long _diagnosticRequestId;
     private static readonly HttpRequestOptionsKey<Uri> ExternalImageOrigin = new("Elib2Ebook.ExternalImageOrigin");
+    private static readonly HttpRequestOptionsKey<ImageRequestBudget> OptionalImageTimeout = new("Elib2Ebook.OptionalImageTimeout");
+
+    internal static void SetOptionalImageTimeout(HttpRequestMessage request, ImageRequestBudget budget)
+        => request.Options.Set(OptionalImageTimeout, budget);
+
+    // Один бюджет на изображение, включая повторы и перенаправления. Очередь между
+    // запросами не учитывается, поэтому длинная пользовательская задержка не мешает загрузке.
+    internal sealed class ImageRequestBudget(TimeSpan timeout)
+    {
+        internal TimeSpan Remaining { get; private set; } = timeout;
+        internal void Spend(TimeSpan elapsed) => Remaining -= elapsed;
+    }
 
     // Список разрешений намеренно не зависит от названий токенов конкретного сайта.
     private static readonly HashSet<string> CrossOriginHeaders = new(StringComparer.OrdinalIgnoreCase)
@@ -57,7 +69,7 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
                     logger.LogDebug("HTTP #{RequestId} отправка: queue_ms={Milliseconds}", requestId,
                         (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds);
                 }
-                return base.SendAsync(request, cancellationToken);
+                return SendNetworkAsync(request, cancellationToken);
             }, cancellationToken);
         }
         catch (Exception error)
@@ -126,6 +138,8 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
                     Version = request.Version,
                     VersionPolicy = request.VersionPolicy
                 };
+                if (request.Options.TryGetValue(OptionalImageTimeout, out var imageTimeout))
+                    SetOptionalImageTimeout(next, imageTimeout);
                 if (preserveContent && request.Content != null)
                 {
                     // Собственная копия: Dispose перенаправленного запроса не закрывает тело caller.
@@ -157,6 +171,46 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
             response.Dispose();
             throw;
         }
+    }
+
+    private async Task<HttpResponseMessage> SendNetworkAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (!request.Options.TryGetValue(OptionalImageTimeout, out var budget))
+            return await base.SendAsync(request, cancellationToken);
+
+        // Пауза очереди уже прошла. Ограничиваем и ожидание заголовков, и чтение
+        // картинки: один зависший внешний хост не должен останавливать текстовую книгу.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (budget.Remaining <= TimeSpan.Zero)
+            throw new TaskCanceledException("Истекло время загрузки изображения.", new TimeoutException());
+        deadline.CancelAfter(budget.Remaining);
+        var started = Stopwatch.GetTimestamp();
+        HttpResponseMessage response = null;
+        try
+        {
+            response = await base.SendAsync(request, deadline.Token);
+            logger?.LogDebug("Картинка: получены заголовки; url={Url}; status={Status}; content_type={Type}; content_bytes={Bytes}; remaining_ms={Remaining}",
+                DownloadDiagnostics.SafeUri(request.RequestUri), (int)response.StatusCode,
+                DownloadDiagnostics.MediaType(response.Content), response.Content.Headers.ContentLength,
+                Math.Max(0, (long)(budget.Remaining - Stopwatch.GetElapsedTime(started)).TotalMilliseconds));
+            // Ошибки (особенно 429) и перенаправления обрабатываются сразу, без чтения тела.
+            // HttpClient обычно буферизует тело сам; здесь нужен тот же бюджет на его чтение.
+            if (response.IsSuccessStatusCode)
+                await response.Content.LoadIntoBufferAsync(deadline.Token);
+            return response;
+        }
+        catch (OperationCanceledException error) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            response?.Dispose();
+            throw new TaskCanceledException("Истекло время загрузки изображения.", new TimeoutException(null, error), deadline.Token);
+        }
+        catch
+        {
+            response?.Dispose();
+            throw;
+        }
+        finally { budget.Spend(Stopwatch.GetElapsedTime(started)); }
     }
 
     private static bool SameOrigin(Uri first, Uri second) =>
