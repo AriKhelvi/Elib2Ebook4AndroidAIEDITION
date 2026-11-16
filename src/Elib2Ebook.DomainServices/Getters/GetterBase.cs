@@ -137,6 +137,9 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
     /// <param name="baseUri"></param>
     protected virtual async Task<IEnumerable<TempFile>> GetImages(HtmlDocument doc, Uri baseUri)
     {
+        // В CBZ картинки составляют саму книгу. Общий HTML-загрузчик используется
+        // и MangaLib, и текстовыми сайтами: страницы архива пропускать нельзя.
+        var required = Config.Options.Format?.Contains("cbz", StringComparer.OrdinalIgnoreCase) == true;
         var images = new ConcurrentBag<Tuple<TempFile, int>>();
         var toRemove = new ConcurrentBag<HtmlNode>();
         var tuples = doc.QuerySelectorAll("img, image").Select((img, i) => Tuple.Create(img, i));
@@ -166,7 +169,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
                     return;
                 }
 
-                var image = await SaveImage(uri);
+                var image = required ? await SaveRequiredImage(uri) : await SaveImage(uri);
                 if (image == null)
                 {
                     toRemove.Add(img);

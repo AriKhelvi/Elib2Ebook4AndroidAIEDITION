@@ -12,6 +12,50 @@ namespace Elib2Ebook.DomainServices.Tests.Getters;
 public sealed class MangaLibImageRoutingTests
 {
     [Fact]
+    public async Task MissingChapterPageFailsMangaDownloadInsteadOfReturningIncompleteCbz()
+    {
+        const string slug = "18406--nan-hao-shang-feng";
+        var pageRequests = 0;
+        var handler = new AfAuditSupport.Handler(request =>
+        {
+            if (request.RequestUri.Host == "img3.cdnlibs.org")
+            {
+                pageRequests++;
+                return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("missing page") };
+            }
+            return request.RequestUri.AbsolutePath switch
+            {
+                "/api/manga/" + slug => AfAuditSupport.Json(new
+                {
+                    data = new { id = 18406, slug_url = slug, name = "Книга", is_licensed = false,
+                        authors = Array.Empty<object>(), cover = new { @default = (string)null }, summary = "Описание" }
+                }),
+                "/api/manga/" + slug + "/chapters" => AfAuditSupport.Json(new
+                {
+                    data = new[] { new { volume = "1", number = "1", name = "Глава", branches = Array.Empty<object>() } }
+                }),
+                "/api/manga/" + slug + "/chapter" => AfAuditSupport.Json(new
+                {
+                    data = new { pages = new[] { new { url = "/missing.png" } } }
+                }),
+                _ => throw new InvalidOperationException("Неожиданный API-запрос: " + request.RequestUri.AbsolutePath)
+            };
+        });
+        var options = new Options { Start = 1, End = 1, Format = ["cbz"], DelayMode = 1 };
+        var logger = new AfAuditSupport.AuditLogger();
+        using var config = AfAuditSupport.Config(new RequestPolicyHandler(new RequestPacer(options), logger, handler), options, logger);
+        using var getter = new MangaLibGetter(config);
+        await getter.Init();
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(new Uri("https://mangalib.me/ru/" + slug)));
+
+        Assert.Equal(HttpStatusCode.NotFound, error.StatusCode);
+        Assert.Equal(1, pageRequests);
+        Assert.Equal(4, handler.Calls);
+        Assert.Empty(Directory.EnumerateFiles(config.TempFolder.Path));
+    }
+
+    [Fact]
     public async Task DisposedPreviewDoesNotRemovePagesOrCoverBeforeCbzExport()
     {
         const string slug = "206--one-piece";

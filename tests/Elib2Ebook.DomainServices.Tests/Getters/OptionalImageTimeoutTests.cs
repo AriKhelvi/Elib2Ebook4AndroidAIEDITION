@@ -149,6 +149,70 @@ public sealed class OptionalImageTimeoutTests
     }
 
     [Theory]
+    [InlineData("cbz")]
+    [InlineData("fb2,cbz")]
+    public async Task SharedChapterImageLoaderTreatsCbzPagesAsRequired(string formats)
+    {
+        var handler = new Handler(async (_, ct) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+            return ImageResponse();
+        });
+        var logger = new CaptureLogger();
+        using var config = Config(handler, logger);
+        config.Options.Format = formats.Split(',');
+        using var getter = new ImageGetter(config);
+        var document = ImageDocument();
+
+        var images = (await getter.Images(document).WaitAsync(TestDeadline)).ToArray();
+        try
+        {
+            var image = Assert.Single(images);
+            Assert.Equal(ImageBytes, image.Content);
+            Assert.Equal(image.FullName, Assert.Single(document.DocumentNode.Descendants("img")).GetAttributeValue("src", ""));
+            Assert.Empty(logger.Warnings);
+            Assert.Equal(1, handler.Calls);
+        }
+        finally { foreach (var image in images) image.Dispose(); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SharedChapterImageLoaderDoesNotSkipCbzPageAfterClientTimeout(bool stalledBody)
+    {
+        var body = new StalledStream();
+        var handler = StallHandler(stalledBody, body);
+        var logger = new CaptureLogger();
+        using var config = Config(handler, logger, clientTimeout: TestBudget);
+        config.Options.Format = ["cbz"];
+        using var getter = new ImageGetter(config);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await getter.Images(ImageDocument()).WaitAsync(TestDeadline));
+
+        Assert.Empty(logger.Warnings);
+        Assert.Equal(1, handler.Calls);
+        Assert.Empty(Directory.EnumerateFiles(config.TempFolder.Path));
+        if (stalledBody) Assert.True(body.Disposed);
+    }
+
+    [Fact]
+    public async Task SharedChapterImageLoaderDoesNotSilentlyRemoveMissingCbzPage()
+    {
+        var handler = new Handler((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var logger = new CaptureLogger();
+        using var config = Config(handler, logger);
+        config.Options.Format = ["cbz"];
+        using var getter = new ImageGetter(config);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(async () => await getter.Images(ImageDocument()).WaitAsync(TestDeadline));
+
+        Assert.Equal(HttpStatusCode.NotFound, error.StatusCode);
+        Assert.Equal(1, handler.Calls);
+        Assert.Empty(Directory.EnumerateFiles(config.TempFolder.Path));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task RateLimitIsNotMaskedByOptionalImageTimeoutEvenWhenErrorBodyStalls(bool stalledErrorBody)
@@ -313,6 +377,13 @@ public sealed class OptionalImageTimeoutTests
         var content = new StreamContent(stream);
         content.Headers.ContentType = new MediaTypeHeaderValue("image/png");
         return content;
+    }
+
+    private static HtmlDocument ImageDocument()
+    {
+        var document = new HtmlDocument();
+        document.LoadHtml("<img src='https://cdn.example.test/stalled.png'>");
+        return document;
     }
 
     private sealed class ImageGetter(BookGetterConfig config, TimeSpan? timeout = null) : GetterBase(config)
