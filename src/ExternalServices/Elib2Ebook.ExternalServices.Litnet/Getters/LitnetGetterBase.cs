@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Web;
 using Elib2Ebook.Domain.Book;
 using Elib2Ebook.Domain.Common;
@@ -26,12 +27,15 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     protected virtual Uri SiteIp => SystemUrl;
 
     private static readonly string DeviceId = Guid.NewGuid().ToString().ToUpper();
+    private static readonly LitnetSessionCache Sessions = new();
     // API принимает до 100 глав: меньшие пачки увеличивают нагрузку и риск HTTP 429.
     // Каждую пачку обрабатываем сразу, освобождая зашифрованные тексты перед следующей.
     private const int ChapterBatchSize = 100;
     private const string SECRET = "14a6579a984b3c6abecda6c2dfa83a64";
 
     private string _token { get; set; }
+    private string _sessionCacheKey;
+    private bool _sessionRejected;
     private string _cachedBookId;
     private LitnetBookResponse _cachedBook;
     private bool _seriesLoaded;
@@ -85,7 +89,37 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     {
         ClearBookCache();
         _token = null;
+        _sessionCacheKey = null;
+        _sessionRejected = false;
+        Config.CancellationToken.ThrowIfCancellationRequested();
         Config.Logger.LogDebug("Litnet: этап входа; сохранённые реквизиты={HasCredentials}", Config.HasCredentials);
+
+        // Android задаёт собственную область кэша. Здесь путь используется только как идентификатор:
+        // ни токен, ни отпечаток реквизитов не записываются на диск. Booknet пока не меняем.
+        if (SystemUrl.Host.Equals("litnet.com", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(Config.Options.AuthCachePath))
+        {
+            var identity = JsonSerializer.Serialize(new[]
+            {
+                Config.Options.AuthCachePath, ApiUrl.Host,
+                Config.HasCredentials ? "account" : "guest",
+                Config.Options.Login?.TrimStart('+') ?? string.Empty,
+                Config.Options.Password ?? string.Empty
+            });
+            _sessionCacheKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+            var session = await Sessions.GetOrCreateAsync(_sessionCacheKey,
+                _ => AuthorizeFresh(), Config.CancellationToken);
+            _token = session.Token;
+            if (session.Reused)
+                Config.Logger.LogInformation("Использую ранее полученный сеанс Litnet без повторного входа");
+            return;
+        }
+
+        _token = await AuthorizeFresh();
+    }
+
+    private async Task<string> AuthorizeFresh()
+    {
         var path = Config.HasCredentials ? "user/find-by-login" : "registration/registration-by-device";
 
         var url = ApiIp.MakeRelativeUri(
@@ -96,7 +130,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         if (!string.IsNullOrWhiteSpace(data?.Token))
         {
             Config.Logger.LogInformation("Успешно авторизовались");
-            _token = data.Token;
+            return data.Token;
         }
         else
         {
@@ -144,9 +178,17 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     private async Task<T> GetApiData<T>(Uri uri)
     {
+        if (typeof(T) != typeof(LitnetAuthResponse)) EnsureSessionAccepted();
         Config.Logger.LogDebug("Litnet API: ожидается={ResponseType}; url={Url}", typeof(T).Name, DownloadDiagnostics.SafeUri(uri));
         using var request = GetDefaultMessage(uri, ApiUrl);
         using var response = await Config.Client.SendAsync(request, Config.CancellationToken);
+        if (typeof(T) != typeof(LitnetAuthResponse) && response.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            _sessionRejected = true;
+            Sessions.Invalidate(_sessionCacheKey, _token);
+            Config.Logger.LogDebug("Litnet: сеанс отклонён API; следующий запуск потребует нового входа.");
+        }
+        // 403 может относиться к правам на книгу, а 429 — к лимиту сайта. Новый вход их не исправляет.
         response.EnsureDownloadSuccess();
         try
         {
@@ -166,6 +208,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     public override async Task<Book> Get(Uri url)
     {
+        EnsureSessionAccepted();
         var bookId = GetId(url);
 
         var litnetBook = await GetBook(_token, bookId);
@@ -184,6 +227,13 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         };
 
         return book;
+    }
+
+    private void EnsureSessionAccepted()
+    {
+        if (_sessionRejected)
+            throw new HttpRequestException("Сеанс Litnet отклонён (HTTP 401). Повторите запуск, чтобы выполнить новый вход.",
+                null, HttpStatusCode.Unauthorized);
     }
 
     private async Task<Seria> GetSeria(Uri url, LitnetBookResponse book)
