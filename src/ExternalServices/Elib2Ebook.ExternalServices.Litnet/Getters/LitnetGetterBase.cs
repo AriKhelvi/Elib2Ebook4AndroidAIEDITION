@@ -26,9 +26,9 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     protected virtual Uri SiteIp => SystemUrl;
 
     private static readonly string DeviceId = Guid.NewGuid().ToString().ToUpper();
-    // Большой ответ из 100 глав долго собирался целиком без прогресса, в том числе на телефонах.
-    // Обрабатываем небольшую пачку сразу и освобождаем её зашифрованные тексты перед следующей.
-    private const int ChapterBatchSize = 10;
+    // API принимает до 100 глав: меньшие пачки увеличивают нагрузку и риск HTTP 429.
+    // Каждую пачку обрабатываем сразу, освобождая зашифрованные тексты перед следующей.
+    private const int ChapterBatchSize = 100;
     private const string SECRET = "14a6579a984b3c6abecda6c2dfa83a64";
 
     private string _token { get; set; }
@@ -223,6 +223,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
                 Config.Logger.LogWarning("Litnet сообщил номер книги в цикле ({Number}), но название серии не найдено. Книга будет сохранена без серии.", book.CyclePriority);
         }
         catch (OperationCanceledException) when (Config.CancellationToken.IsCancellationRequested) { throw; }
+        // Лимит запросов относится к сеансу, а не к необязательному полю серии.
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests) { throw; }
         catch (OperationCanceledException)
         {
             Config.Logger.LogWarning("Серия Litnet не получена за отведённое время. Продолжаю скачивание без названия серии.");

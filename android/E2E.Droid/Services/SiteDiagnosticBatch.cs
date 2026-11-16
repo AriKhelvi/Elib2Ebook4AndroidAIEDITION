@@ -38,6 +38,7 @@ public static class SiteDiagnosticBatch
         TimeSpan? siteTimeout = null)
     {
         var results = new List<SiteDiagnosticResult>();
+        var rateLimits = new SiteRateLimitScope();
         foreach (var item in cases)
         {
             var elapsed = Stopwatch.StartNew();
@@ -46,6 +47,8 @@ public static class SiteDiagnosticBatch
                 outcome = new(SiteDiagnosticStatus.Cancelled, "Не проверено: диагностику остановили");
             else if (!item.CanRun)
                 outcome = new(SiteDiagnosticStatus.Skipped, item.SkipReason ?? "Нет проверяемого примера");
+            else if (rateLimits.TryGetReason(item.BookUrl, out var reason))
+                outcome = new(SiteDiagnosticStatus.Skipped, reason);
             else
             {
                 using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -62,6 +65,7 @@ public static class SiteDiagnosticBatch
                 }
                 catch (Exception ex)
                 {
+                    rateLimits.Record(item.BookUrl, ex);
                     outcome = cancellationToken.IsCancellationRequested
                         ? new(SiteDiagnosticStatus.Cancelled, "Текущая проверка отменена")
                         : limit.IsCancellationRequested
@@ -78,13 +82,15 @@ public static class SiteDiagnosticBatch
 
     public static SiteProbeOutcome ClassifyFailure(Exception error)
     {
+        if (SiteRateLimitScope.IsRateLimited(error))
+            return new(SiteDiagnosticStatus.AccessRestricted, "HTTP 429: сайт ограничил частоту запросов; оставшиеся примеры этого сайта пропускаются до следующего запуска");
         if (error is SiteAccessException access)
             return new(SiteDiagnosticStatus.AccessRestricted, access.Reason == SiteAccessReason.AgeConfirmationRequired
                 ? "Возрастное ограничение 18+: требуется вход; анонимная диагностика не использует сохранённые учётные данные"
                 : "Сайт требует входа или не предоставил доступ; сохранённые учётные данные не использовались");
         if (error is OperationCanceledException or TimeoutException)
             return new(SiteDiagnosticStatus.Timeout, "Сработал таймаут отдельного запроса/операции загрузчика; параметры пробы и время ожидания — в журнале");
-        if (error is HttpRequestException http && http.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+        if (error is HttpRequestException http && http.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new(SiteDiagnosticStatus.AccessRestricted, $"HTTP {(int)http.StatusCode.Value}: сайт ограничил доступ; анонимная проба не доказывает дефект загрузчика");
         if (error is HttpRequestException unavailable && unavailable.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Gone)
             return new(SiteDiagnosticStatus.ExampleUnavailable, $"HTTP {(int)unavailable.StatusCode.Value}: пример или ресурс книги недоступен/удалён; это не доказывает поломку загрузчика или закрытие сайта");

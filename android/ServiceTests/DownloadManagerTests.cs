@@ -105,13 +105,51 @@ public sealed class DownloadManagerTests : IDisposable
         Assert.Equal("обложка сохранённой книги", await File.ReadAllTextAsync(savedCover));
     }
 
+    [Fact]
+    public async Task RateLimitSkipsSameSiteAndMirrorWithHistoryButOtherSiteAndNewJobStillRun()
+    {
+        using var fixture = RateLimitFixture.Use();
+        Preferences.Default = new RateLimitFixture.Preferences();
+        var history = new HistoryStore();
+        var manager = new DownloadManager(new AppSettings(), new RateLimitFixture.Storage(),
+            new RateLimitFixture.Platform(), history, new ToastService());
+        var first = RateLimitFixture.Site + "/limited";
+        var mirror = RateLimitFixture.Mirror + "/next";
+        var other = RateLimitFixture.Other + "/next";
+        var same = RateLimitFixture.Site + "/last";
+        var job = NewJob(manager, new DownloadRequest { Urls = [first, mirror, other, same], Formats = ["fb2"] });
+
+        await RunWorker(manager, job);
+
+        Assert.Contains(first, RateLimitFixture.Requests);
+        Assert.Contains(other, RateLimitFixture.Requests);
+        Assert.DoesNotContain(mirror, RateLimitFixture.Requests);
+        Assert.DoesNotContain(same, RateLimitFixture.Requests);
+        Assert.Equal(4, history.Records.Count);
+        Assert.All(history.Records.Where(record => record.Url == mirror || record.Url == same), record =>
+        {
+            Assert.Contains("Пропущено", record.Error);
+            Assert.Contains("HTTP 429", record.Error);
+            Assert.Empty(record.Files);
+        });
+        Assert.False(Assert.Single(history.Records, record => record.Url == other).Failed);
+        Assert.Contains(manager.Log, line => line.Contains(mirror) && line.Contains("Пропущено"));
+        Assert.Single(manager.Saved);
+
+        var nextJob = NewJob(manager, new DownloadRequest { Urls = [mirror], Formats = ["fb2"] });
+        await RunWorker(manager, nextJob);
+        Assert.Contains(mirror, RateLimitFixture.Requests);
+        Assert.Single(manager.Saved);
+        Assert.Empty(manager.Errors);
+    }
+
     // Пустой запрос останавливает сценарий сразу после подготовки кэша: ни сети, ни Android API.
     // Через reflection управляем порядком фоновых заданий, не добавляя тестовые переключатели в приложение.
     private static DownloadManager CreateManager() => new(null, null, null, null, null);
 
-    private object NewJob(DownloadManager manager)
+    private object NewJob(DownloadManager manager, DownloadRequest request = null)
     {
-        var job = Activator.CreateInstance(JobType, new DownloadRequest())!;
+        var job = Activator.CreateInstance(JobType, request ?? new DownloadRequest())!;
         _jobs.Add(job);
         CurrentJob.SetValue(manager, job);
         typeof(DownloadManager).GetProperty(nameof(DownloadManager.State))!.SetValue(manager, DownloadState.Running);

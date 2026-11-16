@@ -71,6 +71,16 @@ public class LitnetSeriesTests
         Assert.Contains("403", Assert.Single(log.Warnings));
     }
 
+    [Fact]
+    public async Task RateLimitedOptionalSeriesPropagatesToStopPreviewFallback()
+    {
+        using var getter = Create("", 1, new WarningLogger(), HttpStatusCode.TooManyRequests);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUrl));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, error.StatusCode);
+    }
+
     [Theory]
     [InlineData(0, false)]
     [InlineData(2, true)]

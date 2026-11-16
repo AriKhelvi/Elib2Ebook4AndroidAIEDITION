@@ -33,6 +33,7 @@
         <Compile Include="..\E2E.Droid\Services\SupportedSites.cs" Link="Shared\SupportedSites.cs" />
         <Compile Include="..\E2E.Droid\Services\SiteDiagnosticCatalog.cs" Link="Shared\SiteDiagnosticCatalog.cs" />
         <Compile Include="..\E2E.Droid\Services\SiteDiagnosticBatch.cs" Link="Shared\SiteDiagnosticBatch.cs" />
+        <Compile Include="..\E2E.Droid\Services\SiteRateLimitScope.cs" Link="Shared\SiteRateLimitScope.cs" />
         <Compile Include="..\E2E.Droid\Services\DiagnosticBookChecks.cs" Link="Shared\DiagnosticBookChecks.cs" />
         <Compile Include="..\E2E.Droid\Services\CertificatePolicy.cs" Link="Shared\CertificatePolicy.cs" />
         <EmbeddedResource Include="..\..\README.md" LogicalName="Elib2Ebook.README.md" />

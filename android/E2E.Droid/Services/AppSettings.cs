@@ -10,6 +10,9 @@ namespace E2E.Droid.Services;
 public sealed class AppSettings
 {
     public const string DefaultBookNamePattern = "{Author.Name} - {Book.Title}";
+    private const string AdditionalTypesMigrationKey = "AdditionalTypesAudioImagesV1";
+    private static readonly object AdditionalTypesMigrationSync = new();
+    private static readonly string[] AvailableAdditionalTypes = ["audio", "images"];
 
     /// <summary>Android SharedPreferences через MAUI Essentials: простые значения, переживают перезапуск.</summary>
     private static IPreferences P => Preferences.Default;
@@ -177,18 +180,59 @@ public sealed class AppSettings
         set => Set(nameof(Cover), value);
     }
 
-    /// <summary>Сохранять дополнительные файлы со страницы книги (--additional).</summary>
+    /// <summary>Сохранять дополнительные аудиофайлы и картинки глав (--additional).</summary>
     public bool Additional
     {
-        get => P.Get(nameof(Additional), false);
-        set => Set(nameof(Additional), value);
+        get
+        {
+            MigrateAdditionalTypes();
+            return P.Get(nameof(Additional), false);
+        }
+        set
+        {
+            MigrateAdditionalTypes();
+            // Пользователь явно включает дополнения после снятия последнего типа.
+            if (value && AdditionalTypes.Count == 0)
+                P.Set(nameof(AdditionalTypes), string.Join(',', AvailableAdditionalTypes));
+            Set(nameof(Additional), value);
+        }
     }
 
-    /// <summary>books, audio, images; пусто — все типы.</summary>
+    /// <summary>Явно выбранные audio/images. Пустой набор выключает дополнительные файлы.</summary>
     public IReadOnlyList<string> AdditionalTypes
     {
-        get => Split(P.Get(nameof(AdditionalTypes), string.Empty));
-        set => Set(nameof(AdditionalTypes), string.Join(',', value));
+        get
+        {
+            MigrateAdditionalTypes();
+            return NormalizeAdditionalTypes(Split(P.Get(nameof(AdditionalTypes), string.Empty)));
+        }
+        set
+        {
+            MigrateAdditionalTypes();
+            var selected = NormalizeAdditionalTypes(value);
+            if (selected.Count == 0) P.Set(nameof(Additional), false);
+            Set(nameof(AdditionalTypes), string.Join(',', selected));
+        }
+    }
+
+    private static IReadOnlyList<string> NormalizeAdditionalTypes(IEnumerable<string> types)
+        => (types ?? []).Select(type => type?.Trim().ToLowerInvariant())
+            .Where(type => AvailableAdditionalTypes.Contains(type)).Distinct().ToArray();
+
+    private static void MigrateAdditionalTypes()
+    {
+        if (P.Get(AdditionalTypesMigrationKey, false)) return;
+        lock (AdditionalTypesMigrationSync)
+        {
+            if (P.Get(AdditionalTypesMigrationKey, false)) return;
+            var previous = Split(P.Get(nameof(AdditionalTypes), string.Empty));
+            // Раньше пустой список означал все типы, включая исходные файлы книг.
+            var selected = previous.Count == 0 ? AvailableAdditionalTypes : NormalizeAdditionalTypes(previous);
+            // Выбор только удалённого типа не должен неожиданно включить аудио и картинки.
+            if (selected.Count == 0) P.Set(nameof(Additional), false);
+            P.Set(nameof(AdditionalTypes), string.Join(',', selected));
+            P.Set(AdditionalTypesMigrationKey, true);
+        }
     }
 
     /// <summary>Начинать скачивание сразу, как только ссылка пришла через «Поделиться».</summary>

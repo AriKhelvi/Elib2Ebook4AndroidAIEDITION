@@ -29,6 +29,42 @@ public sealed class SiteDiagnosticBatchTests : IDisposable
     }
 
     [Fact]
+    public async Task RateLimitSkipsFollowingMirrorButContinuesOtherSiteAndDoesNotCarryToNextRun()
+    {
+        using var fixture = RateLimitFixture.Use();
+        var cases = new[]
+        {
+            Case("limited") with { BookUrl = RateLimitFixture.Site + "/limited" },
+            Case("mirror") with { BookUrl = RateLimitFixture.Mirror + "/next" },
+            Case("other") with { BookUrl = RateLimitFixture.Other + "/next" },
+            Case("same") with { BookUrl = RateLimitFixture.Site + "/last" }
+        };
+        var called = new List<string>();
+        var published = new List<SiteDiagnosticResult>();
+        Task<SiteProbeOutcome> Probe(SiteDiagnosticCase item, CancellationToken _)
+        {
+            called.Add(item.Id);
+            if (item.Id == "limited")
+                throw new InvalidOperationException("private", new HttpRequestException("secret", null, HttpStatusCode.TooManyRequests));
+            return Task.FromResult(new SiteProbeOutcome(SiteDiagnosticStatus.Ok, "Файлы проверены"));
+        }
+
+        var results = await SiteDiagnosticBatch.RunAsync(cases, Probe, published.Add, CancellationToken.None);
+
+        Assert.Equal(new[] { "limited", "other" }, called);
+        Assert.Equal(new[] { SiteDiagnosticStatus.AccessRestricted, SiteDiagnosticStatus.Skipped, SiteDiagnosticStatus.Ok, SiteDiagnosticStatus.Skipped },
+            results.Select(result => result.Status));
+        Assert.Equal(cases.Select(item => item.Id), published.Select(result => result.Case.Id));
+        Assert.Contains("HTTP 429", results[1].Detail);
+        Assert.DoesNotContain(results, result => result.Detail.Contains("private") || result.Detail.Contains("secret"));
+
+        called.Clear();
+        var retry = await SiteDiagnosticBatch.RunAsync([cases[1]], Probe, null, CancellationToken.None);
+        Assert.Equal(new[] { "mirror" }, called);
+        Assert.Equal(SiteDiagnosticStatus.Ok, Assert.Single(retry).Status);
+    }
+
+    [Fact]
     public async Task CancellationIncludesCurrentAndAllUnstartedCasesWithoutCallingThem()
     {
         using var stop = new CancellationTokenSource();

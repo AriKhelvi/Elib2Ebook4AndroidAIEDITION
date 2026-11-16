@@ -40,6 +40,64 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         Assert.False((bool)typeof(DiagnosticsRunner).GetField("_completed", PrivateInstance)!.GetValue(runner)!);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TlsRateLimitSkipsLaterBookOnMirrorButAllowsAnotherSite(bool alternativeTls)
+    {
+        using var fixture = RateLimitFixture.Use();
+        var runner = CreateRunner();
+        var probe = alternativeTls
+            ? new TlsProbeResult { Tls12HttpStatusCode = 429 }
+            : new TlsProbeResult { Ok = true, HttpStatusCode = 429 };
+        Invoke(runner, "RecordProbeRateLimit", RateLimitFixture.Site, probe);
+
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Зеркало", RateLimitFixture.Mirror + "/next", 1, 1, CancellationToken.None);
+
+        Assert.Empty(RateLimitFixture.Requests);
+        Assert.Contains(runner.Log, line => line.Contains("[skip]") && line.Contains("HTTP 429"));
+        Assert.Equal(1, typeof(DiagnosticsRunner).GetField("_skipped", PrivateInstance)!.GetValue(runner));
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Другой сайт", RateLimitFixture.Other + "/next", 1, 1, CancellationToken.None);
+        Assert.Contains(RateLimitFixture.Other + "/next", RateLimitFixture.Requests);
+        Assert.Equal(0, typeof(DiagnosticsRunner).GetField("_failed", PrivateInstance)!.GetValue(runner));
+    }
+
+    [Fact]
+    public async Task DownloadProbeRateLimitSkipsFollowingAliasAndNewRunClearsTheLimit()
+    {
+        using var fixture = RateLimitFixture.Use();
+        var runner = CreateRunner();
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Первая книга", RateLimitFixture.Site + "/limited", 1, 1, CancellationToken.None);
+        var requestsAfterFailure = RateLimitFixture.Requests.Count;
+        Assert.True(requestsAfterFailure > 0);
+
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Следующая книга", RateLimitFixture.Mirror + "/next", 1, 1, CancellationToken.None);
+
+        Assert.Equal(requestsAfterFailure, RateLimitFixture.Requests.Count);
+        Assert.Contains(runner.Log, line => line.Contains("[skip]") && line.Contains("HTTP 429"));
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        // Начало нового запуска сбрасывает лимит; отмена до первого шага исключает сеть из теста.
+        await InvokeAsync(runner, "RunAsync", cancelled.Token, false);
+        var scope = (SiteRateLimitScope)typeof(DiagnosticsRunner).GetField("_rateLimits", PrivateInstance)!.GetValue(runner)!;
+        Assert.False(scope.TryGetReason(RateLimitFixture.Mirror + "/next", out _));
+    }
+
+    [Fact]
+    public async Task OldDeviceStepSkipsRateLimitedNetworkProbeButStillChecksForgedCertificate()
+    {
+        var runner = CreateRunner();
+        Invoke(runner, "RecordProbeRateLimit", "https://author.today/", new TlsProbeResult { Ok = true, HttpStatusCode = 429 });
+        using var stop = new CancellationTokenSource();
+        stop.Cancel();
+
+        // Отменённый токен не должен дойти до сетевого вызова; локальные проверки продолжаются.
+        await InvokeAsync(runner, "StepOldDeviceAsync", stop.Token);
+
+        Assert.Contains(runner.Log, line => line.Contains("[skip]") && line.Contains("author.today") && line.Contains("HTTP 429"));
+        Assert.Contains(runner.Log, line => line.Contains("подставной сертификат отклонён"));
+    }
+
     [Fact]
     public async Task DownloadLogExportUsesIndependentDestinationWhenBookFolderIsUnavailable()
     {

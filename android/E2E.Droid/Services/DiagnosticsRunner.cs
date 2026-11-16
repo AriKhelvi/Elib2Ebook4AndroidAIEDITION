@@ -50,17 +50,18 @@ public sealed class DiagnosticsRunner(
     /// Куда ядро ходит по IP в обход блокировок, с настоящим именем сайта в заголовке Host. Адреса — как в
     /// src/ExternalServices: AuthorTodayGetter (_apiIp, _systemIp) и ReadliGetter (_host).
     /// </summary>
-    private static readonly (string Ip, string Host, string Why)[] BypassTargets =
+    private static readonly (string Ip, string Host, string Why, string SiteUrl)[] BypassTargets =
     [
-        ("185.26.98.195", "api.author.today", "author.today: API, когда api.author.today недоступен"),
-        ("185.26.98.195", "author.today", "author.today: сайт в обход блокировки"),
-        ("213.227.140.81", "readli.net", "readli: всегда по IP (обход Cloudflare)")
+        ("185.26.98.195", "api.author.today", "author.today: API, когда api.author.today недоступен", "https://author.today/"),
+        ("185.26.98.195", "author.today", "author.today: сайт в обход блокировки", "https://author.today/"),
+        ("213.227.140.81", "readli.net", "readli: всегда по IP (обход Cloudflare)", "https://readli.net/")
     ];
 
     private readonly List<string> _log = [];
     private readonly List<SiteDiagnosticResult> _siteResults = [];
     private readonly List<string> _applicationProblems = [];
     private IReadOnlyList<SiteDiagnosticCase> _allSiteCases = [];
+    private SiteRateLimitScope _rateLimits = new();
     private CancellationTokenSource _cts;
 
     /// <summary>1 — идёт запуск или сценарий (защита от двойного нажатия, как в DownloadManager).</summary>
@@ -317,6 +318,7 @@ public sealed class DiagnosticsRunner(
 
     private async Task RunAsync(CancellationToken ct, bool allSites)
     {
+        _rateLimits = new SiteRateLimitScope();
         IsAllSitesRun = allSites;
         _allSiteCases = allSites ? SiteDiagnosticCatalog.Entries : [];
         var total = Stopwatch.StartNew();
@@ -705,6 +707,11 @@ public sealed class DiagnosticsRunner(
             await gate.WaitAsync(ct);
             try
             {
+                if (_rateLimits.TryGetReason(url, out var reason))
+                {
+                    Skip(reason);
+                    return null;
+                }
                 var result = await TlsProbe.ProbeAsync(new Uri(url), null, settings.Proxy, ProbeTimeout, ct);
                 // Не ответил за 20 с — пробуем ещё раз с таймаутом из настроек (до 120 с): так качает само приложение.
                 // Отличает медленный сайт от недоступного
@@ -727,6 +734,7 @@ public sealed class DiagnosticsRunner(
                         : $"      Проба TLS 1.2: тоже не открылся — {tls12.Outcome}");
                 }
 
+                RecordProbeRateLimit(url, result);
                 Report(result);
                 return result;
             }
@@ -736,16 +744,22 @@ public sealed class DiagnosticsRunner(
             }
         }));
 
-        Info(TlsProbe.DescribeSummary(results));
+        Info(TlsProbe.DescribeSummary(results.Where(result => result != null)));
     }
 
     private async Task StepBypassAsync(CancellationToken ct)
     {
-        foreach (var (ip, host, why) in BypassTargets)
+        foreach (var (ip, host, why, siteUrl) in BypassTargets)
         {
             ct.ThrowIfCancellationRequested();
+            if (_rateLimits.TryGetReason(siteUrl, out var reason))
+            {
+                Skip($"{why}: {reason}");
+                continue;
+            }
             Info($"{why}: https://{ip}/ с Host: {host}");
             var result = await TlsProbe.ProbeAsync(new Uri($"https://{ip}/"), host, settings.Proxy, ProbeTimeout, ct);
+            RecordProbeRateLimit(siteUrl, result);
             Report(result);
             if (result.TlsSeen)
             {
@@ -764,17 +778,26 @@ public sealed class DiagnosticsRunner(
                                  $"({string.Join("; ", bridges.Select(b => $"{b.GetNameInfo(X509NameType.SimpleName, false)} ← {b.GetNameInfo(X509NameType.SimpleName, true)}"))})");
 
         // Старый Android без ISRG Root X1: цепочку author.today (Let's Encrypt) — только по встроенным корням
-        var sample = await TlsProbe.ProbeAsync(new Uri("https://author.today/"), null, settings.Proxy, ProbeTimeout, ct);
-        if (sample.Leaf == null)
+        const string sampleUrl = "https://author.today/";
+        if (_rateLimits.TryGetReason(sampleUrl, out var skippedReason))
         {
-            Skip($"не удалось получить сертификат author.today: {sample.Outcome}");
+            Skip(skippedReason);
         }
         else
         {
-            var reason = CertificatePolicy.TryChainWithBundledRoots(sample.Leaf, sample.Sent);
-            Check(reason == null, reason == null
-                ? "цепочка author.today строится по одним встроенным корням — на Android без ISRG Root X1 сайты Let's Encrypt откроются"
-                : $"по встроенным корням цепочка не строится: {reason}");
+            var sample = await TlsProbe.ProbeAsync(new Uri(sampleUrl), null, settings.Proxy, ProbeTimeout, ct);
+            RecordProbeRateLimit(sampleUrl, sample);
+            if (sample.Leaf == null)
+            {
+                Skip($"не удалось получить сертификат author.today: {sample.Outcome}");
+            }
+            else
+            {
+                var reason = CertificatePolicy.TryChainWithBundledRoots(sample.Leaf, sample.Sent);
+                Check(reason == null, reason == null
+                    ? "цепочка author.today строится по одним встроенным корням — на Android без ISRG Root X1 сайты Let's Encrypt откроются"
+                    : $"по встроенным корням цепочка не строится: {reason}");
+            }
         }
 
         // И обратное: подставной сертификат на то же имя политика не пропускает
@@ -907,6 +930,11 @@ public sealed class DiagnosticsRunner(
             Fail($"{label}: нужна ссылка HTTP/HTTPS без логина и пароля в адресе");
             return;
         }
+        if (_rateLimits.TryGetReason(text, out var reason))
+        {
+            Skip($"{label}: {reason}");
+            return;
+        }
         if (!GetterResolver.IsSupported(url))
         {
             Skip($"{label}: для {url.Host} нет включённого загрузчика в этой сборке");
@@ -960,6 +988,7 @@ public sealed class DiagnosticsRunner(
         }
         catch (Exception ex)
         {
+            _rateLimits.Record(text, ex);
             Fail($"{label}: скачивание не удалось за {sw.Elapsed.TotalSeconds:0.0} с: {ex}");
             if (CertificatePolicy.LastRejection != null) Info($"последний отказ по сертификату: {CertificatePolicy.LastRejection}");
         }
@@ -1018,6 +1047,12 @@ public sealed class DiagnosticsRunner(
     }
 
     // ---------------------------------------------------------------- проверка одного адреса
+
+    private void RecordProbeRateLimit(string siteUrl, TlsProbeResult result)
+    {
+        _rateLimits.Record(siteUrl, result.HttpStatusCode);
+        _rateLimits.Record(siteUrl, result.Tls12HttpStatusCode);
+    }
 
     /// <summary>Строки проверки — одним блоком (сайты проверяются параллельно) и в счётчики.</summary>
     private void Report(TlsProbeResult result)

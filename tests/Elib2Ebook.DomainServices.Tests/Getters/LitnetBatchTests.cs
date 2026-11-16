@@ -35,10 +35,65 @@ public class LitnetBatchTests
         using var getter = CreateGetter(new Options(), handler);
         using var book = await getter.Get(BookUri);
 
-        Assert.Equal(Enumerable.Repeat(10, 20).Append(5), handler.Batches.Select(batch => batch.Length));
+        Assert.Equal(new[] { 100, 100, 5 }, handler.Batches.Select(batch => batch.Length));
         Assert.Equal(Enumerable.Range(1, 205).Select(i => (long)i), handler.Batches.SelectMany(batch => batch));
         Assert.Equal(Enumerable.Range(1, 205).Select(i => $"Глава {i}"), book.Chapters.Select(chapter => chapter.Title));
         Assert.All(book.Chapters, chapter => Assert.Equal("<p>Текст главы</p>", chapter.Content));
+    }
+
+    [Theory]
+    [InlineData(8, 1)]
+    [InlineData(40, 1)]
+    [InlineData(100, 1)]
+    [InlineData(101, 2)]
+    [InlineData(205, 3)]
+    public async Task PreviewAndFullDownloadStayWithinRequestBudget(int chapters, int textRequests)
+    {
+        var options = new Options { NoChapters = true };
+        var handler = new FakeHandler { ChapterCount = chapters, IncludeCover = true, Access = _ => true };
+        using var getter = CreateGetter(options, handler);
+        await getter.Init();
+        using (var preview = await getter.Get(BookUri)) { }
+        options.NoChapters = false;
+
+        using var book = await getter.Get(BookUri);
+
+        Assert.Equal(chapters, book.Chapters.Count());
+        Assert.Equal(textRequests, handler.Batches.Count);
+        Assert.Equal(1, handler.MetadataRequests);
+        Assert.Equal(1, handler.CoverRequests);
+        Assert.Equal(1, handler.SeriesRequests);
+        Assert.Equal(1, handler.ContentsRequests);
+        // Считаются все фактические HTTP-запросы. Authorize в этом тесте не вызывается.
+        Assert.Equal(4 + textRequests, handler.Versions.Count);
+    }
+
+    [Fact]
+    public async Task RateLimitOnSecondBatchDoesNotRequestThirdOrReturnPartialBook()
+    {
+        var handler = new FakeHandler { RateLimitBatchNumber = 2 };
+        using var getter = CreateGetter(new Options(), handler);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUri));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, error.StatusCode);
+        Assert.Equal(new[] { 100, 100 }, handler.Batches.Select(batch => batch.Length));
+        Assert.Equal(0, handler.SeriesRequests);
+    }
+
+    [Fact]
+    public async Task RateLimitedCoverStopsBeforeContentsAndText()
+    {
+        var handler = new FakeHandler { IncludeCover = true, CoverStatus = HttpStatusCode.TooManyRequests };
+        using var getter = CreateGetter(new Options(), handler);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUri));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, error.StatusCode);
+        Assert.Equal(1, handler.CoverRequests);
+        Assert.Equal(0, handler.ContentsRequests);
+        Assert.Equal(0, handler.SeriesRequests);
+        Assert.Empty(handler.Batches);
     }
 
     [Fact]
@@ -100,6 +155,7 @@ public class LitnetBatchTests
         var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUri));
 
         Assert.Equal(HttpStatusCode.TooManyRequests, error.StatusCode);
+        Assert.Single(handler.Batches);
     }
 
     [Fact]
@@ -152,7 +208,7 @@ public class LitnetBatchTests
         using var getter = CreateGetter(new Options(), handler);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => getter.Get(BookUri));
-        Assert.Contains("не вернул 1 из 10", error.Message);
+        Assert.Contains("не вернул 1 из 100", error.Message);
         Assert.Single(handler.Batches);
     }
 
@@ -174,11 +230,11 @@ public class LitnetBatchTests
         var log = new ProgressLogger();
         var handler = new FakeHandler
         {
-            ChapterCount = 12,
+            ChapterCount = 102,
             BeforeBatch = number =>
             {
                 Assert.Contains(log.Lines, line => line.StartsWith("Получаю текст глав Litnet"));
-                Assert.Equal(number == 1 ? 0 : 10, log.Lines.Count(line => line.StartsWith("Загружаю главу")));
+                Assert.Equal(number == 1 ? 0 : 100, log.Lines.Count(line => line.StartsWith("Загружаю главу")));
             }
         };
         using var getter = new LitnetGetter(new BookGetterConfig(new Options(), new HttpClient(handler),
@@ -186,9 +242,9 @@ public class LitnetBatchTests
 
         using var book = await getter.Get(BookUri);
 
-        Assert.Equal(12, book.Chapters.Count());
-        Assert.Contains("Получаю текст глав Litnet 1–10 из 12", log.Lines);
-        Assert.Contains("Получаю текст глав Litnet 11–12 из 12", log.Lines);
+        Assert.Equal(102, book.Chapters.Count());
+        Assert.Contains("Получаю текст глав Litnet 1–100 из 102", log.Lines);
+        Assert.Contains("Получаю текст глав Litnet 101–102 из 102", log.Lines);
     }
 
     [Theory]
@@ -239,7 +295,7 @@ public class LitnetBatchTests
     public async Task CancellationAfterFirstBatchDoesNotRequestTheSecond()
     {
         using var cancellation = new CancellationTokenSource();
-        var log = new ProgressLogger { OnLine = line => { if (line == "Загружаю главу \"Глава 10\"") cancellation.Cancel(); } };
+        var log = new ProgressLogger { OnLine = line => { if (line == "Загружаю главу \"Глава 100\"") cancellation.Cancel(); } };
         var handler = new FakeHandler();
         var config = new BookGetterConfig(new Options(), new HttpClient(handler), new CookieContainer(), TempFolderFactory.Create(null), log)
         { CancellationToken = cancellation.Token };
@@ -293,6 +349,8 @@ public class LitnetBatchTests
         public bool IncludeCover { get; init; }
         public Func<int, bool?> Access { get; init; } = _ => null;
         public HttpStatusCode BatchStatus { get; init; } = HttpStatusCode.OK;
+        public HttpStatusCode CoverStatus { get; init; } = HttpStatusCode.OK;
+        public int? RateLimitBatchNumber { get; init; }
         public bool OmitLastChapter { get; init; }
         public int ChapterCount { get; init; } = 205;
         public bool AdultOnly { get; init; }
@@ -317,10 +375,11 @@ public class LitnetBatchTests
                     result = Enumerable.Range(1, ChapterCount).Select(i => new { id = i, title = $"Глава {i}", access = Access(i) });
                     break;
                 case "/v1/book/get-chapters-texts/":
-                    if (BatchStatus != HttpStatusCode.OK)
-                        return Task.FromResult(TestHttpResponse.Create(BatchStatus, request, new StringContent("{}")));
                     var ids = HttpUtility.ParseQueryString(uri.Query).GetValues("chapter_ids[]")!.Select(long.Parse).ToArray();
                     Batches.Add(ids);
+                    var status = Batches.Count == RateLimitBatchNumber ? HttpStatusCode.TooManyRequests : BatchStatus;
+                    if (status != HttpStatusCode.OK)
+                        return Task.FromResult(TestHttpResponse.Create(status, request, new StringContent("{}")));
                     BeforeBatch?.Invoke(Batches.Count);
                     // Сервер может вернуть главы в другом порядке и обрезать большой запрос.
                     result = ids.Take(OmitLastChapter ? ids.Length - 1 : 100).Reverse().Select(id => new
@@ -336,6 +395,8 @@ public class LitnetBatchTests
                     Assert.Equal("publiccdn.litnet.com", uri.Host);
                     Assert.Equal("publiccdn.litnet.com", request.Headers.Host);
                     CoverRequests++;
+                    if (CoverStatus != HttpStatusCode.OK)
+                        return Task.FromResult(TestHttpResponse.Create(CoverStatus, request, new StringContent("{}")));
                     var image = new ByteArrayContent(CoverBytes);
                     image.Headers.ContentType = new("image/png");
                     return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK, request, image));

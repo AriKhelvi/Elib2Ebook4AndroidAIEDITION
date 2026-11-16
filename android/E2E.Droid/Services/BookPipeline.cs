@@ -11,7 +11,7 @@
 //   GetterResolver.Create        → загрузчик нужного сайта по ссылке
 //   getter.Init / Authorize      → подготовка сессии, вход по логину (если задан)
 //   getter.Get (NoChapters=true) → быстрое «превью»: название, автор, обложка — для карточки в интерфейсе.
-//                                  Необязательное: его ошибки не роняют скачивание, а для сайтов, где
+//                                  Необязательное: обычные ошибки не роняют скачивание (HTTP 429 останавливает), а для сайтов, где
 //                                  такой проход всё равно качает всю книгу, оно отключено (NoPreviewGetters)
 //   getter.Get                   → полная книга со всеми главами и картинками
 //   BuilderProvider.Get(format)  → сборка EPUB/FB2/CBZ/TXT в рабочую папку задания
@@ -164,6 +164,18 @@ public static class BookPipeline
     /// <summary>Показывать ли карточку книги до скачивания для этого загрузчика (см. <see cref="NoPreviewGetters"/>).</summary>
     public static bool SupportsPreview(Type getterType) => !NoPreviewGetters.Contains(getterType.FullName ?? string.Empty);
 
+    /// <summary>В Android дополняем книгу только аудио и изображениями, без экспорта исходных книг.</summary>
+    internal static void NormalizeAdditionalTypes(Options options)
+    {
+        var requested = options.AdditionalTypes?.ToArray();
+        // У ядра null/пустой список означает все типы. Для старых настроек задаём разрешённые явно.
+        options.AdditionalTypes = requested is null or { Length: 0 }
+            ? options.Additional ? [AdditionalTypeEnum.Audio, AdditionalTypeEnum.Images] : []
+            : requested.Where(type => type is AdditionalTypeEnum.Audio or AdditionalTypeEnum.Images).Distinct().ToArray();
+        // После удаления единственного Books пустой список не должен снова включить все типы.
+        if (!options.AdditionalTypes.Any()) options.Additional = false;
+    }
+
     /// <summary>Скачивает одну книгу (одну ссылку из options.Url) во все запрошенные форматы.</summary>
     /// <param name="options">Опции ядра; SavePath и TempPath должны указывать на рабочие папки задания.</param>
     /// <param name="logger">Куда писать журнал (строки ядра на русском: «Загружаю главу …»).</param>
@@ -175,6 +187,7 @@ public static class BookPipeline
     /// <exception cref="OperationCanceledException">Если загрузку отменили.</exception>
     public static async Task<BookJobResult> RunAsync(Options options, ILogger logger, Action<BookPreview> onPreview, CancellationToken ct)
     {
+        NormalizeAdditionalTypes(options);
         Directory.CreateDirectory(options.SavePath);
         Directory.CreateDirectory(options.TempPath);
 
@@ -289,7 +302,7 @@ public static class BookPipeline
             logger.LogWarning("Не получен текст главы «{Title}». Она не войдёт в книгу; возможно, требуется доступ на сайте.", chapter.Title ?? "без названия");
     }
 
-    /// <summary>Ошибку необязательной карточки пишем в журнал, затем пробуем полную загрузку.</summary>
+    /// <summary>Обычную ошибку карточки пишем в журнал; HTTP 429 останавливает задание без повторного Get.</summary>
     private static async Task TryPreviewAsync(GetterBase getter, Uri url, Options options, ILogger logger, Action<BookPreview> onPreview, CancellationToken ct)
     {
         // Доп. файлы (иллюстрации, аудио, оригиналы) карточке не нужны, а часть загрузчиков качает их,
@@ -302,6 +315,7 @@ public static class BookPipeline
             using var shortBook = await getter.Get(url);
             onPreview(BookPreview.From(shortBook));
         }
+        catch (Exception ex) when (SiteRateLimitScope.IsRateLimited(ex)) { throw; }
         catch (Exception ex) when (!ct.IsCancellationRequested)
         {
             logger.LogDebug("Ошибка необязательной карточки: {ExceptionDump}", ex.ToString());

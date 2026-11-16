@@ -428,6 +428,7 @@ public sealed class DownloadManager(
     {
         var request = job.Request;
         var ct = job.Cts.Token;
+        var rateLimits = new SiteRateLimitScope();
 
         // Рабочие папки — в личных данных: очистка Android-кэша не должна оборвать сборку книги.
         // После каждой книги удаляем её папку; остатки предыдущих сессий убираются при запуске.
@@ -459,6 +460,19 @@ public sealed class DownloadManager(
 
             try
             {
+                if (rateLimits.TryGetReason(url, out var reason))
+                {
+                    lock (job.Errors) job.Errors.Add(LogText.Clean($"{url}: {reason}"));
+                    Write(job, $"{url}: {reason}");
+                    await WriteResultAsync(job, () =>
+                    {
+                        var skipped = NewRecord(url, request);
+                        skipped.Error = reason;
+                        history.Add(skipped);
+                        return Task.CompletedTask;
+                    });
+                    continue;
+                }
                 Write(job, $"Начинаю генерацию книги {url}");
                 var options = BuildOptions(request, url, workDir);
                 var logger = new CallbackLogger(line => Write(job, line), line =>
@@ -557,7 +571,8 @@ public sealed class DownloadManager(
                     return; // после отмены ядро падает с чем угодно — это не ошибка книги
                 }
 
-                // Ошибка одной книги не останавливает остальные ссылки.
+                // Другие сайты продолжаются, но после 429 новые книги того же сайта не запрашиваем.
+                rateLimits.Record(url, ex);
                 // TaskCanceledException без отмены = сработал таймаут HttpClient;
                 // AuthenticationException внутри = сертификат сайта не прошёл проверку (см. CertificatePolicy).
                 var message = ex is TaskCanceledException
@@ -739,7 +754,7 @@ public sealed class DownloadManager(
             .Select(t => t!.Value)
             .ToList();
 
-        return new Options
+        var options = new Options
         {
             Url = [url],
             Format = request.FormatsFor(url),
@@ -764,6 +779,8 @@ public sealed class DownloadManager(
             SavePath = Path.Combine(workDir, "out"), // сюда билдеры пишут готовые файлы
             TempPath = Path.Combine(workDir, "tmp")  // сюда ядро складывает скачанные картинки
         };
+        BookPipeline.NormalizeAdditionalTypes(options);
+        return options;
     }
 
     private static BookRecord NewRecord(string url, DownloadRequest request) => new()

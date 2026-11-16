@@ -77,7 +77,7 @@
             <label class="list-item two-line">
                 <span class="list-item-text">
                     <span class="list-item-headline">Дополнительные файлы</span>
-                    <span class="list-item-supporting">Файлы с сайта и картинки глав — отдельно от созданной книги</span>
+                    <span class="list-item-supporting">Аудио и картинки глав — отдельными файлами</span>
                 </span>
                 <input type="checkbox" role="switch" class="switch" checked="@Settings.Additional" @onchange="e => Settings.Additional = (bool)e.Value!" />
             </label>
@@ -97,8 +97,6 @@
                             </button>
                         }
                     </div>
-                    <p class="supporting-text flush">Ничего не выбрано — все типы.</p>
-                    <p class="supporting-text flush">«Файлы книг с сайта» — готовые EPUB, FB3 и другие файлы, которые отдаёт сайт, иногда связанные издания. Сохраняются дополнительно к выбранному формату.</p>
                     <p class="supporting-text flush">«Картинки глав» — отдельные копии загруженных иллюстраций. Сохранение обложки задаётся переключателем выше.</p>
                 </div>
             }
@@ -538,7 +536,6 @@
 
     private static readonly (string Id, string Title)[] AdditionalTypes =
     [
-        ("books", "Файлы книг с сайта"),
         ("audio", "Аудио"),
         ("images", "Картинки глав")
     ];

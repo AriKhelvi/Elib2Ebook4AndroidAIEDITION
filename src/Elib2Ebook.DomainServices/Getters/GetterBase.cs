@@ -107,6 +107,8 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
             return image;
         }
         catch (OperationCanceledException) { throw; }
+        // После ограничения частоты нельзя продолжать закачку остальных картинок как после обычного 404.
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests) { throw; }
         catch (Exception ex)
         {
             Config.Logger.LogWarning($"Не удалось загрузить изображение {label}: {LogText.Clean(ex.Message)}");
