@@ -153,14 +153,34 @@ try
     {
         var info = new FileInfo(file);
         Console.WriteLine($"  {Path.GetRelativePath(result.OutputDir, file)} — {info.Length:N0} байт");
-        foreach (var check in info.Extension.ToLowerInvariant() is ".fb2" or ".epub" or ".cbz"
-            ? DiagnosticBookChecks.CheckFile(file, expectedChapters) : Array.Empty<DiagnosticCheck>())
+        IReadOnlyList<DiagnosticCheck> checks = info.Extension.ToLowerInvariant() switch
+        {
+            ".fb2" or ".epub" => DiagnosticBookChecks.CheckFile(file, expectedChapters),
+            // Та же проверка страниц, что в Android «Проверить все сайты».
+            ".cbz" => SiteDiagnosticBatch.CheckOutput(new SiteDiagnosticCase(
+                "core-smoke", inputUrl.Host, inputUrl.AbsoluteUri, "Выбранный диапазон", null, Images: true),
+                bookInfo.Chapters, [file], probeLimit.Token),
+            _ => Array.Empty<DiagnosticCheck>()
+        };
+        foreach (var check in checks)
         {
             if (check.Warning) Console.WriteLine($"  [warn] {check.Message}");
             else Check(check.Passed, check.Message);
         }
         switch (info.Extension)
         {
+            case ".cbz":
+                using (var zip = ZipFile.OpenRead(file))
+                {
+                    // Читаем каждую запись целиком: одного корректного заголовка картинки недостаточно.
+                    foreach (var entry in zip.Entries)
+                    {
+                        await using var stream = entry.Open();
+                        await stream.CopyToAsync(Stream.Null, probeLimit.Token);
+                    }
+                    Check(zip.Entries.Count > 0, $"CBZ: полностью прочитано записей {zip.Entries.Count}");
+                }
+                break;
             case ".epub":
                 using (var zip = ZipFile.OpenRead(file))
                 {
