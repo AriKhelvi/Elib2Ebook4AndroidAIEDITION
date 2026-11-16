@@ -124,20 +124,10 @@
                 </div>
                 <p class="supporting-text flush">
                     Для книг и ранобэ: этот формат получает каждая новая ссылка. Манга и комиксы распознаются по сайту
-                    и получают CBZ — поэтому после манги следующая книга снова будет в текстовом формате.
-                    На главном экране формат можно поменять для одной ссылки.
+                    и сохраняются только в CBZ — поэтому после манги следующая книга снова будет в текстовом формате.
+                    На главном экране текстовый формат можно поменять для одной ссылки.
                 </p>
             </div>
-
-            <hr class="divider" />
-
-            <label class="list-item two-line">
-                <span class="list-item-text">
-                    <span class="list-item-headline wrap">Распознавать мангу и комиксы (экспериментально)</span>
-                    <span class="list-item-supporting">Для сайтов с мангой и комиксами выбирать CBZ. Выключено — всем ссылкам текстовый формат по умолчанию</span>
-                </span>
-                <input type="checkbox" role="switch" class="switch" checked="@Settings.AutoFormat" @onchange="e => Settings.AutoFormat = (bool)e.Value!" />
-            </label>
 
             <hr class="divider" />
 

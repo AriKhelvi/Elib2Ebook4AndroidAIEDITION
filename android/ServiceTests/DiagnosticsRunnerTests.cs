@@ -98,6 +98,29 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         Assert.Contains(runner.Log, line => line.Contains("подставной сертификат отклонён"));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ComicDownloadProbeChecksCbzPagesWithoutRequiringTextEvenWhenImagesSettingIsOff(bool invalidImage)
+    {
+        using var fixture = new DiagnosticComicResolverScope();
+        var settings = new AppSettings { Images = false, BookNamePattern = "diagnostic-comic" };
+        var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
+        var url = "https://mangalib.me/ru/manga/" + (invalidImage ? "invalid" : "valid");
+
+        await InvokeAsync(runner, "RunDownloadProbeAsync", "Пробный комикс", url, 1, 1, CancellationToken.None);
+
+        Assert.Contains(runner.Log, line => line.Contains(".cbz: файлов 1"));
+        Assert.Contains(runner.Log, line => line.Contains("CBZ: изображений 1"));
+        Assert.Contains(runner.Log, line => line.Contains(invalidImage ? "[FAIL]" : "[ok]") &&
+            line.Contains($"CBZ: неверных сигнатур изображений {(invalidImage ? 1 : 0)}"));
+        Assert.DoesNotContain(runner.Log, line => line.Contains("FB2 + EPUB") || line.Contains("есть непустые главы") || line.Contains("созданы оба формата"));
+        Assert.Equal(invalidImage ? 1 : 0, typeof(DiagnosticsRunner).GetField("_failed", PrivateInstance)!.GetValue(runner));
+        Assert.Equal(0, typeof(DiagnosticsRunner).GetField("_warnings", PrivateInstance)!.GetValue(runner));
+        Assert.Contains(runner.Log, line => line.Contains("временные книги удалены"));
+    }
+
     [Fact]
     public async Task DownloadLogExportUsesIndependentDestinationWhenBookFolderIsUnavailable()
     {

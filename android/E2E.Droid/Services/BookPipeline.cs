@@ -192,6 +192,9 @@ public static class BookPipeline
         Directory.CreateDirectory(options.TempPath);
 
         var url = options.Url.First().AsUri();
+        // Проверяем до загрузчика: старая запись или прямой вызов не должны обходить ограничения формы.
+        options.Format = FormatSupport.ForDownload(url.AbsoluteUri, options.Format);
+        if (FormatSupport.IsComic(url.AbsoluteUri)) options.NoImage = false;
 
         // Стандартная конфигурация ядра: HttpClient с CookieContainer, распаковкой gzip/brotli,
         // прокси из настроек и таймаутом options.Timeout (ВАЖНО: 0 в Options = ошибка, задаём явно)

@@ -360,14 +360,14 @@
     {
         get
         {
+            if (_comic)
+            {
+                return "Манга и комиксы сохраняются только в CBZ. Формат выбран автоматически.";
+            }
+
             if (_manual)
             {
                 return FormatDescription(_format) + " Выбран только для этой ссылки.";
-            }
-
-            if (_comic && _format == "cbz" && Settings.AutoFormat)
-            {
-                return "CBZ выбран автоматически: сайт распознан как манга или комиксы (экспериментально, отключается в настройках).";
             }
 
             if (_format == Settings.TextFormat)
@@ -516,7 +516,7 @@
 
     /// <summary>
     /// Проверки по ссылке в поле: есть ли загрузчик для сайта и какой формат взять.
-    /// Формат выбирается заново для каждой новой ссылки: манга и комиксы → CBZ (если распознавание включено),
+    /// Формат выбирается заново для каждой новой ссылки: манга и комиксы → только CBZ,
     /// остальное → текстовый формат по умолчанию из настроек. Ручной выбор живёт до смены ссылки.
     /// </summary>
     private async Task CheckSite()
@@ -528,7 +528,7 @@
         if (url != _formatUrl)
         {
             _formatUrl = url;
-            _format = FormatSupport.ForUrl(url, Settings.TextFormat, Settings.AutoFormat);
+            _format = FormatSupport.ForUrl(url, Settings.TextFormat);
             _manual = false;
         }
 
@@ -544,7 +544,7 @@
     /// <summary>Ручной выбор — только для текущей ссылки; формат по умолчанию задаётся в настройках.</summary>
     private void PickFormat(string format)
     {
-        _format = format;
+        _format = FormatSupport.Fit(format, _comic);
         _manual = true;
     }
 
@@ -640,8 +640,10 @@
         {
             Urls = urls,
             Formats = [_format],
-            // Без ручного выбора у каждой ссылки свой формат по сайту: манга → CBZ, остальное → текстовый по умолчанию
-            FormatByUrl = _manual ? null : urls.ToDictionary(u => u, u => FormatSupport.ForUrl(u, Settings.TextFormat, Settings.AutoFormat)),
+            // Ручной выбор относится только к текущей ссылке; остальные получают свой формат по сайту.
+            FormatByUrl = urls.ToDictionary(u => u, u => _manual && u == _formatUrl
+                ? FormatSupport.Fit(_format, FormatSupport.IsComic(u))
+                : FormatSupport.ForUrl(u, Settings.TextFormat)),
             Login = hasLogin ? Form.Login : null,
             Password = hasLogin ? Form.Password : null,
             // Для CBZ «без картинок» не применяется (см. DownloadManager.BuildOptions) — архив вышел бы пустым

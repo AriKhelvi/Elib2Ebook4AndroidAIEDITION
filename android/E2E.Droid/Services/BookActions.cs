@@ -33,7 +33,7 @@ public sealed class BookActions(
         var started = await downloads.StartAsync(new DownloadRequest
         {
             Urls = [record.Url],
-            Formats = formats.Count > 0 ? formats : [FormatSupport.ForUrl(record.Url, settings.TextFormat, settings.AutoFormat)],
+            Formats = formats.Count > 0 ? formats : [FormatSupport.ForUrl(record.Url, settings.TextFormat)],
             NoImage = record.NoImage,
             Login = credential?.Login,
             Password = credential?.Password

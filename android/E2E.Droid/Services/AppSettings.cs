@@ -47,13 +47,6 @@ public sealed class AppSettings
         set => Set(nameof(TextFormat), FormatSupport.TextFormats.Contains(value) ? value : "epub");
     }
 
-    /// <summary>Экспериментально: распознавать сайты с мангой и комиксами и выбирать для них CBZ.</summary>
-    public bool AutoFormat
-    {
-        get => P.Get(nameof(AutoFormat), true);
-        set => Set(nameof(AutoFormat), value);
-    }
-
     /// <summary>Таймаут одного запроса в секундах (--timeout, по умолчанию 120).</summary>
     public int Timeout
     {

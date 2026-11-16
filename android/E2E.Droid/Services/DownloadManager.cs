@@ -38,7 +38,8 @@ public sealed class DownloadRequest
     public IReadOnlyDictionary<string, string> FormatByUrl { get; init; }
 
     public IReadOnlyList<string> FormatsFor(string url)
-        => FormatByUrl != null && FormatByUrl.TryGetValue(url, out var format) ? [format] : Formats;
+        => FormatSupport.ForDownload(url,
+            FormatByUrl != null && FormatByUrl.TryGetValue(url, out var format) ? [format] : Formats);
 
     public string Login { get; init; }
     public string Password { get; init; }

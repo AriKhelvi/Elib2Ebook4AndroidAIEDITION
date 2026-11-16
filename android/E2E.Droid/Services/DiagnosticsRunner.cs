@@ -909,9 +909,9 @@ public sealed class DiagnosticsRunner(
             ("Litmarket: названия и диапазон", "https://litmarket.ru/books/devochki-iz-proshloy-zhizni-1", 1, 2),
             ("RanobeLib: содержимое глав", "https://ranobelib.me/ru/29609--mikkakan-no-koufuku", 1, 2)
         };
-        Info("5 коротких примеров, до 10 глав; FB2 и EPUB из одного ответа. Полные книги не запрашиваются намеренно, но некоторые сайты возвращают весь текст одним ответом.");
+        Info("5 коротких примеров, до 10 глав; текст — FB2 и EPUB из одного ответа, манга и комиксы — CBZ. Полные книги не запрашиваются намеренно, но некоторые сайты возвращают весь текст одним ответом.");
         Info("Rulate 129557 и Bllate 17227: проверяются позиции 100–101 на книгах, предоставленных пользователем. Это проверка перехода на вторую страницу оглавления и сохранения обеих глав в FB2/EPUB.");
-        Info("Совпадение количества глав не доказывает их позиции в оглавлении: для анализа сохраняются сообщения загрузчика и последнее название главы. Пробы рассчитаны на текстовые книги.");
+        Info("Совпадение количества глав не доказывает их позиции в оглавлении: для анализа сохраняются сообщения загрузчика и последнее название главы. Для комиксов проверяются архив и изображения.");
         Info("Вход не выполняется. Ошибка доступа не доказывает дефект приложения; выбранные главы не доказывают полноту всей книги. Через 3 минуты запрашивается отмена примера; завершение обработки может занять время.");
         foreach (var probe in probes)
         {
@@ -942,19 +942,20 @@ public sealed class DiagnosticsRunner(
         }
 
         var work = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "download-" + Guid.NewGuid().ToString("N"));
+        var comic = FormatSupport.IsComic(text);
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(ct);
         limit.CancelAfter(TimeSpan.FromMinutes(3));
         var options = new Options
         {
-            Url = [url.ToString()], Format = ["fb2", "epub"],
+            Url = [url.ToString()], Format = FormatSupport.ForDownload(text, ["fb2", "epub"]),
             Timeout = settings.Timeout, Delay = settings.Delay, DelayMode = settings.DelayMode,
             CustomDelaySeconds = settings.CustomDelaySeconds,
             Proxy = string.IsNullOrWhiteSpace(settings.Proxy) ? null : settings.Proxy.Trim(),
-            Start = start, End = end, NoImage = !settings.Images, Additional = false, Cover = false,
+            Start = start, End = end, NoImage = !comic && !settings.Images, Additional = false, Cover = false,
             BookNamePattern = settings.BookNamePattern,
             SavePath = Path.Combine(work, "out"), TempPath = Path.Combine(work, "tmp")
         };
-        Info($"{label}: {url}; позиции {start}–{end}, FB2 + EPUB, картинки {YesNo(settings.Images)}, без входа; файлы временные");
+        Info($"{label}: {url}; позиции {start}–{end}, {(comic ? "CBZ" : "FB2 + EPUB")}, картинки {YesNo(!options.NoImage)}, без входа; файлы временные");
         Action<string> trace = line => Line("  tls | " + line);
         CertificatePolicy.Traced += trace;
         var sw = Stopwatch.StartNew();
@@ -965,19 +966,28 @@ public sealed class DiagnosticsRunner(
             // Необязательное превью отключено: не запрашиваем оглавление и обложку второй раз.
             var result = await BookPipeline.RunAsync(options, logger, null, limit.Token);
             _cover ??= result.Info.Cover;
-            Info($"{label}: за {sw.Elapsed.TotalSeconds:0.0} с получено глав {result.Info.Chapters}, последняя «{result.Info.LastChapter}», обложка {result.Info.Cover?.Length ?? 0} байт");
-            Check(result.Info.Chapters > 0, $"{label}: есть непустые главы");
-            if (result.Info.Chapters != end - start + 1)
-                Warn($"{label}: запрошено {end - start + 1}, получено {result.Info.Chapters}; возможны короткая книга, закрытые главы или ошибка диапазона — см. журнал ядра");
-            else Ok($"{label}: количество глав соответствует диапазону {start}–{end}");
-            var books = result.Files.Where(f => f.EndsWith(".fb2", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase)).ToList();
-            Check(books.Count == 2 && books.Select(Path.GetExtension).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,
-                $"{label}: созданы оба формата, файлов книги {books.Count}, дополнительных {result.Files.Count - books.Count}");
-            foreach (var file in books)
+            if (comic)
             {
-                limit.Token.ThrowIfCancellationRequested();
-                Info($"{label}: {Path.GetExtension(file)} — {new FileInfo(file).Length} байт");
-                foreach (var check in DiagnosticBookChecks.CheckFile(file, result.Info.Chapters)) Report(check);
+                Info($"{label}: за {sw.Elapsed.TotalSeconds:0.0} с получено файлов {result.Files.Count}; проверяю CBZ и изображения");
+                var item = new SiteDiagnosticCase("download-probe", url.Host, text, null, null, Images: true, StartChapter: start);
+                foreach (var check in SiteDiagnosticBatch.CheckOutput(item, result.Info.Chapters, result.Files, limit.Token)) Report(check);
+            }
+            else
+            {
+                Info($"{label}: за {sw.Elapsed.TotalSeconds:0.0} с получено глав {result.Info.Chapters}, последняя «{result.Info.LastChapter}», обложка {result.Info.Cover?.Length ?? 0} байт");
+                Check(result.Info.Chapters > 0, $"{label}: есть непустые главы");
+                if (result.Info.Chapters != end - start + 1)
+                    Warn($"{label}: запрошено {end - start + 1}, получено {result.Info.Chapters}; возможны короткая книга, закрытые главы или ошибка диапазона — см. журнал ядра");
+                else Ok($"{label}: количество глав соответствует диапазону {start}–{end}");
+                var books = result.Files.Where(f => f.EndsWith(".fb2", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".epub", StringComparison.OrdinalIgnoreCase)).ToList();
+                Check(books.Count == 2 && books.Select(Path.GetExtension).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 2,
+                    $"{label}: созданы оба формата, файлов книги {books.Count}, дополнительных {result.Files.Count - books.Count}");
+                foreach (var file in books)
+                {
+                    limit.Token.ThrowIfCancellationRequested();
+                    Info($"{label}: {Path.GetExtension(file)} — {new FileInfo(file).Length} байт");
+                    foreach (var check in DiagnosticBookChecks.CheckFile(file, result.Info.Chapters)) Report(check);
+                }
             }
             limit.Token.ThrowIfCancellationRequested();
         }
@@ -1101,7 +1111,7 @@ public sealed class DiagnosticsRunner(
     /// <summary>Настройки одной-двумя строками — без паролей и адреса прокси с логином.</summary>
     public static IEnumerable<string> DescribeSettings(AppSettings s, IBookStorage storage, ILogStorage logs = null)
     {
-        yield return $"Настройки: формат по умолчанию {s.TextFormat}, авто-CBZ {YesNo(s.AutoFormat)}, картинки {YesNo(s.Images)}, " +
+        yield return $"Настройки: текстовый формат по умолчанию {s.TextFormat}, манга и комиксы — CBZ, картинки {YesNo(s.Images)}, " +
                      $"обложка файлом {YesNo(s.Cover)}, доп. файлы {YesNo(s.Additional)} [{string.Join(",", s.AdditionalTypes)}], " +
                      $"шаблон имени «{s.BookNamePattern}»";
         yield return $"Настройки: таймаут {s.Timeout} с, режим задержки {s.DelayMode}, своя задержка {s.CustomDelaySeconds} с, прокси {MaskProxy(s.Proxy)}, " +

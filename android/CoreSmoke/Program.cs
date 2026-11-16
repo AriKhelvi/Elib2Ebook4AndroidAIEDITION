@@ -73,6 +73,7 @@ try
         throw new ArgumentException("Укажите HTTP(S)-адрес книги и форматы через запятую.");
     var formats = args[1].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
     if (formats.Length == 0) throw new ArgumentException("Нужен хотя бы один формат.");
+    formats = FormatSupport.ForDownload(inputUrl.AbsoluteUri, formats).ToArray();
     int? start = null, end = null, expectedChapters = null;
     double limitMinutes = 3;
     double? delaySeconds = null;
