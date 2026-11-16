@@ -124,6 +124,102 @@ public sealed class LitresAnonymousDownloadTests
     }
 
     [Fact]
+    public async Task RejectedFirstRouteDoesNotWarnWhenAnotherRouteReturnsFullBook()
+    {
+        var routes = new List<string>();
+        var rejected = new TrackedContent("Первый маршрут недоступен");
+        var logger = new AfAuditSupport.AuditLogger();
+        var handler = new AfAuditSupport.Handler(request =>
+        {
+            var path = request.RequestUri.AbsolutePath;
+            if (path == "/foundation/api/auth/login") return Login();
+            if (path == "/foundation/api/users/me/detailed") return Profile();
+            if (path == MetadataPath) return Metadata();
+            routes.Add(path);
+            if (path == "/pages/download_book_j")
+                return new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = rejected };
+            Assert.Equal("/pages/download_book_subscr", path);
+            var response = Excerpt("Полный доступный текст");
+            response.Headers.AcceptRanges.Add("bytes");
+            return response;
+        });
+        using var config = ConfigWithRequestPolicy(handler, Credentials(), logger);
+        using var getter = new LitresGetter(config);
+
+        await getter.Authorize();
+        using var book = await getter.Get(BookUrl);
+
+        Assert.Contains("Полный доступный текст", Assert.Single(book.Chapters).Content);
+        Assert.Equal(new[] { "/pages/download_book_j", "/pages/download_book_subscr" }, routes);
+        Assert.True(rejected.Disposed);
+        Assert.Empty(logger.Warnings);
+    }
+
+    [Theory]
+    [InlineData(408)]
+    [InlineData(429)]
+    [InlineData(500)]
+    [InlineData(503)]
+    public async Task FullBookNetworkFailureDoesNotRequestMoreRoutesOrSubstituteAnExcerpt(int status)
+    {
+        var routes = new List<string>();
+        var rejected = new TrackedContent("Повторите позже");
+        var logger = new AfAuditSupport.AuditLogger();
+        var handler = new AfAuditSupport.Handler(request =>
+        {
+            var path = request.RequestUri.AbsolutePath;
+            if (path == "/foundation/api/auth/login") return Login();
+            if (path == "/foundation/api/users/me/detailed") return Profile();
+            if (path == MetadataPath) return Metadata();
+            routes.Add(path);
+            return new HttpResponseMessage((HttpStatusCode)status) { Content = rejected };
+        });
+        using var config = ConfigWithRequestPolicy(handler, Credentials(), logger);
+        using var getter = new LitresGetter(config);
+        await getter.Authorize();
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUrl));
+
+        Assert.Equal((HttpStatusCode)status, error.StatusCode);
+        Assert.Equal("/pages/download_book_j", Assert.Single(routes));
+        Assert.True(rejected.Disposed);
+        Assert.DoesNotContain(logger.Warnings, warning => warning.Contains("ознакомительный отрывок"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DisablingChapterImagesPreservesBookCover(bool noImage)
+    {
+        byte[] coverBytes = [137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3];
+        var handler = new AfAuditSupport.Handler(request =>
+        {
+            var path = request.RequestUri.AbsolutePath;
+            if (path == MetadataPath)
+                return AfAuditSupport.Json(new { payload = new { data = new { id = 123, title = "Книга с иллюстрацией", art_type = 0, cover_url = "/cover.png" } } });
+            if (path == "/cover.png")
+            {
+                var content = new ByteArrayContent(coverBytes);
+                content.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+            }
+            Assert.Equal(ExcerptPath, path);
+            return Excerpt(illustrated: true);
+        });
+        using var config = AfAuditSupport.Config(handler, new Options { NoImage = noImage });
+        using var getter = new LitresGetter(config);
+
+        using var book = await getter.Get(BookUrl);
+
+        Assert.NotNull(book.Cover);
+        Assert.Equal(coverBytes, book.Cover.Content);
+        var chapter = Assert.Single(book.Chapters);
+        Assert.Equal(noImage ? 0 : 1, chapter.Images.Count());
+        Assert.Equal(!noImage, chapter.Content.Contains("<img", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("Публичный отрывок", chapter.Content);
+    }
+
+    [Fact]
     public async Task AuthenticatedFallbackDisposesRejectedResponsesAndWarnsThatOnlyExcerptWasDownloaded()
     {
         var rejected = new List<TrackedContent>();
@@ -140,7 +236,7 @@ public sealed class LitresAnonymousDownloadTests
             rejected.Add(content);
             return new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = content };
         });
-        using var config = AfAuditSupport.Config(handler, Credentials(), logger);
+        using var config = ConfigWithRequestPolicy(handler, Credentials(), logger);
         using var getter = new LitresGetter(config);
 
         await getter.Authorize();
@@ -150,6 +246,7 @@ public sealed class LitresAnonymousDownloadTests
         Assert.Equal(6, rejected.Count);
         Assert.All(rejected, response => Assert.True(response.Disposed));
         Assert.Contains(logger.Warnings, warning => warning.Contains("ознакомительный отрывок") && warning.Contains("Полнота книги не подтверждена"));
+        Assert.Single(logger.Warnings);
     }
 
     [Theory]
@@ -385,17 +482,30 @@ public sealed class LitresAnonymousDownloadTests
 
     private static Options Credentials() => new() { Login = "reader@example.test", Password = "test-password", AuthCachePath = "" };
 
+    private static BookGetterConfig ConfigWithRequestPolicy(HttpMessageHandler handler, Options options, AfAuditSupport.AuditLogger logger)
+        => AfAuditSupport.Config(new RequestPolicyHandler(new RequestPacer(() => TimeSpan.Zero), logger, handler), options, logger);
+
     private static HttpResponseMessage Login() => AfAuditSupport.Json(new { payload = new { data = new { sid = SyntheticSession } } });
     private static HttpResponseMessage Profile() => AfAuditSupport.Json(new { payload = new { data = new { } } });
     private static object RelatedArt(long id, int artType) => new { id, title = "Связанное издание", art_type = artType };
     private static HttpResponseMessage Metadata(object[] linked = null) => AfAuditSupport.Json(new { payload = new { data = new { id = 123, title = "Тестовая книга", art_type = 0, linked_arts = linked } } });
 
-    private static HttpResponseMessage Excerpt(string text = "Публичный отрывок.", string fileName = "sample.fb3")
+    private static HttpResponseMessage Excerpt(string text = "Публичный отрывок.", string fileName = "sample.fb3", bool illustrated = false)
     {
         using var stream = new MemoryStream();
         using (var zip = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen: true))
-        using (var body = zip.CreateEntry("fb3/body.xml").Open())
-            body.Write(Encoding.UTF8.GetBytes("<fb3-body><section><title>Глава</title><p>" + WebUtility.HtmlEncode(text) + "</p></section></fb3-body>"));
+        {
+            using (var body = zip.CreateEntry("fb3/body.xml").Open())
+                body.Write(Encoding.UTF8.GetBytes("<fb3-body><section><title>Глава</title><p>" + WebUtility.HtmlEncode(text) + "</p>" +
+                    (illustrated ? "<img src=\"illustration\" />" : "") + "</section></fb3-body>"));
+            if (illustrated)
+            {
+                using (var relations = zip.CreateEntry("fb3/_rels/body.xml.rels").Open())
+                    relations.Write(Encoding.UTF8.GetBytes("<Relationships><Relationship Id=\"illustration\" Target=\"images/illustration.png\" /></Relationships>"));
+                using var image = zip.CreateEntry("fb3/images/illustration.png").Open();
+                image.Write([137, 80, 78, 71, 13, 10, 26, 10, 4, 5, 6]);
+            }
+        }
         var content = new ByteArrayContent(stream.ToArray());
         content.Headers.ContentType = new MediaTypeHeaderValue("application/zip");
         content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment") { FileName = fileName };

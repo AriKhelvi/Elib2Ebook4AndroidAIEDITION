@@ -86,7 +86,14 @@
         <section class="card" aria-label="Предупреждения загрузки">
             <div class="card-body">
                 <h2 class="card-title">Предупреждения: @Downloads.WarningCount</h2>
-                <p>Книга сохранена, но часть содержимого может отсутствовать. Проверьте её перед чтением.</p>
+                @if (saved.Any(file => file.IsBook))
+                {
+                    <p>Сохранённые файлы показаны выше. Ниже — предупреждения, полученные при скачивании.</p>
+                }
+                else
+                {
+                    <p>Книга не сохранена. Ниже — предупреждения, полученные при скачивании.</p>
+                }
                 @foreach (var warning in Downloads.Warnings.Take(10))
                 {
                     <p class="card-subtitle">@warning</p>
@@ -195,8 +202,8 @@
             <label class="list-item two-line">
                 <span class="list-item-leading"><Icon Name="image" /></span>
                 <span class="list-item-text">
-                    <span class="list-item-headline">Картинки в книге</span>
-                    <span class="list-item-supporting">@(_format == "cbz" ? "Для CBZ картинки нужны всегда" : Settings.Images ? "Обложка и иллюстрации" : "Только текст — файл легче")</span>
+                    <span class="list-item-headline">Иллюстрации в главах</span>
+                    <span class="list-item-supporting">@(_format == "cbz" ? "Для CBZ страницы нужны всегда" : Settings.Images ? "Скачивать изображения внутри глав" : "Обложка EPUB/FB2 остаётся, иллюстрации не скачиваются")</span>
                 </span>
                 <input type="checkbox" role="switch" class="switch" checked="@(Settings.Images || _format == "cbz")" disabled="@(_format == "cbz")"
                        @onchange="e => Settings.Images = (bool)e.Value!" />

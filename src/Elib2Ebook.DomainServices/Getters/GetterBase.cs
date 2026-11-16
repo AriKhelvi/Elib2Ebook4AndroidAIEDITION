@@ -297,6 +297,12 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         var images = new List<TempFile>();
         foreach (var img in doc.QuerySelectorAll("img"))
         {
+            if (Config.Options.NoImage)
+            {
+                img.Remove();
+                continue;
+            }
+
             var path = img.Attributes["src"]?.Value;
             if (string.IsNullOrWhiteSpace(path))
             {

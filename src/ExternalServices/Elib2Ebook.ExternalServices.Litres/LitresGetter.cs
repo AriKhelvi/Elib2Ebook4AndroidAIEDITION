@@ -490,7 +490,7 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
         foreach (var img in doc.QuerySelectorAll("img"))
         {
             var path = img.Attributes["src"]?.Value;
-            if (string.IsNullOrWhiteSpace(path))
+            if (Config.Options.NoImage || string.IsNullOrWhiteSpace(path))
             {
                 img.Remove();
                 continue;
@@ -543,6 +543,13 @@ public class LitresGetter(BookGetterConfig config) : GetterBase(config)
                 {
                     var uri = GetFullUri(art, path, file, host);
                     var response = await Config.Client.GetAsync(uri, Config.CancellationToken);
+                    // Сбой сервера или ограничение частоты не доказывают отсутствие покупки.
+                    // Не продолжаем перебор и не подменяем полную книгу ознакомительным отрывком.
+                    if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.RequestTimeout ||
+                        (int)response.StatusCode >= 500)
+                    {
+                        using (response) response.EnsureDownloadSuccess();
+                    }
                     if (response.StatusCode == HttpStatusCode.OK && response.Headers.AcceptRanges.Count != 0)
                     {
                         Config.Logger.LogInformation(LogText.Clean($"Дополнительный файл доступен по ссылке {uri}"));

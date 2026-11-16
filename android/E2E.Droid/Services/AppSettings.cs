@@ -163,7 +163,7 @@ public sealed class AppSettings
         set => Set(nameof(BookNamePattern), string.IsNullOrWhiteSpace(value) ? DefaultBookNamePattern : value.Trim());
     }
 
-    /// <summary>Картинки в книге (обложка и иллюстрации). Выключено — как --no-image консольной версии.</summary>
+    /// <summary>Иллюстрации в главах. Выключено — как --no-image; встроенная обложка EPUB/FB2 остаётся.</summary>
     public bool Images
     {
         get => P.Get(nameof(Images), true);

@@ -32,6 +32,21 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     private const string SECRET = "14a6579a984b3c6abecda6c2dfa83a64";
 
     private string _token { get; set; }
+    private string _cachedBookId;
+    private LitnetBookResponse _cachedBook;
+    private bool _seriesLoaded;
+    private Seria _cachedSeries;
+    private bool _coverLoaded;
+    private TempFile _cachedCover;
+
+    public override async Task Init()
+    {
+        await base.Init();
+        // В Android-журналах Litnet HTTP/2 возвращал заголовки, затем зависал на теле
+        // API/HTML/картинки до общего таймаута. Этот API также поддерживает HTTP/1.1.
+        if (SystemUrl.Host.Equals("litnet.com", StringComparison.OrdinalIgnoreCase))
+            Config.Client.DefaultRequestVersion = HttpVersion.Version11;
+    }
 
     protected override string GetId(Uri url)
         => base.GetId(url).Split('-').Last().Replace("b", string.Empty);
@@ -68,6 +83,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     /// <exception cref="Exception"></exception>
     public override async Task Authorize()
     {
+        ClearBookCache();
+        _token = null;
         Config.Logger.LogDebug("Litnet: этап входа; сохранённые реквизиты={HasCredentials}", Config.HasCredentials);
         var path = Config.HasCredentials ? "user/find-by-login" : "registration/registration-by-device";
 
@@ -89,6 +106,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     private async Task<LitnetBookResponse> GetBook(string token, string bookId)
     {
+        if (_cachedBookId == bookId && _cachedBook != null) return _cachedBook;
+        ClearBookCache();
         var url = ApiIp.MakeRelativeUri($"/v1/book/get/{bookId}?app=android&device_id={DeviceId}&user_token={token}&sign={GetSign(token)}");
         var data = await GetApiData<LitnetBookResponse>(url);
         if (data == null || string.IsNullOrWhiteSpace(data.Title) || string.IsNullOrWhiteSpace(data.Url))
@@ -98,6 +117,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             throw new SiteAccessException(SiteAccessReason.AgeConfirmationRequired, "Произведение 18+. Необходимо добавить логин и пароль.");
         }
 
+        _cachedBookId = bookId;
+        _cachedBook = data;
         return data;
     }
 
@@ -167,12 +188,24 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
     private async Task<Seria> GetSeria(Uri url, LitnetBookResponse book)
     {
+        if (_seriesLoaded) return _cachedSeries;
+        _cachedSeries = await GetSeriaCore(url, book);
+        _seriesLoaded = true;
+        return _cachedSeries;
+    }
+
+    private async Task<Seria> GetSeriaCore(Uri url, LitnetBookResponse book)
+    {
+        // Серия — необязательные метаданные: не задерживаем книгу на пользовательские 1000+ секунд.
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Config.CancellationToken);
+        // В бюджет входят пользовательская задержка и возможный переход на канонический URL.
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
             using var request = GetDefaultMessage(url.ReplaceHost(SiteIp.Host), SystemUrl);
-            using var response = await Config.Client.SendAsync(request, Config.CancellationToken);
+            using var response = await Config.Client.SendAsync(request, timeout.Token);
             response.EnsureDownloadSuccess();
-            await using var stream = await response.Content.ReadAsStreamAsync(Config.CancellationToken);
+            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
             var doc = stream.AsHtmlDoc();
             var a = doc.QuerySelector("div.book-view-info-coll a[href*='sort=cycles']")
                 // В новой карточке подпись «Цикл» осталась, но старой обёртки больше нет.
@@ -190,6 +223,10 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
                 Config.Logger.LogWarning("Litnet сообщил номер книги в цикле ({Number}), но название серии не найдено. Книга будет сохранена без серии.", book.CyclePriority);
         }
         catch (OperationCanceledException) when (Config.CancellationToken.IsCancellationRequested) { throw; }
+        catch (OperationCanceledException)
+        {
+            Config.Logger.LogWarning("Серия Litnet не получена за отведённое время. Продолжаю скачивание без названия серии.");
+        }
         catch (Exception ex)
         {
             Config.Logger.LogWarning("Не удалось получить серию Litnet: {Reason}. Книга будет сохранена без серии.", ex.Message);
@@ -221,16 +258,26 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             string.Join("", book.Annotation.Split("\n", StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim().CoverTag("p")));
     }
 
-    private Task<TempFile> GetCover(LitnetBookResponse book)
+    private async Task<TempFile> GetCover(LitnetBookResponse book)
     {
-        return !string.IsNullOrWhiteSpace(book.Cover) ? SaveImage(book.Cover.AsUri()) : Task.FromResult(default(TempFile));
+        if (!_coverLoaded)
+        {
+            _cachedCover = !string.IsNullOrWhiteSpace(book.Cover) ? await SaveImage(book.Cover.AsUri()) : null;
+            _coverLoaded = true;
+        }
+        if (_cachedCover == null) return null;
+        // Превью и полная книга владеют разными файлами. Dispose превью не удалит обложку книги.
+        await using var stream = _cachedCover.GetStream();
+        return await TempFile.Create(_cachedCover.Url, Config.TempFolder.Path,
+            Guid.NewGuid() + _cachedCover.Extension, stream);
     }
 
     protected override HttpRequestMessage GetImageRequestMessage(Uri uri)
     {
         if (uri.IsSameHost(SystemUrl) || uri.IsSameSubDomain(SystemUrl))
         {
-            return GetDefaultMessage(SystemUrl.MakeRelativeUri(uri.AbsolutePath), uri);
+            // CDN должен получать запрос на свой адрес: URI, TLS/SNI и Host должны совпадать.
+            return GetDefaultMessage(uri, uri);
         }
 
         return base.GetImageRequestMessage(uri);
@@ -268,6 +315,16 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             throw new InvalidOperationException("Litnet вернул некорректное оглавление. Неполная книга не будет сохранена.");
 
         var selected = SliceToc(contents.DistinctBy(content => content.Id).ToList(), content => content.Title).ToList();
+        var inaccessible = selected.Count(content => content.Access == false);
+        if (inaccessible > 0)
+        {
+            selected = selected.Where(content => content.Access != false).ToList();
+            if (selected.Count == 0)
+                throw new SiteAccessException(SiteAccessReason.AccessDenied,
+                    "В выбранном диапазоне нет доступных глав Litnet. Выберите ознакомительный фрагмент или проверьте покупку и вход на сайте.");
+            Config.Logger.LogWarning("Litnet: в выбранном диапазоне доступно {Available} глав, закрыто {Closed}. Сохраняю только доступный фрагмент; закрытые главы не запрашиваются.",
+                selected.Count, inaccessible);
+        }
         foreach (var batch in selected.Chunk(ChapterBatchSize))
         {
             Config.CancellationToken.ThrowIfCancellationRequested();
@@ -304,6 +361,23 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         }
 
         return result;
+    }
+
+    private void ClearBookCache()
+    {
+        _cachedBookId = null;
+        _cachedBook = null;
+        _seriesLoaded = false;
+        _cachedSeries = null;
+        _coverLoaded = false;
+        _cachedCover?.Dispose();
+        _cachedCover = null;
+    }
+
+    public override void Dispose()
+    {
+        ClearBookCache();
+        base.Dispose();
     }
 
     private static HtmlDocument GetChapterDoc(string text)

@@ -54,8 +54,11 @@
 
             <hr class="divider" />
 
-            <label class="list-item">
-                <span class="list-item-text"><span class="list-item-headline">Обложка отдельным файлом</span></span>
+            <label class="list-item two-line">
+                <span class="list-item-text">
+                    <span class="list-item-headline">Обложка отдельным файлом</span>
+                    <span class="list-item-supporting">На обложку внутри EPUB/FB2 эта настройка не влияет</span>
+                </span>
                 <input type="checkbox" role="switch" class="switch" checked="@Settings.Cover" @onchange="e => Settings.Cover = (bool)e.Value!" />
             </label>
 

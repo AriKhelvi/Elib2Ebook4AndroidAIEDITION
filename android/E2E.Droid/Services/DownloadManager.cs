@@ -670,7 +670,7 @@ public sealed class DownloadManager(
         string text;
         if (errors.Count == 0 && job.WarningCount > 0)
         {
-            text = $"Сохранено с предупреждениями: {job.WarningCount}. Проверьте полноту книги и журнал";
+            text = $"Сохранено с предупреждениями: {job.WarningCount}. Подробности — в журнале";
             toasts.Show(text, ToastKind.Info, 10);
         }
         else if (errors.Count == 0)

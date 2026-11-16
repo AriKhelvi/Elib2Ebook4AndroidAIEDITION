@@ -84,7 +84,9 @@ public sealed class RequestPolicyHandler(RequestPacer pacer, ILogger logger, Htt
             if (!IsRedirect(response.StatusCode) || response.Headers.Location == null)
             {
                 if (response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
-                    logger?.LogWarning("{Message}", response.DownloadFailureMessage());
+                    // HTTP-отказ может быть штатным промежуточным ответом: обновление сессии,
+                    // другой разрешённый маршрут файла. Только загрузчик знает итог операции.
+                    logger?.LogDebug("{Message}", response.DownloadFailureMessage());
                 return response;
             }
 

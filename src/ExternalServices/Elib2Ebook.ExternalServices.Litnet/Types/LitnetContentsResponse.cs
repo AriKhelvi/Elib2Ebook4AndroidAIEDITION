@@ -9,4 +9,8 @@ internal class LitnetContentsResponse
 
     [JsonPropertyName("title")]
     public string Title { get; set; }
+
+    // Отсутствующее поле не означает запрет: старые ответы Booknet могут его не содержать.
+    [JsonPropertyName("access")]
+    public bool? Access { get; set; }
 }

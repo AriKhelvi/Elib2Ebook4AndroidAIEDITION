@@ -41,6 +41,94 @@ public class LitnetBatchTests
         Assert.All(book.Chapters, chapter => Assert.Equal("<p>Текст главы</p>", chapter.Content));
     }
 
+    [Fact]
+    public async Task ExplicitlyClosedChaptersAreNotRequestedAndAvailableExcerptIsSaved()
+    {
+        var log = new ProgressLogger();
+        var handler = new FakeHandler { ChapterCount = 40, Access = id => id <= 8 };
+        using var getter = new LitnetGetter(new BookGetterConfig(new Options(), new HttpClient(handler),
+            new CookieContainer(), TempFolderFactory.Create(null), log));
+
+        using var book = await getter.Get(BookUri);
+
+        Assert.Equal(Enumerable.Range(1, 8).Select(id => (long)id), Assert.Single(handler.Batches));
+        Assert.Equal(8, book.Chapters.Count());
+        Assert.Contains(log.Warnings, line => line.Contains("доступно 8 глав, закрыто 32") && line.Contains("фрагмент"));
+    }
+
+    [Fact]
+    public async Task AccessFilterRunsAfterUserRangeAndKeepsOriginalChapterNumbers()
+    {
+        var handler = new FakeHandler { ChapterCount = 40, Access = id => id <= 8 || id == 12 };
+        using var getter = CreateGetter(new Options { Start = 7, End = 12 }, handler);
+
+        using var book = await getter.Get(BookUri);
+
+        Assert.Equal(new long[] { 7, 8, 12 }, Assert.Single(handler.Batches));
+        Assert.Equal(new[] { "Глава 7", "Глава 8", "Глава 12" }, book.Chapters.Select(chapter => chapter.Title));
+    }
+
+    [Fact]
+    public async Task EntirelyClosedRangeReportsAccessErrorInsteadOfEmptyBook()
+    {
+        var handler = new FakeHandler { ChapterCount = 40, Access = id => id <= 8 };
+        using var getter = CreateGetter(new Options { Start = 9 }, handler);
+
+        var error = await Assert.ThrowsAsync<SiteAccessException>(() => getter.Get(BookUri));
+
+        Assert.Equal(SiteAccessReason.AccessDenied, error.Reason);
+        Assert.Empty(handler.Batches);
+    }
+
+    [Fact]
+    public async Task PurchasedBookWithAccessToEveryChapterKeepsEverything()
+    {
+        var handler = new FakeHandler { ChapterCount = 40, Access = _ => true };
+        using var getter = CreateGetter(new Options(), handler);
+
+        using var book = await getter.Get(BookUri);
+
+        Assert.Equal(40, book.Chapters.Count());
+    }
+
+    [Fact]
+    public async Task RateLimitedTextRequestIsStillFailureRatherThanAnExcerpt()
+    {
+        var handler = new FakeHandler { ChapterCount = 40, Access = id => id <= 8, BatchStatus = HttpStatusCode.TooManyRequests };
+        using var getter = CreateGetter(new Options(), handler);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => getter.Get(BookUri));
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task PreviewAndFullBookShareNetworkMetadataButOwnIndependentCoverFiles()
+    {
+        var options = new Options { NoChapters = true };
+        var handler = new FakeHandler { ChapterCount = 1, IncludeCover = true };
+        using var getter = CreateGetter(options, handler);
+        await getter.Init();
+        string previewCover;
+        using (var preview = await getter.Get(BookUri))
+        {
+            previewCover = preview.Cover.FilePath;
+            Assert.True(File.Exists(previewCover));
+        }
+        Assert.False(File.Exists(previewCover));
+        options.NoChapters = false;
+
+        using var book = await getter.Get(BookUri);
+
+        Assert.Single(book.Chapters);
+        Assert.NotEqual(previewCover, book.Cover.FilePath);
+        Assert.Equal(FakeHandler.CoverBytes, book.Cover.Content);
+        Assert.Equal(1, handler.MetadataRequests);
+        Assert.Equal(1, handler.SeriesRequests);
+        Assert.Equal(1, handler.CoverRequests);
+        Assert.All(handler.Versions, version => Assert.Equal(HttpVersion.Version11, version));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -177,6 +265,7 @@ public class LitnetBatchTests
     private sealed class ProgressLogger : ILogger
     {
         public List<string> Lines { get; } = [];
+        public List<string> Warnings { get; } = [];
         public Action<string> OnLine { get; init; }
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel level) => true;
@@ -184,6 +273,7 @@ public class LitnetBatchTests
         {
             var line = formatter(state, exception);
             Lines.Add(line);
+            if (level >= LogLevel.Warning) Warnings.Add(line);
             OnLine?.Invoke(line);
         }
     }
@@ -193,8 +283,16 @@ public class LitnetBatchTests
 
     private sealed class FakeHandler : HttpMessageHandler
     {
+        public static readonly byte[] CoverBytes = [137, 80, 78, 71, 13, 10, 26, 10, 1];
         public List<long[]> Batches { get; } = [];
+        public List<Version> Versions { get; } = [];
         public int ContentsRequests { get; private set; }
+        public int MetadataRequests { get; private set; }
+        public int SeriesRequests { get; private set; }
+        public int CoverRequests { get; private set; }
+        public bool IncludeCover { get; init; }
+        public Func<int, bool?> Access { get; init; } = _ => null;
+        public HttpStatusCode BatchStatus { get; init; } = HttpStatusCode.OK;
         public bool OmitLastChapter { get; init; }
         public int ChapterCount { get; init; } = 205;
         public bool AdultOnly { get; init; }
@@ -205,17 +303,22 @@ public class LitnetBatchTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var uri = request.RequestUri!;
+            Versions.Add(request.Version);
             object result;
             switch (uri.AbsolutePath)
             {
                 case "/v1/book/get/123":
-                    result = new { title = "Книга", url = BookUri.ToString(), author_name = "Автор", lang = "ru", adult_only = AdultOnly };
+                    MetadataRequests++;
+                    result = new { title = "Книга", url = BookUri.ToString(), author_name = "Автор", lang = "ru", adult_only = AdultOnly,
+                        cover = IncludeCover ? "https://publiccdn.litnet.com/cover.png" : null };
                     break;
                 case "/v1/book/contents":
                     ContentsRequests++;
-                    result = Enumerable.Range(1, ChapterCount).Select(i => new { id = i, title = $"Глава {i}" });
+                    result = Enumerable.Range(1, ChapterCount).Select(i => new { id = i, title = $"Глава {i}", access = Access(i) });
                     break;
                 case "/v1/book/get-chapters-texts/":
+                    if (BatchStatus != HttpStatusCode.OK)
+                        return Task.FromResult(TestHttpResponse.Create(BatchStatus, request, new StringContent("{}")));
                     var ids = HttpUtility.ParseQueryString(uri.Query).GetValues("chapter_ids[]")!.Select(long.Parse).ToArray();
                     Batches.Add(ids);
                     BeforeBatch?.Invoke(Batches.Count);
@@ -226,8 +329,16 @@ public class LitnetBatchTests
                     });
                     break;
                 case "/ru/book/test-b123":
+                    SeriesRequests++;
                     result = new { };
                     break;
+                case "/cover.png":
+                    Assert.Equal("publiccdn.litnet.com", uri.Host);
+                    Assert.Equal("publiccdn.litnet.com", request.Headers.Host);
+                    CoverRequests++;
+                    var image = new ByteArrayContent(CoverBytes);
+                    image.Headers.ContentType = new("image/png");
+                    return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK, request, image));
                 default:
                     throw new InvalidOperationException($"Неожиданный путь {uri.AbsolutePath}");
             }
