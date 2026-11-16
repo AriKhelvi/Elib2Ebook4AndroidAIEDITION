@@ -204,9 +204,17 @@ public sealed class DownloadManager(
             }
 
             // Android 7–9: без разрешения на запись книгу некуда сохранить — не начинаем зря
-            if (!await storage.EnsureWriteAccessAsync())
+            try
             {
-                toasts.Show("Без доступа к памяти книги некуда сохранить. Разрешите доступ или выберите папку в настройках", ToastKind.Error, 8);
+                if (!await storage.EnsureWriteAccessAsync())
+                {
+                    toasts.Show("Без доступа к памяти книги некуда сохранить. Разрешите доступ или выберите папку в настройках", ToastKind.Error, 8);
+                    return false;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                toasts.Show(LogText.Clean(ex.Message), ToastKind.Error, 10);
                 return false;
             }
 

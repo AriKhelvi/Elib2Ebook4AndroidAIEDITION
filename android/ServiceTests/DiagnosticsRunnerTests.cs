@@ -41,6 +41,36 @@ public sealed class DiagnosticsRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task DownloadLogExportUsesIndependentDestinationWhenBookFolderIsUnavailable()
+    {
+        var books = new CapturingStorage { WriteAccess = Task.FromException<bool>(new InvalidOperationException("Карта недоступна")) };
+        var manager = new DownloadManager(new AppSettings(), books, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(new AppSettings(), books, _platform, manager, _toasts, _storage);
+
+        var file = await runner.SaveDownloadLogAsync();
+
+        Assert.NotNull(file);
+        Assert.Contains("журнал скачивания", _storage.Text);
+        Assert.Contains("# Папка журналов:", _storage.Text);
+        Assert.Null(books.Text);
+    }
+
+    [Fact]
+    public async Task DeniedLogFolderDoesNotSendExportToBookFolder()
+    {
+        var books = new CapturingStorage();
+        _storage.WriteAccess = Task.FromResult(false);
+        var manager = new DownloadManager(new AppSettings(), books, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(new AppSettings(), books, _platform, manager, _toasts, _storage);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => runner.SaveDownloadLogAsync());
+
+        Assert.Contains("папке журналов", exception.Message);
+        Assert.Null(books.Text);
+        Assert.Null(_storage.Text);
+    }
+
+    [Fact]
     public void WarningIsIncludedInTheShortReportAndDoesNotBecomeSuccessfulCheck()
     {
         var runner = CreateRunner();
@@ -227,7 +257,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
     {
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        return new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        return new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
     }
 
     [Fact]
@@ -261,7 +291,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         foreach (var path in new[] { book, history, exported }) File.WriteAllText(path, "Сохранённые данные");
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
         var job = typeof(DownloadManager).GetField("_job", PrivateInstance)!.GetValue(downloads);
         var append = typeof(DownloadManager).GetMethod("AppendLog", PrivateInstance)!;
         append.Invoke(downloads, [job, "Старый журнал скачивания"]);
@@ -288,7 +318,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         _storage.WriteAccess = permission.Task;
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
         var starting = downloads.StartAsync(new DownloadRequest { Urls = ["https://example.test/book/1"] });
         try
         {
@@ -310,7 +340,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         _storage.WriteAccess = permission.Task;
         var settings = new AppSettings();
         var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
-        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
         var starting = runner.StartAllSitesAsync();
         Task<bool> ordinary = null;
         try
@@ -369,7 +399,7 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         public void Set<T>(string key, T value, string sharedName = null) => _values[key] = value;
     }
 
-    private sealed class CapturingStorage : IBookStorage
+    private sealed class CapturingStorage : ILogStorage
     {
         public string DestinationLabel => "Тестовая папка";
         public string Text { get; private set; }

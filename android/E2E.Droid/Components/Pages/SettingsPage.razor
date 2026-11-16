@@ -8,6 +8,7 @@
 @inject DiagnosticsRunner Diagnostics
 @inject DownloadManager Downloads
 @inject IBookStorage Storage
+@inject ILogStorage LogStorage
 @inject CredentialStore Credentials
 @inject IPlatformServices Platform
 @inject ToastService Toasts
@@ -378,7 +379,7 @@
                         Запросит до 10 глав: пробную текстовую книгу, Rulate и Bllate (100–101), Litmarket и RanobeLib.
                         Некоторые сайты возвращают весь текст одним ответом.
                         Потребуется интернет. Через 3 минуты пример отменяется; завершение обработки может занять время. Временные книги удаляются.
-                        Идёт в фоне — приложение можно свернуть. Файл отчёта сохранится в «@Storage.DestinationLabel».
+                        Идёт в фоне — приложение можно свернуть. Файл отчёта сохранится в «@LogStorage.DestinationLabel».
                     </p>
                     <div class="text-field">
                         <label class="text-field-label" for="debug-url">Пробная книга</label>
@@ -429,7 +430,7 @@
                         <div class="card-actions compact">
                             @if (Diagnostics.Result != null)
                             {
-                                <button type="button" class="btn btn-tonal" @onclick="() => Storage.Share([Diagnostics.Result])"><Icon Name="share" Size="18" />Поделиться журналом</button>
+                                <button type="button" class="btn btn-tonal" @onclick="() => LogStorage.Share([Diagnostics.Result])"><Icon Name="share" Size="18" />Поделиться журналом</button>
                             }
                             <button type="button" class="btn btn-text" @onclick="CopyDiagnostics"><Icon Name="copy" Size="18" />Скопировать</button>
                         </div>
@@ -437,10 +438,23 @@
 
                     <hr class="divider" />
 
+                    <div class="list-item two-line">
+                        <span class="list-item-leading"><Icon Name="folder" /></span>
+                        <span class="list-item-text">
+                            <span class="list-item-headline">Папка журналов</span>
+                            <span class="list-item-supporting">@LogStorage.DestinationLabel</span>
+                        </span>
+                    </div>
+                    <div class="card-actions compact">
+                        <button type="button" class="btn btn-tonal" @onclick="PickLogFolder"><Icon Name="folder" Size="18" />Выбрать папку журналов</button>
+                        <button type="button" class="btn btn-text" @onclick="ResetLogFolder">В «Загрузки»</button>
+                    </div>
+                    <p class="supporting-text flush">По умолчанию: «Загрузки/Elib2Ebook/Logs». Эта настройка не меняет папку книг.</p>
+
                     <button type="button" class="btn btn-tonal btn-block" disabled="@(Downloads.Log.Count == 0 && !HasStartupLog)" aria-describedby="download-log-status" @onclick="SaveDownloadLog">
                         <Icon Name="log" Size="18" />Сохранить журнал скачивания и запуска
                     </button>
-                    <p id="download-log-status" class="supporting-text flush">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{Storage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{Storage.DestinationLabel}»")</p>
+                    <p id="download-log-status" class="supporting-text flush">@(HasStartupLog ? $"Есть журнал неудачного запуска. Сохранить в «{LogStorage.DestinationLabel}»" : Downloads.Log.Count == 0 ? "Журнала пока нет — сначала скачайте книгу" : $"Записей: {Downloads.Log.Count}. Файлом в «{LogStorage.DestinationLabel}»")</p>
                     <button type="button" class="btn btn-outlined btn-block" disabled="@(!Diagnostics.CanClearLogs)" @onclick="ClearLogs">
                         Очистить логи
                     </button>
@@ -634,6 +648,38 @@
     {
         Storage.ResetFolder();
         Toasts.Show($"Книги будут сохраняться в «{Storage.DestinationLabel}»", ToastKind.Info);
+    }
+
+    private async Task PickLogFolder()
+    {
+        try
+        {
+            if (await LogStorage.PickFolderAsync())
+            {
+                Toasts.Show($"Журналы будут сохраняться в «{LogStorage.DestinationLabel}»", ToastKind.Success);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Toasts.Show(ex.Message, ToastKind.Error, 10);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show($"Не удалось выбрать папку журналов: {ex.Message}", ToastKind.Error);
+        }
+    }
+
+    private void ResetLogFolder()
+    {
+        try
+        {
+            LogStorage.ResetFolder();
+            Toasts.Show($"Журналы будут сохраняться в «{LogStorage.DestinationLabel}»", ToastKind.Info);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show($"Не удалось изменить папку журналов: {ex.Message}", ToastKind.Error);
+        }
     }
 
     private void SavePattern()
@@ -855,7 +901,7 @@
             }
 
             Toasts.Show($"Сохранено: {file.Name}", ToastKind.Success, 4);
-            Storage.Share([file]);
+            LogStorage.Share([file]);
         }
         catch (Exception ex)
         {

@@ -38,6 +38,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<ToastService>();
         builder.Services.AddSingleton<FormState>();
         builder.Services.AddSingleton<IBookStorage, AndroidBookStorage>();
+        builder.Services.AddSingleton<ILogStorage, AndroidLogStorage>();
         builder.Services.AddSingleton<IPlatformServices, AndroidPlatformServices>();
         builder.Services.AddSingleton<DownloadManager>();
         builder.Services.AddSingleton<BookActions>();

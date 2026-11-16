@@ -117,7 +117,7 @@ public sealed class TemporaryWorkspaceTests : IDisposable
     public async Task DiagnosticReportExportSurvivesLateCleanupAndRemovesItsOwnWorkspaceAfterSaving()
     {
         var storage = new ReportStorage();
-        var runner = new DiagnosticsRunner(null, storage, null, null, null);
+        var runner = new DiagnosticsRunner(null, storage, null, null, null, storage);
         var method = typeof(DiagnosticsRunner).GetMethod("SaveTextAsync", BindingFlags.NonPublic | BindingFlags.Instance)!;
 
         var saved = await (Task<SavedFile>)method.Invoke(runner, ["report.txt", new[] { "Проверка" }])!;
@@ -149,7 +149,7 @@ public sealed class TemporaryWorkspaceTests : IDisposable
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
     }
 
-    private sealed class ReportStorage : IBookStorage
+    private sealed class ReportStorage : ILogStorage
     {
         public string Source { get; private set; }
         public string Text { get; private set; }
@@ -168,7 +168,7 @@ public sealed class TemporaryWorkspaceTests : IDisposable
             return [decorate(new SavedFile { Name = Path.GetFileName(path), Uri = "content://test/report" })];
         }
 
-        public Task<bool> EnsureWriteAccessAsync() => throw new NotSupportedException();
+        public Task<bool> EnsureWriteAccessAsync() => Task.FromResult(true);
         public Task<bool> PickFolderAsync() => throw new NotSupportedException();
         public void ResetFolder() => throw new NotSupportedException();
         public bool Exists(SavedFile file) => throw new NotSupportedException();

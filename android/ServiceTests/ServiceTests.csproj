@@ -37,6 +37,8 @@
     <Compile Include="../E2E.Droid/Services/TlsProbe.cs" Link="Shared/TlsProbe.cs" />
     <Compile Include="../E2E.Droid/Services/CoverThumbnails.cs" Link="Shared/CoverThumbnails.cs" />
     <Compile Include="../E2E.Droid/Services/TemporaryWorkspace.cs" Link="Shared/TemporaryWorkspace.cs" />
+    <Compile Include="../E2E.Droid/Services/StorageFolderLabel.cs" Link="Shared/StorageFolderLabel.cs" />
+    <Compile Include="../E2E.Droid/Services/StorageDestinationPolicy.cs" Link="Shared/StorageDestinationPolicy.cs" />
     <Compile Include="../E2E.Droid/Services/CoverFileProvider.cs" Link="Shared/CoverFileProvider.cs" />
     <Compile Include="../E2E.Droid/Services/SupportedSites.cs" Link="Shared/SupportedSites.cs" />
     <Compile Include="../E2E.Droid/Services/SiteDiagnosticCatalog.cs" Link="Shared/SiteDiagnosticCatalog.cs" />

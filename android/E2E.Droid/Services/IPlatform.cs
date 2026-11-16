@@ -43,6 +43,9 @@ public interface IBookStorage
     void Share(IReadOnlyCollection<SavedFile> files);
 }
 
+/// <summary>Отдельное назначение журналов: выбор папки не меняет место сохранения книг.</summary>
+public interface ILogStorage : IBookStorage;
+
 /// <summary>Прогресс копирования: завершённые файлы и записанные байты.</summary>
 public sealed record StorageProgress(int CompletedFiles, int TotalFiles, long CopiedBytes, long TotalBytes);
 

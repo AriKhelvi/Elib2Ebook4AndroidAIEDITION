@@ -33,7 +33,8 @@ public sealed class DiagnosticsRunner(
     IBookStorage storage,
     IPlatformServices platform,
     DownloadManager downloads,
-    ToastService toasts)
+    ToastService toasts,
+    ILogStorage logStorage)
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
     public const string DefaultTestUrl = "https://tl.rulate.ru/book/273770";
@@ -189,9 +190,17 @@ public sealed class DiagnosticsRunner(
                 return;
             }
 
-            if (!await storage.EnsureWriteAccessAsync())
+            try
             {
-                toasts.Show("Без доступа к памяти журнал некуда сохранить", ToastKind.Error);
+                if (!await logStorage.EnsureWriteAccessAsync())
+                {
+                    toasts.Show("Без доступа к памяти журнал некуда сохранить", ToastKind.Error);
+                    return;
+                }
+            }
+            catch (InvalidOperationException ex)
+            {
+                toasts.Show(LogText.Clean(ex.Message), ToastKind.Error, 10);
                 return;
             }
 
@@ -381,7 +390,7 @@ public sealed class DiagnosticsRunner(
         }
 
         Status = ct.IsCancellationRequested ? "Остановлено" : "Готово";
-        var where = Result != null ? $"Журнал: {storage.DestinationLabel}/{Result.Name}" : "Журнал можно скопировать в настройках";
+        var where = Result != null ? $"Журнал: {logStorage.DestinationLabel}/{Result.Name}" : "Журнал можно скопировать в настройках";
         var siteErrors = allSites ? SiteResults.Count(site => site.Status == SiteDiagnosticStatus.Error) : 0;
         var siteIssues = allSites ? SiteResults.Count(site => site.Status is not (SiteDiagnosticStatus.Ok or SiteDiagnosticStatus.Error)) : 0;
         var failures = _failed + siteErrors;
@@ -492,7 +501,7 @@ public sealed class DiagnosticsRunner(
         Info(Safe(() => $"Время: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz} (UTC {DateTime.UtcNow:HH:mm:ss}), пояс {TimeZoneInfo.Local.Id}, " +
                         $"язык {CultureInfo.CurrentCulture.Name}"));
         Info(Safe(() => $"Память процесса: управляемая {GC.GetTotalMemory(false) / 1048576} МБ, всего {Environment.WorkingSet / 1048576} МБ"));
-        foreach (var line in DescribeSettings(settings, storage))
+        foreach (var line in DescribeSettings(settings, storage, logStorage))
         {
             Info(line);
         }
@@ -1051,10 +1060,11 @@ public sealed class DiagnosticsRunner(
                      $"коммит {BuildInfo.Commit}, ядро Elib2Ebook {BuildInfo.CoreVersion}";
         yield return $"# {BuildInfo.AgentNote(platform.AppVersion)}";
         yield return $"# Записано: {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}";
+        yield return $"# Папка журналов: {logStorage.DestinationLabel}";
     }
 
     /// <summary>Настройки одной-двумя строками — без паролей и адреса прокси с логином.</summary>
-    public static IEnumerable<string> DescribeSettings(AppSettings s, IBookStorage storage)
+    public static IEnumerable<string> DescribeSettings(AppSettings s, IBookStorage storage, ILogStorage logs = null)
     {
         yield return $"Настройки: формат по умолчанию {s.TextFormat}, авто-CBZ {YesNo(s.AutoFormat)}, картинки {YesNo(s.Images)}, " +
                      $"обложка файлом {YesNo(s.Cover)}, доп. файлы {YesNo(s.Additional)} [{string.Join(",", s.AdditionalTypes)}], " +
@@ -1062,7 +1072,8 @@ public sealed class DiagnosticsRunner(
         yield return $"Настройки: таймаут {s.Timeout} с, режим задержки {s.DelayMode}, своя задержка {s.CustomDelaySeconds} с, прокси {MaskProxy(s.Proxy)}, " +
                      $"не проверять сертификаты {YesNo(s.AllowInsecureTls)}, подробный журнал {YesNo(s.DebugLog)}, " +
                      $"пропускать диалог скачивания {YesNo(s.AutoStartOnShare)}";
-        yield return $"Сохранение: {storage.DestinationLabel}";
+        yield return $"Сохранение книг: {storage.DestinationLabel}";
+        if (logs != null) yield return $"Сохранение журналов: {logs.DestinationLabel}";
     }
 
     /// <summary>Прокси без логина и пароля: схема, хост, порт.</summary>
@@ -1080,12 +1091,14 @@ public sealed class DiagnosticsRunner(
 
     private async Task<SavedFile> SaveTextAsync(string fileName, IEnumerable<string> lines)
     {
+        if (!await logStorage.EnsureWriteAccessAsync())
+            throw new InvalidOperationException("Нет доступа к папке журналов. Разрешите запись или выберите папку в «Отладке».");
         var dir = Path.Combine(TemporaryWorkspace.DiagnosticsDirectory, "out-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
             await File.WriteAllLinesAsync(Path.Combine(dir, fileName), LogText.CleanLines(lines), new UTF8Encoding(false));
-            var saved = await storage.SaveTreeAsync(dir, f =>
+            var saved = await logStorage.SaveTreeAsync(dir, f =>
             {
                 f.BookTitle = Path.GetFileNameWithoutExtension(fileName);
                 return f;

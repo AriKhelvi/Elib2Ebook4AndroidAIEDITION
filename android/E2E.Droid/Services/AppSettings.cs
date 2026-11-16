@@ -214,6 +214,19 @@ public sealed class AppSettings
         set => Set(nameof(SaveFolderName), value ?? string.Empty);
     }
 
+    /// <summary>Папка журналов из «Отладки»; пусто — Загрузки/Elib2Ebook/Logs.</summary>
+    public string LogFolderUri
+    {
+        get => P.Get(nameof(LogFolderUri), string.Empty);
+        set => Set(nameof(LogFolderUri), value ?? string.Empty);
+    }
+
+    public string LogFolderName
+    {
+        get => P.Get(nameof(LogFolderName), string.Empty);
+        set => Set(nameof(LogFolderName), value ?? string.Empty);
+    }
+
     private void Set<T>(string key, T value)
     {
         P.Set(key, value);
