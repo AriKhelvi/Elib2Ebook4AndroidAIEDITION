@@ -35,6 +35,12 @@ public static class MauiProgram
         builder.Services.AddSingleton<ISecureStorage>(SecureStorage.Default);
         builder.Services.AddSingleton<IPreferences>(Preferences.Default);
         builder.Services.AddSingleton<CredentialStore>();
+        builder.Services.AddSingleton<ILitnetAuthorizationBrowser, AndroidLitnetAuthorizationBrowser>();
+        builder.Services.AddSingleton<LitnetAuthService>(services => new LitnetAuthService(
+            services.GetRequiredService<ISecureStorage>(), services.GetRequiredService<IPreferences>(),
+            services.GetRequiredService<ILitnetAuthorizationBrowser>(),
+            legacyCredentials: services.GetRequiredService<CredentialStore>()));
+        builder.Services.AddSingleton<ILitnetSessionProvider>(services => services.GetRequiredService<LitnetAuthService>());
         builder.Services.AddSingleton<ToastService>();
         builder.Services.AddSingleton<FormState>();
         builder.Services.AddSingleton<IBookStorage, AndroidBookStorage>();

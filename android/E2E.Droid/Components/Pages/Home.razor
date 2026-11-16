@@ -6,6 +6,7 @@
 @inject AppSettings Settings
 @inject FormState Form
 @inject CredentialStore Credentials
+@inject LitnetAuthService LitnetAuth
 @inject IBookStorage Storage
 @inject ToastService Toasts
 @inject IJSRuntime Js
@@ -210,6 +211,12 @@
             @if (Form.ShowAuth)
             {
                 <div class="expand-body">
+                    @if (CurrentHost == "litnet.com")
+                    {
+                        <LitnetLoginPanel />
+                    }
+                    else
+                    {
                     <div class="text-field">
                         <label class="text-field-label" for="login">Логин</label>
                         <input id="login" type="text" class="text-field-input" placeholder="Логин или почта" autocomplete="username" autocapitalize="off" spellcheck="false"
@@ -228,6 +235,7 @@
                         <input type="checkbox" class="checkbox" @bind="Form.RememberCredentials" />
                         <span>Запомнить для @(CurrentHost ?? "этого сайта")</span>
                     </label>
+                    }
                 </div>
             }
 
@@ -390,6 +398,8 @@
     {
         get
         {
+            if (CurrentHost == "litnet.com")
+                return LitnetAuth.HasSession ? "Litnet: вход выполнен" : "Litnet: вход для купленных книг";
             if (HasSavedLogin && Form.CredentialsAutoFilled)
             {
                 return $"Сохранён для {CurrentHost}: {Form.Login}";
@@ -421,6 +431,9 @@
     protected override async Task OnInitializedAsync()
     {
         Downloads.Changed += OnChanged;
+        LitnetAuth.Changed += OnChanged;
+        try { await LitnetAuth.InitializeAsync(); }
+        catch (LitnetAuthStorageException error) { Toasts.Show(error.Message, ToastKind.Error, 8); }
         // Ссылка могла остаться в поле с прошлого раза (переход между вкладками) — сразу проверяем сайт и формат
         await CheckSite();
         SharedLinkInbox.Arrived += OnSharedLink;
@@ -472,6 +485,13 @@
 
         // Подставляем сохранённый логин, когда в поле появилась ссылка на другой сайт
         var host = CurrentHost;
+        if (host == "litnet.com")
+        {
+            Form.Login = Form.Password = string.Empty;
+            Form.CredentialsAutoFilled = false;
+            Form.CredentialsHost = host;
+            return;
+        }
         if (host == null || host == Form.CredentialsHost)
         {
             return;
@@ -623,7 +643,7 @@
             }
         }
 
-        var hasLogin = !string.IsNullOrWhiteSpace(Form.Login) && !string.IsNullOrWhiteSpace(Form.Password);
+        var hasLogin = CurrentHost != "litnet.com" && !string.IsNullOrWhiteSpace(Form.Login) && !string.IsNullOrWhiteSpace(Form.Password);
         if (hasLogin && Form.RememberCredentials && CurrentHost != null)
         {
             if (await Credentials.SaveAsync(CurrentHost, new SiteCredential(Form.Login.Trim(), Form.Password)))
@@ -676,6 +696,7 @@
     public void Dispose()
     {
         Downloads.Changed -= OnChanged;
+        LitnetAuth.Changed -= OnChanged;
         SharedLinkInbox.Arrived -= OnSharedLink;
     }
 }

@@ -24,6 +24,10 @@ public class Options
     [Option('p', "password", Required = false, HelpText = "Пароль от системы")]
     public string Password { get; set; }
 
+    /// <summary>Вход Litnet через браузер. null при гостевом запуске; отклонённый токен передаётся для однократного обновления.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<string, CancellationToken, Task<BrowserAuthSession>> LitnetSessionProvider { get; set; }
+
     [Option("proxy", Required = false, HelpText = "Прокси в формате <host>:<port>")]
     public string Proxy { get; set; }
 

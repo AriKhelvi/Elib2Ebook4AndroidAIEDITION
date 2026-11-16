@@ -19,7 +19,8 @@ namespace Elib2Ebook.ExternalServices.Litnet.Getters;
 
 public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(config)
 {
-    private Uri ApiUrl => new($"https://api.{SystemUrl.Host}/");
+    private bool IsLitnet => SystemUrl.Host.Equals("litnet.com", StringComparison.OrdinalIgnoreCase);
+    private Uri ApiUrl => new(IsLitnet ? "https://sapi.litnet.com/" : $"https://api.{SystemUrl.Host}/");
 
     //cloudflare :(
     protected virtual Uri ApiIp => ApiUrl;
@@ -34,6 +35,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     private const string SECRET = "14a6579a984b3c6abecda6c2dfa83a64";
 
     private string _token { get; set; }
+    private string _apiDeviceId = DeviceId;
+    private bool _browserSession;
     private string _sessionCacheKey;
     private bool _sessionRejected;
     private string _cachedBookId;
@@ -91,7 +94,19 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         _token = null;
         _sessionCacheKey = null;
         _sessionRejected = false;
+        _apiDeviceId = DeviceId;
+        _browserSession = false;
         Config.CancellationToken.ThrowIfCancellationRequested();
+        if (IsLitnet && Config.Options.LitnetSessionProvider != null)
+        {
+            var session = await Config.Options.LitnetSessionProvider(null, Config.CancellationToken);
+            if (session != null)
+            {
+                SetBrowserSession(session);
+                Config.Logger.LogInformation("Использую вход через Litnet ID");
+                return;
+            }
+        }
         Config.Logger.LogDebug("Litnet: этап входа; сохранённые реквизиты={HasCredentials}", Config.HasCredentials);
 
         // Android задаёт собственную область кэша. Здесь путь используется только как идентификатор:
@@ -146,9 +161,11 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         var data = await GetApiData<LitnetBookResponse>(url);
         if (data == null || string.IsNullOrWhiteSpace(data.Title) || string.IsNullOrWhiteSpace(data.Url))
             throw new InvalidOperationException("Litnet не вернул название или адрес книги. Проверьте доступ к произведению.");
-        if (!Config.HasCredentials && data.AdultOnly)
+        if (!Config.HasCredentials && !_browserSession && data.AdultOnly)
         {
-            throw new SiteAccessException(SiteAccessReason.AgeConfirmationRequired, "Произведение 18+. Необходимо добавить логин и пароль.");
+            throw new SiteAccessException(SiteAccessReason.AgeConfirmationRequired, IsLitnet
+                ? "Произведение 18+. Выполните вход в Litnet через кнопку «Войти в Litnet»."
+                : "Произведение 18+. Необходимо добавить логин и пароль.");
         }
 
         _cachedBookId = bookId;
@@ -165,6 +182,29 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     private async Task<Dictionary<long, LitnetChapterResponse>> GetChapterBatch(string token, LitnetContentsResponse[] batch)
     {
         var chapters = string.Join("&", batch.Select(t => $"chapter_ids[]={t.Id}"));
+        if (IsLitnet)
+        {
+            // Рабочая ветка официального приложения 4.0.16: архив выбранных глав.
+            // Соседний JSON endpoint на живом сервере возвращал 500 даже с новым OAuth-сеансом.
+            var archiveUrl = ApiIp.MakeRelativeUri($"/v1/book/text/get-chapters?{chapters}");
+            // ResponseHeadersRead завершает штатный HttpClient.Timeout на заголовках.
+            // Один бюджет охватывает также обновление сеанса и всё последующее чтение архива.
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(Config.CancellationToken);
+            if (Config.Client.Timeout != Timeout.InfiniteTimeSpan) budget.CancelAfter(Config.Client.Timeout);
+            try
+            {
+                using var response = await SendApiAsync(archiveUrl, true, HttpCompletionOption.ResponseHeadersRead, budget.Token);
+                response.EnsureDownloadSuccess();
+                await using var stream = await response.Content.ReadAsStreamAsync(budget.Token);
+                var texts = await LitnetChapterArchive.ReadAsync(stream, batch.Select(x => x.Id).ToArray(), SECRET, budget.Token);
+                return texts.ToDictionary(x => x.Key, x => new LitnetChapterResponse { Id = x.Key, Text = x.Value });
+            }
+            catch (OperationCanceledException) when (!Config.CancellationToken.IsCancellationRequested && budget.IsCancellationRequested)
+            {
+                throw new TaskCanceledException("Litnet не передал архив глав за отведённое время.",
+                    new TimeoutException("Превышено время ожидания архива Litnet."), budget.Token);
+            }
+        }
         var url = ApiIp.MakeRelativeUri($"/v1/book/get-chapters-texts/?{chapters}&app=android&device_id={DeviceId}&sign={GetSign(token)}&user_token={token}");
         var data = await GetApiData<LitnetChapterResponse[]>(url) ?? [];
         var requested = batch.Select(chapter => chapter.Id).ToHashSet();
@@ -180,14 +220,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
     {
         if (typeof(T) != typeof(LitnetAuthResponse)) EnsureSessionAccepted();
         Config.Logger.LogDebug("Litnet API: ожидается={ResponseType}; url={Url}", typeof(T).Name, DownloadDiagnostics.SafeUri(uri));
-        using var request = GetDefaultMessage(uri, ApiUrl);
-        using var response = await Config.Client.SendAsync(request, Config.CancellationToken);
-        if (typeof(T) != typeof(LitnetAuthResponse) && response.StatusCode == HttpStatusCode.Unauthorized)
-        {
-            _sessionRejected = true;
-            Sessions.Invalidate(_sessionCacheKey, _token);
-            Config.Logger.LogDebug("Litnet: сеанс отклонён API; следующий запуск потребует нового входа.");
-        }
+        using var response = await SendApiAsync(uri, typeof(T) != typeof(LitnetAuthResponse));
         // 403 может относиться к правам на книгу, а 429 — к лимиту сайта. Новый вход их не исправляет.
         response.EnsureDownloadSuccess();
         try
@@ -206,7 +239,94 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         }
     }
 
-    public override async Task<Book> Get(Uri url)
+    private void SetBrowserSession(BrowserAuthSession session)
+    {
+        if (string.IsNullOrWhiteSpace(session.AccessToken) || string.IsNullOrWhiteSpace(session.DeviceId))
+            throw new InvalidOperationException("Вход Litnet ID недействителен. Войдите через браузер заново.");
+        _token = session.AccessToken;
+        _apiDeviceId = session.DeviceId;
+        _browserSession = true;
+    }
+
+    private Uri PrepareApiUri(Uri uri)
+    {
+        if (!IsLitnet) return uri;
+        var replaced = new HashSet<string>(["app", "version", "lang_content", "lang_interface", "device_id", "sign", "user_token"], StringComparer.Ordinal);
+        // Сохраняем повторяющиеся chapter_ids[] отдельными полями, без объединения в строку через запятую.
+        var parts = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(part => !replaced.Contains(HttpUtility.UrlDecode(part.Split('=')[0]))).ToList();
+        void Add(string key, string value) => parts.Add(key + "=" + Uri.EscapeDataString(value));
+        Add("app", "android");
+        Add("version", "400001699"); // Версия проверенного протокола Litnet, не версия E2E.
+        Add("lang_content", "ru");
+        Add("lang_interface", "ru");
+        Add("device_id", _apiDeviceId);
+        Add("sign", Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(_apiDeviceId + SECRET + (_token ?? "")))).ToLowerInvariant());
+        if (!string.IsNullOrEmpty(_token)) Add("user_token", _token);
+        return new UriBuilder(uri) { Query = string.Join("&", parts) }.Uri;
+    }
+
+    private async Task<HttpResponseMessage> SendApiAsync(Uri uri, bool requiresSession,
+        HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead, CancellationToken? cancellationToken = null)
+    {
+        var ct = cancellationToken ?? Config.CancellationToken;
+        for (var attempt = 0; ; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (requiresSession) EnsureSessionAccepted();
+            using var request = GetDefaultMessage(PrepareApiUri(uri), ApiUrl);
+            if (IsLitnet)
+            {
+                request.Headers.Accept.Clear();
+                request.Headers.Accept.ParseAdd("application/json");
+                request.Headers.UserAgent.Clear();
+                request.Headers.UserAgent.ParseAdd("Dart/3.10 (dart:io)");
+            }
+            var response = await Config.Client.SendAsync(request, completion, ct);
+            bool rejected;
+            try { rejected = requiresSession && _browserSession && await NeedsTokenRefresh(response, ct); }
+            catch { response.Dispose(); throw; }
+            if (rejected && attempt == 0)
+            {
+                response.Dispose();
+                var session = await Config.Options.LitnetSessionProvider(_token, ct);
+                if (session == null) throw new InvalidOperationException("Вход Litnet ID удалён. Войдите через браузер заново.");
+                SetBrowserSession(session);
+                Config.Logger.LogInformation("Сеанс Litnet ID обновлён");
+                continue;
+            }
+            if (requiresSession && (response.StatusCode == HttpStatusCode.Unauthorized || rejected))
+            {
+                _sessionRejected = true;
+                Sessions.Invalidate(_sessionCacheKey, _token);
+            }
+            return response;
+        }
+    }
+
+    private async Task<bool> NeedsTokenRefresh(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.StatusCode == HttpStatusCode.Unauthorized) return true;
+        if (response.StatusCode != HttpStatusCode.Forbidden) return false;
+        try
+        {
+            await response.Content.LoadIntoBufferAsync(65536, ct);
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return json.RootElement.ValueKind == JsonValueKind.Object &&
+                json.RootElement.TryGetProperty("error_code", out var code) && code.ValueKind == JsonValueKind.Number &&
+                code.TryGetInt32(out var value) && value == 105;
+        }
+        catch (JsonException) { return false; }
+        catch (HttpRequestException) { return false; }
+    }
+
+    public override Task<Book> Get(Uri url) => GetCore(url, includeSeries: true);
+
+    // HTML-страница цикла не нужна для карточки: запрашиваем её только после получения глав.
+    // Обычный Get с NoChapters сохраняет полный набор метаданных для экспорта без глав.
+    public override Task<Book> GetPreview(Uri url) => GetCore(url, includeSeries: false);
+
+    private async Task<Book> GetCore(Uri url, bool includeSeries)
     {
         EnsureSessionAccepted();
         var bookId = GetId(url);
@@ -222,7 +342,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
             Author = GetAuthor(litnetBook),
             CoAuthors = GetCoAuthors(litnetBook),
             Annotation = GetAnnotation(litnetBook),
-            Seria = await GetSeria(uri, litnetBook),
+            Seria = includeSeries ? await GetSeria(uri, litnetBook) : null,
             Lang = litnetBook.Lang
         };
 
@@ -267,6 +387,17 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
                 return new Seria
                 {
                     Name = a.GetText(), Url = url.MakeRelativeUri(WebUtility.HtmlDecode(a.Attributes["href"].Value)), Number = book.CyclePriority is > 0 ? book.CyclePriority.Value.ToString() : string.Empty
+                };
+            }
+            // В проверенной Angular-карточке Litnet цикл отображается текстом без ссылки.
+            // Берём только поле заголовка текущей книги, а не циклы из рекомендаций ниже.
+            var cycleName = doc.QuerySelector(".view-book-page-header-desktop__cycle span")?.GetText()?.Trim();
+            if (!string.IsNullOrWhiteSpace(cycleName))
+            {
+                return new Seria
+                {
+                    Name = cycleName,
+                    Number = book.CyclePriority is > 0 ? book.CyclePriority.Value.ToString() : string.Empty
                 };
             }
             if (book.CyclePriority is > 0)
@@ -394,7 +525,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
                 HtmlDocument chapterDoc;
                 try
                 {
-                    chapterDoc = GetChapterDoc(Encoding.UTF8.GetString(Decrypt(litnetChapter.Text)));
+                    chapterDoc = GetChapterDoc(IsLitnet ? litnetChapter.Text : Encoding.UTF8.GetString(Decrypt(litnetChapter.Text)));
                 }
                 catch (Exception ex) when (ex is FormatException or CryptographicException or System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
                 {

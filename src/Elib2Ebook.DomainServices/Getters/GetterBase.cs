@@ -458,6 +458,12 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
 
     public abstract Task<Book> Get(Uri url);
 
+    /// <summary>
+    /// Быстрая карточка при включённом NoChapters. По умолчанию сохраняет обычное поведение загрузчика;
+    /// отдельные сайты могут отложить необязательные сетевые метаданные до полной загрузки.
+    /// </summary>
+    public virtual Task<Book> GetPreview(Uri url) => Get(url);
+
     public virtual Task Init()
     {
         Config.Client.DefaultRequestVersion = HttpVersion.Version20;

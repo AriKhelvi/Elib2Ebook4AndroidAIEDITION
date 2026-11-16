@@ -14,7 +14,7 @@ public static class DownloadDiagnostics
     private static readonly HashSet<string> SafeRouteSegments = new(StringComparer.OrdinalIgnoreCase)
     {
         "v1", "v2", "v3", "api", "ru", "en", "uk", "book", "books", "reader", "readfic", "part",
-        "chapter", "chapters", "content", "contents", "text", "texts", "get", "get-chapters-texts",
+        "chapter", "chapters", "content", "contents", "text", "texts", "get", "get-chapters-texts", "get-chapters",
         "user", "users", "find-by-login", "registration", "registration-by-device", "authorization",
         "auth", "login", "logout", "download", "ajax", "ajax.php", "index.php", "list", "page"
     };

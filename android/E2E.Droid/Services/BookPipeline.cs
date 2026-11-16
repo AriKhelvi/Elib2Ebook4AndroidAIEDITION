@@ -10,7 +10,7 @@
 //   BookGetterConfig.GetDefault  → HttpClient с cookies, прокси, таймаутом (как в CLI)
 //   GetterResolver.Create        → загрузчик нужного сайта по ссылке
 //   getter.Init / Authorize      → подготовка сессии, вход по логину (если задан)
-//   getter.Get (NoChapters=true) → быстрое «превью»: название, автор, обложка — для карточки в интерфейсе.
+//   getter.GetPreview (NoChapters=true) → быстрое «превью»: название, автор, обложка — для карточки в интерфейсе.
 //                                  Необязательное: обычные ошибки не роняют скачивание (HTTP 429 останавливает), а для сайтов, где
 //                                  такой проход всё равно качает всю книгу, оно отключено (NoPreviewGetters)
 //   getter.Get                   → полная книга со всеми главами и картинками
@@ -315,7 +315,7 @@ public static class BookPipeline
         options.Additional = false;
         try
         {
-            using var shortBook = await getter.Get(url);
+            using var shortBook = await getter.GetPreview(url);
             onPreview(BookPreview.From(shortBook));
         }
         catch (Exception ex) when (SiteRateLimitScope.IsRateLimited(ex)) { throw; }

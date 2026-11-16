@@ -22,6 +22,12 @@ using Elib2Ebook.DomainServices.Misc;
 
 namespace E2E.Droid.Services;
 
+/// <summary>Получение или обновление входа Litnet из защищённого хранилища приложения.</summary>
+public interface ILitnetSessionProvider
+{
+    Task<BrowserAuthSession> GetAsync(string rejectedToken, CancellationToken cancellationToken);
+}
+
 /// <summary>Что скачивать — собирается из формы на главном экране.</summary>
 public sealed class DownloadRequest
 {
@@ -78,7 +84,8 @@ public sealed class DownloadManager(
     IBookStorage storage,
     IPlatformServices platform,
     HistoryStore history,
-    ToastService toasts)
+    ToastService toasts,
+    ILitnetSessionProvider litnetSessions = null)
 {
     /// <summary>Журнал ограничен, чтобы книга на тысячу глав не съела память.</summary>
     private const int MaxLogLines = 3000;
@@ -749,6 +756,9 @@ public sealed class DownloadManager(
     /// </summary>
     private Options BuildOptions(DownloadRequest request, string url, string workDir)
     {
+        var browserLogin = Uri.TryCreate(url, UriKind.Absolute, out var parsedUrl) &&
+            (parsedUrl.IdnHost.Equals("litnet.com", StringComparison.OrdinalIgnoreCase) ||
+             parsedUrl.IdnHost.Equals("www.litnet.com", StringComparison.OrdinalIgnoreCase)) && litnetSessions != null;
         var additionalTypes = settings.AdditionalTypes
             .Select(t => Enum.TryParse<AdditionalTypeEnum>(t, true, out var type) ? (AdditionalTypeEnum?)type : null)
             .Where(t => t.HasValue)
@@ -759,8 +769,9 @@ public sealed class DownloadManager(
         {
             Url = [url],
             Format = request.FormatsFor(url),
-            Login = NullIfEmpty(request.Login),
-            Password = NullIfEmpty(request.Password),
+            Login = browserLogin ? null : NullIfEmpty(request.Login),
+            Password = browserLogin ? null : NullIfEmpty(request.Password),
+            LitnetSessionProvider = browserLogin ? litnetSessions.GetAsync : null,
             Proxy = NullIfEmpty(settings.Proxy),
             Timeout = settings.Timeout,
             Delay = settings.Delay,

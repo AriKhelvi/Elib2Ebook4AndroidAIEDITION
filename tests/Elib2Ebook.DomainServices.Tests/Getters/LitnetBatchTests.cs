@@ -1,6 +1,4 @@
 using System.Net;
-using System.Reflection;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Web;
@@ -253,12 +251,12 @@ public class LitnetBatchTests
     [InlineData("bad-encoding")]
     public async Task MissingOrMalformedTextStopsWithoutStartingTheNextBatch(string text)
     {
-        var handler = new FakeHandler { BrokenText = text, BrokenChapter = 4 };
+        var handler = new FakeHandler { BrokenEntry = text == null ? [] : Encoding.UTF8.GetBytes(text), BrokenChapter = 4 };
         using var getter = CreateGetter(new Options(), handler);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => getter.Get(BookUri));
 
-        Assert.Contains("Глава 4", error.Message);
+        Assert.Contains("главы 4", error.Message);
         Assert.Contains("Неполная книга не будет сохранена", error.Message);
         Assert.Single(handler.Batches);
     }
@@ -270,7 +268,7 @@ public class LitnetBatchTests
     [InlineData("[\"<p><br /></p>\"]")]
     public async Task EmptyOrMalformedDecryptedChapterIsNotReportedAsSuccess(string json)
     {
-        var handler = new FakeHandler { BrokenChapter = 4, BrokenText = Encrypt(json) };
+        var handler = new FakeHandler { BrokenChapter = 4, BrokenEntry = LitnetArchiveTestSupport.Encrypt(json) };
         using var getter = CreateGetter(new Options(), handler);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => getter.Get(BookUri));
@@ -304,18 +302,6 @@ public class LitnetBatchTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => getter.Get(BookUri));
 
         Assert.Single(handler.Batches);
-    }
-
-    private static string Encrypt(string json)
-    {
-        using var aes = Aes.Create();
-        // Тест использует тот же публичный протокол API, не учётные данные пользователя.
-        var key = (string)typeof(LitnetGetterBase).GetField("SECRET", BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue();
-        aes.Key = Encoding.UTF8.GetBytes(key);
-        aes.IV = new byte[16];
-        using var encryptor = aes.CreateEncryptor();
-        var bytes = new byte[16].Concat(Encoding.UTF8.GetBytes(json)).ToArray();
-        return Convert.ToBase64String(encryptor.TransformFinalBlock(bytes, 0, bytes.Length));
     }
 
     private sealed class ProgressLogger : ILogger
@@ -355,7 +341,7 @@ public class LitnetBatchTests
         public int ChapterCount { get; init; } = 205;
         public bool AdultOnly { get; init; }
         public long? BrokenChapter { get; init; }
-        public string BrokenText { get; init; }
+        public byte[] BrokenEntry { get; init; }
         public Action<int> BeforeBatch { get; init; }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -374,7 +360,7 @@ public class LitnetBatchTests
                     ContentsRequests++;
                     result = Enumerable.Range(1, ChapterCount).Select(i => new { id = i, title = $"Глава {i}", access = Access(i) });
                     break;
-                case "/v1/book/get-chapters-texts/":
+                case "/v1/book/text/get-chapters":
                     var ids = HttpUtility.ParseQueryString(uri.Query).GetValues("chapter_ids[]")!.Select(long.Parse).ToArray();
                     Batches.Add(ids);
                     var status = Batches.Count == RateLimitBatchNumber ? HttpStatusCode.TooManyRequests : BatchStatus;
@@ -382,11 +368,11 @@ public class LitnetBatchTests
                         return Task.FromResult(TestHttpResponse.Create(status, request, new StringContent("{}")));
                     BeforeBatch?.Invoke(Batches.Count);
                     // Сервер может вернуть главы в другом порядке и обрезать большой запрос.
-                    result = ids.Take(OmitLastChapter ? ids.Length - 1 : 100).Reverse().Select(id => new
-                    {
-                        id, text = id == BrokenChapter ? BrokenText : Encrypt("[\"<p>Текст главы</p>\"]")
-                    });
-                    break;
+                    var entries = ids.Take(OmitLastChapter ? ids.Length - 1 : 100).Reverse().Select(id =>
+                        ($"{id}.gz", id == BrokenChapter ? BrokenEntry : LitnetArchiveTestSupport.Encrypt("[\"<p>Текст главы</p>\"]")));
+                    var archive = new ByteArrayContent(LitnetArchiveTestSupport.Archive(entries));
+                    archive.Headers.ContentType = new("application/zip");
+                    return Task.FromResult(TestHttpResponse.Create(HttpStatusCode.OK, request, archive));
                 case "/ru/book/test-b123":
                     SeriesRequests++;
                     result = new { };

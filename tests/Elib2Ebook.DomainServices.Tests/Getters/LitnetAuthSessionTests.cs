@@ -263,7 +263,7 @@ public class LitnetAuthSessionTests
             var uri = request.RequestUri!;
             if (uri.AbsolutePath is "/v1/user/find-by-login" or "/v1/registration/registration-by-device")
             {
-                Assert.Equal("api.litnet.com", request.Headers.Host);
+                Assert.Equal("sapi.litnet.com", request.Headers.Host);
                 AuthPaths.Enqueue(uri.AbsolutePath);
                 var count = Interlocked.Increment(ref _authRequests);
                 return Authenticate != null ? await Authenticate(count) : AfAuditSupport.Json(new { token = "session-" + count });

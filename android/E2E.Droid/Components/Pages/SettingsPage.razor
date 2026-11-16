@@ -314,10 +314,11 @@
 
     <section class="section">
         <h2 class="section-title">Входы на сайты</h2>
+        <div class="card expand-body"><LitnetLoginPanel /></div>
         <div class="card list">
             @if (_hosts.Count == 0 && _editHost == null)
             {
-                <p class="card-note standalone">Пока нет. Вход сохраняется при скачивании, если в «Вход на сайт» отмечено «Запомнить», — или добавьте его здесь.</p>
+                <p class="card-note standalone">Для остальных сайтов входов пока нет. Они сохраняются при скачивании, если в «Вход на сайт» отмечено «Запомнить», — или добавьте их здесь.</p>
             }
 
             @foreach (var host in _hosts)
@@ -620,7 +621,7 @@
 
     private async Task LoadCredentials()
     {
-        _hosts = Credentials.Hosts;
+        _hosts = Credentials.Hosts.Where(host => host != "litnet.com").ToArray();
         foreach (var host in _hosts)
         {
             _logins[host] = (await Credentials.GetAsync(host))?.Login ?? "логин не прочитан";
@@ -777,13 +778,20 @@
         {
             <div class="text-field">
                 <label class="text-field-label" for="cred-site">Сайт</label>
-                <input id="cred-site" class="text-field-input" placeholder="author.today или ссылка на книгу" autocapitalize="off" spellcheck="false" inputmode="url" @bind="_editSite" />
+                <input id="cred-site" class="text-field-input" placeholder="author.today или ссылка на книгу" autocapitalize="off" spellcheck="false" inputmode="url" @bind="_editSite" @bind:event="oninput" />
             </div>
         }
         else
         {
             <h3 class="section-label">@_editHost</h3>
         }
+        @if (EditingLitnet)
+        {
+            <LitnetLoginPanel />
+            <button type="button" class="btn btn-text" @onclick="CloseEditor">Закрыть</button>
+        }
+        else
+        {
         <div class="text-field">
             <label class="text-field-label" for="cred-login">Логин</label>
             <input id="cred-login" class="text-field-input" autocomplete="off" autocapitalize="off" spellcheck="false" @bind="_editLogin" />
@@ -804,7 +812,12 @@
                 <button type="button" class="btn btn-text btn-danger push-end" @onclick="RemoveCredential">Удалить</button>
             }
         </div>
+        }
     </div>;
+
+    private bool EditingLitnet => _editHost == "litnet.com"
+        || (string.IsNullOrEmpty(_editHost) && CredentialStore.NormalizeHost(
+            (_editSite ?? "").Contains("://", StringComparison.Ordinal) ? _editSite : "https://" + _editSite) == "litnet.com");
 
     private void AddCredential()
     {
@@ -843,6 +856,11 @@
             }
         }
 
+        if (host == "litnet.com")
+        {
+            Toasts.Show("Для Litnet используйте кнопку «Войти в Litnet»", ToastKind.Info);
+            return;
+        }
         if (string.IsNullOrWhiteSpace(_editLogin) || string.IsNullOrEmpty(_editPassword))
         {
             Toasts.Show("Нужны и логин, и пароль", ToastKind.Error);
