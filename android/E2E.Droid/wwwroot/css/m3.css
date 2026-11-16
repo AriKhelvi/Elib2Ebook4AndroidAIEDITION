@@ -921,6 +921,19 @@ button.assist-chip:active::after,
     color: var(--md-on-error-container);
 }
 
+.manga-limit-image {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    height: auto;
+    margin: 0 auto 16px;
+    padding: 16px;
+    box-sizing: border-box;
+    border-radius: 12px;
+    /* Чёрный рисунок с прозрачностью должен читаться и в тёмной теме. */
+    background: #fff;
+}
+
 .card-header {
     display: flex;
     align-items: center;

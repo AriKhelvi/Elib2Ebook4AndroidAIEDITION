@@ -29,6 +29,9 @@ public class BookGetterConfig : IDisposable
     /// <summary>Отмена для поддерживающих её загрузчиков и операций постоянного кэша.</summary>
     public CancellationToken CancellationToken { get; set; }
 
+    /// <summary>Проверка размера выбранного диапазона до загрузки глав. По умолчанию ограничений нет.</summary>
+    public Action<int> ValidateSelectedChapterCount { get; set; }
+
     public CookieContainer CookieContainer { get; }
 
     public bool HasCredentials => !string.IsNullOrWhiteSpace(Options.Login) && !string.IsNullOrWhiteSpace(Options.Password);

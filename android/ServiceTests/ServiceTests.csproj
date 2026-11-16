@@ -25,6 +25,7 @@
     <Compile Include="../E2E.Droid/Services/SavedFile.cs" Link="Shared/SavedFile.cs" />
     <Compile Include="../E2E.Droid/Services/BookRecord.cs" Link="Shared/BookRecord.cs" />
     <Compile Include="../E2E.Droid/Services/BookPipeline.cs" Link="Shared/BookPipeline.cs" />
+    <Compile Include="../E2E.Droid/Services/MangaDownloadLimit.cs" Link="Shared/MangaDownloadLimit.cs" />
     <Compile Include="../E2E.Droid/Services/GetterResolver.cs" Link="Shared/GetterResolver.cs" />
     <Compile Include="../E2E.Droid/Services/CallbackLogger.cs" Link="Shared/CallbackLogger.cs" />
     <Compile Include="../E2E.Droid/Services/BoundedFileLog.cs" Link="Shared/BoundedFileLog.cs" />

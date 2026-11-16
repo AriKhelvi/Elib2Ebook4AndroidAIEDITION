@@ -64,11 +64,19 @@
                 }
             </div>
             <div class="card-body">
+                @if (Downloads.MangaLimitExceeded)
+                {
+                    <img class="manga-limit-image" src="images/manga-chapter-limit.png" width="1191" height="1321"
+                         alt="Иллюстрация к превышению лимита глав манги" />
+                }
                 @foreach (var error in errors)
                 {
                     <p class="error-text">@error</p>
                 }
-                <p class="card-subtitle">Подробности — в журнале ниже. Если сайт требует входа, заполните «Вход на сайт»; при таймаутах увеличьте таймаут в настройках.</p>
+                @if (!Downloads.MangaLimitExceeded)
+                {
+                    <p class="card-subtitle">Подробности — в журнале ниже. Если сайт требует входа, заполните «Вход на сайт»; при таймаутах увеличьте таймаут в настройках.</p>
+                }
             </div>
         </section>
     }

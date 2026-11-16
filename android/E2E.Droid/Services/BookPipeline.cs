@@ -184,6 +184,7 @@ public static class BookPipeline
         // прокси из настроек и таймаутом options.Timeout (ВАЖНО: 0 в Options = ошибка, задаём явно)
         var config = BookGetterConfig.GetDefault(options, logger);
         config.CancellationToken = ct;
+        MangaDownloadLimit.Apply(config, url);
 
         // Ядро не принимает CancellationToken — обрываем запросы, освобождая HttpClient.
         // Текущий запрос упадёт с исключением, а дальше мы превратим его в OperationCanceledException.

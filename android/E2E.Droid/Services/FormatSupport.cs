@@ -41,6 +41,7 @@ public static class FormatSupport
         "v2.slashlib.me",
         "mangamammy.ru",
         "manga.ovh",
+        "readmanga.live",
         "remanga.org"
     };
 

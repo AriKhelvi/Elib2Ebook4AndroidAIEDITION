@@ -343,27 +343,30 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
             end = GetIndexByName(toc, selector, endName);
         }
 
+        IEnumerable<T> selected;
         if (start.HasValue && end.HasValue)
         {
             var startIndex = start.Value >= 0 ? start.Value : toc.Count + start.Value + 1;
             var endIndex = end.Value >= 0 ? end.Value : toc.Count + end.Value;
 
-            return toc.Skip(startIndex - 1).Take(endIndex - startIndex + 1);
+            selected = toc.Skip(startIndex - 1).Take(endIndex - startIndex + 1);
         }
-
-        if (start.HasValue)
+        else if (start.HasValue)
         {
             var startIndex = start.Value >= 0 ? start.Value : toc.Count + start.Value + 1;
-            return toc.Skip(startIndex - 1);
+            selected = toc.Skip(startIndex - 1);
         }
-
-        if (end.HasValue)
+        else if (end.HasValue)
         {
             var endIndex = end.Value >= 0 ? end.Value : toc.Count + end.Value;
-            return toc.Take(endIndex);
+            selected = toc.Take(endIndex);
         }
+        else selected = toc;
 
-        return toc;
+        // Проверяем оглавление до первого запроса главы, чтобы не тратить трафик
+        // и не превращать превышение лимита в молча обрезанную книгу.
+        Config.ValidateSelectedChapterCount?.Invoke(selected.Count());
+        return selected;
     }
 
     private static HtmlDocument GetContent(EpubBook epubBook, EpubChapter epubChapter)

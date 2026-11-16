@@ -25,6 +25,8 @@
     <ItemGroup>
         <Compile Include="..\E2E.Droid\Services\GetterResolver.cs" Link="Shared\GetterResolver.cs" />
         <Compile Include="..\E2E.Droid\Services\BookPipeline.cs" Link="Shared\BookPipeline.cs" />
+        <Compile Include="..\E2E.Droid\Services\MangaDownloadLimit.cs" Link="Shared\MangaDownloadLimit.cs" />
+        <Compile Include="..\E2E.Droid\Services\FormatSupport.cs" Link="Shared\FormatSupport.cs" />
         <Compile Include="..\E2E.Droid\Services\CallbackLogger.cs" Link="Shared\CallbackLogger.cs" />
         <Compile Include="..\E2E.Droid\Services\Formatting.cs" Link="Shared\Formatting.cs" />
         <Compile Include="..\E2E.Droid\Services\SharedLinkInbox.cs" Link="Shared\SharedLinkInbox.cs" />

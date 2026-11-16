@@ -168,6 +168,9 @@ public sealed class DownloadManager(
     /// <summary>Короткие сообщения об ошибках по каждой не скачавшейся ссылке.</summary>
     public IReadOnlyList<string> Errors => Copy(_job.Errors);
 
+    /// <summary>Отдельная иллюстрация для превышения лимита манги в текущем задании.</summary>
+    public bool MangaLimitExceeded => _job.MangaLimitExceeded;
+
     /// <summary>
     /// Запускает задание. Вызывать из UI-потока (запрос разрешения показывает системный диалог).
     /// Повторный вызов, пока идёт запуск или скачивание, ничего не делает.
@@ -564,6 +567,7 @@ public sealed class DownloadManager(
                           "Если сеть надёжная, проверку можно выключить: «Настройки» → «Сеть»"
                         : ex.Message;
                 message = LogText.Clean(message);
+                if (ex is MangaChapterLimitException) job.MangaLimitExceeded = true;
                 lock (job.Errors) job.Errors.Add(LogText.Clean($"{url}: {message}"));
                 // В журнал — полный текст исключения со стеком: пригодится для отчёта об ошибке
                 WriteException(job, $"Генерация книги {url} завершилась с ошибкой. {message}", ex);
@@ -990,6 +994,7 @@ public sealed class DownloadManager(
         public volatile string Status = "Подготовка…";
         public volatile BookPreview Preview;
         public volatile int Current;
+        public volatile bool MangaLimitExceeded;
 
         /// <summary>Миниатюра обложки карточки: адрес для интерфейса и файл в кэше (его удаляем при смене карточки).</summary>
         public volatile string PreviewCoverUrl;
