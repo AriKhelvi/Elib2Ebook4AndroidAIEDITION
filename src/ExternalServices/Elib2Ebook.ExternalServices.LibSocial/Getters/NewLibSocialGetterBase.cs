@@ -201,15 +201,13 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
             throw new Exception("Авторизация отклонена (код 419). Обычно это означает истекший CSRF токен или необходимость пройти капчу. Попробуйте указать --flare");
         }
 
-        if (authorize == null || authorize.RequestMessage?.RequestUri == null)
-        {
-            throw new Exception("Сайт не вернул код авторизации (проверьте логин/пароль)");
-        }
-
-        var authCode = authorize.RequestMessage.RequestUri.GetQueryParameter("code");
+        var authCode = authorize.RequestMessage?.RequestUri?.GetQueryParameter("code");
         if (string.IsNullOrWhiteSpace(authCode))
         {
-            throw new Exception("Сайт не вернул code после авторизации (проверьте логин/пароль)");
+            // Без кода сначала сохраняем HTTP-причину отказа. Если код уже выдан,
+            // оставляем прежний обмен, независимо от ответа страницы callback.
+            authorize.EnsureDownloadSuccess();
+            throw new Exception("Сайт не завершил авторизацию: код подтверждения не получен.");
         }
 
         var tokenResponse = await Config.Client.PostAsync(
