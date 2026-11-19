@@ -240,6 +240,93 @@ public sealed class DiagnosticsRunnerTests : IDisposable
     }
 
     [Theory]
+    [InlineData(120, 4, 120, true)]
+    [InlineData(120, 4, 60, true)]
+    [InlineData(120, 4, 59.99, false)]
+    [InlineData(5, 4, 5, true)]
+    [InlineData(5, 4, 4.99, false)]
+    [InlineData(10, 3, 1, true)]
+    [InlineData(11, 3, 120, false)]
+    [InlineData(5, 2, 120, false)]
+    [InlineData(5, 1, 120, false)]
+    public void AllSitesDelayGuardUsesEffectiveTimeoutAndSelectedDelayMode(int timeout, int mode, double delay, bool blocked)
+    {
+        var settings = new AppSettings { Timeout = timeout, DelayMode = mode, CustomDelaySeconds = delay };
+
+        var problem = typeof(DiagnosticsRunner).GetMethod("GetAllSitesSettingsProblem", BindingFlags.Static | BindingFlags.NonPublic)!
+            .Invoke(null, [settings]);
+
+        Assert.Equal(blocked, problem != null);
+        Assert.Equal(timeout, settings.Timeout);
+        Assert.Equal(mode, settings.DelayMode);
+        Assert.Equal(delay, settings.CustomDelaySeconds);
+    }
+
+    [Fact]
+    public async Task IncompatibleAllSitesDelayPreservesPreviousReportAndReleasesReservations()
+    {
+        var settings = new AppSettings { Timeout = 120, DelayMode = 4, CustomDelaySeconds = 120 };
+        var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        // Готовый предыдущий отчёт без обращения к сети.
+        await InvokeAsync(runner, "RunAsync", cancelled.Token, true);
+        var previousReport = runner.ReportLines.ToArray();
+        var previousResult = runner.Result;
+        var previousStatus = runner.Status;
+        var savedReport = _storage.Text;
+        var path = Path.Combine(FileSystem.AppDataDirectory, "logs", "diagnostics-last.log");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, "Предыдущая диагностика на диске");
+
+        // Повторное нажатие тоже должно быть отклонено без фонового задания.
+        await runner.StartAllSitesAsync();
+        await runner.StartAllSitesAsync();
+
+        Assert.False(runner.IsRunning);
+        Assert.False(downloads.IsBusy);
+        Assert.Equal(0, _platform.NotificationPermissionRequests);
+        Assert.Equal(previousReport, runner.ReportLines);
+        Assert.Same(previousResult, runner.Result);
+        Assert.Equal(previousStatus, runner.Status);
+        Assert.Equal(savedReport, _storage.Text);
+        Assert.Equal("Предыдущая диагностика на диске", await File.ReadAllTextAsync(path));
+        Assert.Equal(120, settings.CustomDelaySeconds);
+        Assert.True(downloads.TryReserveDiagnostics(out var lease));
+        lease.Dispose();
+        Assert.Contains(_toasts.Toasts, toast => toast.Kind == ToastKind.Error &&
+            toast.Text.Contains("Проверка всех сайтов не запущена") && toast.Text.Contains("положение 2"));
+    }
+
+    [Fact]
+    public async Task DelayChangedDuringAllSitesRunSkipsNextProbeBeforeCallingGetter()
+    {
+        using var fixture = RateLimitFixture.Use();
+        var settings = new AppSettings { DelayMode = 2 };
+        var downloads = new DownloadManager(settings, _storage, _platform, null, _toasts);
+        var runner = new DiagnosticsRunner(settings, _storage, _platform, downloads, _toasts, _storage);
+        var first = new SiteDiagnosticCase("first", "ratelimit.test", RateLimitFixture.Site + "/first", null, null);
+        var firstOutcome = await (Task<SiteProbeOutcome>)Invoke(runner, "RunSiteProbeAsync", first, CancellationToken.None);
+        Assert.Equal(SiteDiagnosticStatus.Ok, firstOutcome.Status);
+        Assert.Single(RateLimitFixture.Requests);
+        settings.DelayMode = 4;
+        settings.CustomDelaySeconds = 120;
+
+        var second = first with { Id = "second", BookUrl = RateLimitFixture.Site + "/second" };
+        var secondOutcome = await (Task<SiteProbeOutcome>)Invoke(runner, "RunSiteProbeAsync", second, CancellationToken.None);
+
+        Assert.Equal(SiteDiagnosticStatus.Skipped, secondOutcome.Status);
+        Assert.Contains("настроек приложения", secondOutcome.Detail);
+        Assert.Contains("положение 2", secondOutcome.Detail);
+        Assert.Single(RateLimitFixture.Requests);
+        settings.DelayMode = 2;
+        var thirdOutcome = await (Task<SiteProbeOutcome>)Invoke(runner, "RunSiteProbeAsync", second, CancellationToken.None);
+        Assert.Equal(SiteDiagnosticStatus.Ok, thirdOutcome.Status);
+        Assert.Equal(2, RateLimitFixture.Requests.Count);
+    }
+
+    [Theory]
     [InlineData(403)]
     [InlineData(429)]
     [InlineData(503)]
@@ -514,7 +601,8 @@ public sealed class DiagnosticsRunnerTests : IDisposable
         public bool SupportsDynamicColor => false;
         public bool IsBackgroundWorkRunning => true;
         public bool IsIgnoringBatteryOptimizations => true;
-        public Task RequestNotificationPermissionAsync() => Task.CompletedTask;
+        public int NotificationPermissionRequests { get; private set; }
+        public Task RequestNotificationPermissionAsync() { NotificationPermissionRequests++; return Task.CompletedTask; }
         public void StartBackgroundWork(string text) { }
         public void UpdateBackgroundWork(string text) { }
         public void StopBackgroundWork() { }

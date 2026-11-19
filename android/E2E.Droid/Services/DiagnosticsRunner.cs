@@ -38,7 +38,7 @@ public sealed class DiagnosticsRunner(
 {
     /// <summary>Открытый пример для пробного скачивания; доступность сайта проверяется при каждом запуске.</summary>
     public const string DefaultTestUrl = "https://tl.rulate.ru/book/273770";
-    public const string ScenarioVersion = "2026-11-15.4";
+    public const string ScenarioVersion = "2026-11-19.1";
 
     private const int TestChapters = 2;
     private const int MaxLines = 6000;
@@ -202,6 +202,13 @@ public sealed class DiagnosticsRunner(
             catch (InvalidOperationException ex)
             {
                 toasts.Show(LogText.Clean(ex.Message), ToastKind.Error, 10);
+                return;
+            }
+
+            if (allSites && GetAllSitesSettingsProblem(settings) is { } settingsProblem)
+            {
+                // Старый отчёт остаётся доступен; finally освобождает обе блокировки запуска.
+                toasts.Show("Проверка всех сайтов не запущена. " + settingsProblem, ToastKind.Error, 15);
                 return;
             }
 
@@ -832,6 +839,20 @@ public sealed class DiagnosticsRunner(
         Changed?.Invoke();
     }
 
+    private static string GetAllSitesSettingsProblem(AppSettings current)
+    {
+        var interval = RequestPacer.GetInterval(new Options
+        {
+            Delay = current.Delay, DelayMode = current.DelayMode, CustomDelaySeconds = current.CustomDelaySeconds
+        }, 1);
+        var requestTimeout = Math.Clamp(current.Timeout, 1, 60);
+        var budget = Math.Min(requestTimeout, SiteDiagnosticBatch.SiteTimeout.TotalSeconds);
+        if (interval.TotalSeconds < budget) return null;
+
+        return $"Задержка между запросами до {interval.TotalSeconds:0.##} с не меньше лимита запроса в диагностике ({budget:0.##} с). " +
+            "Ожидание очереди может исчерпать этот лимит до отправки запроса. В «Настройки → Скачивание → Задержка» поставьте ползунок в положение 2 (стандартная) или выберите меньшую задержку.";
+    }
+
     private static Options CreateSiteProbeOptions(SiteDiagnosticCase item, string work, AppSettings current)
         => new()
         {
@@ -846,6 +867,9 @@ public sealed class DiagnosticsRunner(
 
     private async Task<SiteProbeOutcome> RunSiteProbeAsync(SiteDiagnosticCase item, CancellationToken ct)
     {
+        // Настройки можно изменить, пока предыдущий пример проверяется в фоне.
+        if (GetAllSitesSettingsProblem(settings) is { } settingsProblem)
+            return new(SiteDiagnosticStatus.Skipped, "Не проверено из-за настроек приложения. " + settingsProblem);
         if (!Uri.TryCreate(item.BookUrl, UriKind.Absolute, out var url) || url.Scheme is not ("https" or "http") || url.UserInfo.Length > 0)
             return new(SiteDiagnosticStatus.Error, "Некорректный адрес примера в каталоге");
         if (!GetterResolver.IsSupported(url))
