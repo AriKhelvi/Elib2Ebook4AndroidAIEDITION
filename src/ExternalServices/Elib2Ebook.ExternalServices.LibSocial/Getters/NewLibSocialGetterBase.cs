@@ -98,17 +98,6 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
         }
     }
 
-    private static string TrimForLog(string value, int maxLength = 300)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        var trimmed = value.Trim();
-        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength] + "…";
-    }
-
     private static string Challenge(string str)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(str).AsSpan(0, Encoding.UTF8.GetByteCount(str)));
@@ -152,8 +141,12 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
         var challengeUrl = AuthHost.MakeRelativeUri(
             $"/auth/oauth/authorize?scope=&client_id=1&response_type=code&redirect_uri={redirectUri}&state={state}&code_challenge={challenge}&code_challenge_method=S256&prompt=consent");
 
-        var loginForm = await Config.Client.GetHtmlDocWithTriesAsync(challengeUrl);
-        var tokenInput = loginForm.QuerySelector("input[name=_token]");
+        var loginPage = await Config.Client.GetHtmlDocWithTriesAsync(challengeUrl);
+        var loginForm = loginPage.QuerySelectorAll("form").FirstOrDefault(form => IsPostForm(form) && IsLoginForm(form));
+        if (loginForm != null)
+            GetAuthFormUri(loginForm.GetAttributeValue("action", string.Empty));
+
+        var tokenInput = (loginForm ?? loginPage.DocumentNode).QuerySelector("input[name=_token]");
         if (tokenInput == null)
         {
             throw new Exception("Не удалось получить csrf токен формы авторизации сайта (возможно, заблокировал DDoS-Guard)");
@@ -172,6 +165,20 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
             },
         };
 
+        var altchaWidget = loginForm?.QuerySelector("altcha-widget");
+        if (altchaWidget != null)
+        {
+            var fieldName = altchaWidget.GetAttributeValue("name", "altcha");
+            if (string.IsNullOrWhiteSpace(fieldName) || fieldName.Length > 128 ||
+                fieldName.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '_' and not '-' and not '.') ||
+                payload.Keys.Contains(fieldName, StringComparer.OrdinalIgnoreCase))
+                throw new Exception("Сайт вернул некорректное поле проверки формы входа.");
+
+            var verificationUrl = GetAuthFormUri(altchaWidget.GetAttributeValue("challengeurl", string.Empty));
+            Config.Logger.LogInformation("Выполняю проверку формы входа LibSocial");
+            payload[fieldName] = await LibSocialAltcha.CreatePayloadAsync(Config, verificationUrl);
+        }
+
         await Config.Client.PostHtmlDocWithTriesAsync(AuthHost.MakeRelativeUri("/auth/login"), new FormUrlEncodedContent(payload));
         var login = await Config.Client.GetHtmlDocWithTriesAsync(challengeUrl);
         if (login.QuerySelector(".g-recaptcha") != null)
@@ -182,20 +189,26 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
         var error = login.QuerySelector(".form-field__error");
         if (error != null && !string.IsNullOrWhiteSpace(error.InnerText))
         {
-            throw new Exception($"Не удалось авторизоваться. {error.InnerText.Trim()}");
+            // Текст ответа может повторять отправленные данные; не включаем его в журнал.
+            throw new Exception("Сайт отклонил форму входа. Проверьте вход на сайте в браузере и повторите скачивание.");
         }
 
-        var postForm = login.QuerySelector("form[method=post]");
+        var postForms = login.QuerySelectorAll("form").Where(IsPostForm).ToList();
+        var postForm = postForms.FirstOrDefault(IsOAuthConfirmationForm);
         if (postForm == null)
         {
-            throw new Exception("Не удалось получить форму подтверждения OAuth на сайте (проверьте логин/пароль)");
+            if (postForms.Any(IsLoginForm))
+                throw new Exception("Сайт снова показал форму входа: авторизация не завершена. Попробуйте войти на сайт в браузере и повторить скачивание.");
+            throw new Exception("Сайт не вернул форму подтверждения OAuth: авторизация не завершена.");
         }
 
+        // Данные формы, включая CSRF, разрешено отправлять только серверу авторизации.
+        var confirmationUrl = GetAuthFormUri(postForm.GetAttributeValue("action", string.Empty));
         payload = postForm
             .QuerySelectorAll("input[type=hidden]")
             .ToDictionary(input => input.Attributes["name"].Value, input => input.Attributes["value"].Value);
 
-        using var authorize = await Config.Client.PostAsync(AuthHost.MakeRelativeUri(postForm.Attributes["action"].Value), new FormUrlEncodedContent(payload));
+        using var authorize = await Config.Client.PostAsync(confirmationUrl, new FormUrlEncodedContent(payload));
         if ((int)authorize.StatusCode == 419)
         {
             throw new Exception("Авторизация отклонена (код 419). Обычно это означает истекший CSRF токен или необходимость пройти капчу. Попробуйте указать --flare");
@@ -210,7 +223,7 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
             throw new Exception("Сайт не завершил авторизацию: код подтверждения не получен.");
         }
 
-        var tokenResponse = await Config.Client.PostAsync(
+        using var tokenResponse = await Config.Client.PostAsync(
             ApiHost.MakeRelativeUri("/api/auth/oauth/token"),
             JsonContent.Create(
                 new
@@ -229,12 +242,9 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
 
         if (tokenResponse.StatusCode != HttpStatusCode.OK)
         {
-            var errorBody = await tokenResponse.Content.ReadAsStringAsync();
-            var snippet = string.IsNullOrWhiteSpace(errorBody)
-                ? string.Empty
-                : $" Ответ сервера: {TrimForLog(errorBody)}";
-
-            throw new Exception($"Сайт не выдал access token. Код {(int)tokenResponse.StatusCode} ({tokenResponse.StatusCode}).{snippet}");
+            // Не включаем тело ответа с возможными токенами и реквизитами в исключение.
+            tokenResponse.EnsureDownloadSuccess();
+            throw new Exception($"Сайт не выдал access token. Код {(int)tokenResponse.StatusCode} ({tokenResponse.StatusCode}).");
         }
 
         var token = await tokenResponse.Content.ReadFromJsonAsync<LibSocialToken>();
@@ -245,6 +255,41 @@ public abstract class NewLibSocialGetterBase(BookGetterConfig config) : GetterBa
 
         Config.Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token.AccessToken);
         Config.Logger.LogInformation("Успешно авторизовались");
+    }
+
+    private static bool IsPostForm(HtmlNode form)
+        => string.Equals(form.GetAttributeValue("method", string.Empty), "post", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsLoginForm(HtmlNode form)
+    {
+        if (form.QuerySelectorAll("input").Any(input =>
+                string.Equals(input.GetAttributeValue("type", string.Empty), "password", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(input.GetAttributeValue("name", string.Empty), "password", StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        return Uri.TryCreate(AuthHost, form.GetAttributeValue("action", string.Empty), out var action) &&
+               string.Equals(Uri.UnescapeDataString(action.AbsolutePath).TrimEnd('/'), "/auth/login", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsOAuthConfirmationForm(HtmlNode form)
+    {
+        if (IsLoginForm(form) || form.QuerySelector("input[type=hidden][name=_token]") == null)
+            return false;
+
+        // На странице могут быть формы выхода, настроек или дополнительной проверки.
+        // CSRF сам по себе не означает подтверждение OAuth. Точный endpoint может меняться.
+        return Uri.TryCreate(AuthHost, form.GetAttributeValue("action", string.Empty), out var action) &&
+               Uri.UnescapeDataString(action.AbsolutePath).StartsWith("/auth/oauth/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static Uri GetAuthFormUri(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(AuthHost, value, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 || !string.IsNullOrEmpty(uri.UserInfo) ||
+            !string.Equals(uri.IdnHost, AuthHost.IdnHost, StringComparison.OrdinalIgnoreCase))
+            throw new Exception("Сайт вернул недопустимый адрес формы авторизации.");
+
+        return uri;
     }
 
     protected override string GetId(Uri url)
