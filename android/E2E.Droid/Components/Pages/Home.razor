@@ -8,6 +8,8 @@
 @inject CredentialStore Credentials
 @inject LitnetAuthService LitnetAuth
 @inject IBookStorage Storage
+@inject ILogStorage LogStorage
+@inject DiagnosticsRunner Diagnostics
 @inject ToastService Toasts
 @inject IJSRuntime Js
 
@@ -323,6 +325,7 @@
             {
                 <pre id="log-view" class="log-view">@string.Join('\n', log.TakeLast(500))</pre>
                 <div class="card-actions compact">
+                    <button type="button" class="btn btn-tonal" disabled="@_sharingLog" @onclick="ShareLog"><Icon Name="share" Size="18" />Поделиться журналом</button>
                     <button type="button" class="btn btn-text" @onclick="CopyLog"><Icon Name="copy" Size="18" />Скопировать журнал</button>
                 </div>
             }
@@ -689,6 +692,33 @@
     {
         await Clipboard.Default.SetTextAsync(string.Join('\n', Downloads.Log));
         Toasts.Show("Журнал скопирован", ToastKind.Success, 3);
+    }
+
+    private bool _sharingLog;
+
+    private async Task ShareLog()
+    {
+        if (_sharingLog) return;
+        _sharingLog = true;
+        try
+        {
+            var file = await Diagnostics.SaveDownloadLogAsync();
+            if (file == null)
+            {
+                Toasts.Show("Журнал не сохранился", ToastKind.Error);
+                return;
+            }
+
+            LogStorage.Share([file]);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show($"Не удалось поделиться журналом: {ex.Message}", ToastKind.Error, 8);
+        }
+        finally
+        {
+            _sharingLog = false;
+        }
     }
 
     private void OnChanged() => InvokeAsync(StateHasChanged);
