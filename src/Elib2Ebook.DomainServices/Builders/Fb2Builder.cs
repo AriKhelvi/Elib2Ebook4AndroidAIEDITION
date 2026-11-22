@@ -22,6 +22,10 @@ public class Fb2Builder : BuilderBase
     private readonly XElement _body;
     private readonly XElement _documentInfo;
     private readonly List<TempFile> _images = [];
+    private readonly Dictionary<string, string> _anchorTargets = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _ambiguousAnchors = new(StringComparer.Ordinal);
+    private readonly List<(XElement Root, Dictionary<string, string> Targets)> _anchorScopes = [];
+    private int _anchorNumber;
 
     private static readonly Dictionary<string, string> InlineTags = new()
     {
@@ -265,11 +269,41 @@ public class Fb2Builder : BuilderBase
         return result.ToString();
     }
 
-    private void AppendFlow(XElement parent, IEnumerable<HtmlNode> nodes, string paragraphTag = "p")
+    private void AppendFlow(XElement parent, IEnumerable<HtmlNode> nodes, string paragraphTag = "p",
+        List<string> pendingAnchors = null, Dictionary<string, string> localAnchors = null)
     {
         XElement paragraph = null;
         var formats = new List<XElement>();
         var outputFormats = new List<XElement>();
+        pendingAnchors ??= [];
+        if (localAnchors == null)
+        {
+            localAnchors = new Dictionary<string, string>(StringComparer.Ordinal);
+            _anchorScopes.Add((parent, localAnchors));
+        }
+
+        void RememberAnchors(HtmlNode node)
+        {
+            foreach (var attribute in node.Attributes.Where(attribute => attribute.Name == "id" || node.Name == "a" && attribute.Name == "name"))
+            {
+                var anchor = CleanText(HtmlEntity.DeEntitize(attribute.Value));
+                if (!string.IsNullOrWhiteSpace(anchor) && !localAnchors.ContainsKey(anchor) && !pendingAnchors.Contains(anchor))
+                    pendingAnchors.Add(anchor);
+            }
+        }
+
+        void ApplyAnchors(XElement target)
+        {
+            if (pendingAnchors.Count == 0) return;
+            var id = (string)target.Attribute("id") ?? $"anchor_{++_anchorNumber}";
+            target.SetAttributeValue("id", id);
+            foreach (var anchor in pendingAnchors)
+            {
+                localAnchors.TryAdd(anchor, id);
+                if (!_anchorTargets.TryAdd(anchor, id)) _ambiguousAnchors.Add(anchor);
+            }
+            pendingAnchors.Clear();
+        }
 
         XElement InlineParent()
         {
@@ -290,7 +324,10 @@ public class Fb2Builder : BuilderBase
         {
             if (paragraph != null && (!string.IsNullOrWhiteSpace(paragraph.Value)
                 || paragraph.Descendants(_ns + "image").Any()))
+            {
+                ApplyAnchors(paragraph);
                 parent.Add(paragraph);
+            }
             else if (emptyLine)
                 parent.Add(CreateXElement("empty-line"));
             paragraph = null;
@@ -306,7 +343,11 @@ public class Fb2Builder : BuilderBase
             {
                 var text = CleanText(HtmlEntity.DeEntitize(node.InnerText));
                 if (text.Length > 0)
-                    InlineParent().Add(new XText(text));
+                {
+                    var target = InlineParent();
+                    if (!string.IsNullOrWhiteSpace(text)) ApplyAnchors(paragraph);
+                    target.Add(new XText(text));
+                }
                 return;
             }
 
@@ -315,23 +356,29 @@ public class Fb2Builder : BuilderBase
                 // Перенос разрывает абзац, а следующий перенос даёт пустую строку.
                 // Шаблоны inline-элементов сохраняются для следующего абзаца.
                 Flush(emptyLine: true);
+                RememberAnchors(node);
                 return;
             }
 
             if (node.Name == "img")
             {
+                RememberAnchors(node);
                 var src = node.GetAttributeValue("src", string.Empty);
                 if (!string.IsNullOrWhiteSpace(src))
-                    InlineParent().Add(new XElement(_ns + "image",
-                        new XAttribute(_xlink + "href", "#" + ImageId(src))));
+                {
+                    var target = InlineParent();
+                    ApplyAnchors(paragraph);
+                    target.Add(new XElement(_ns + "image", new XAttribute(_xlink + "href", "#" + ImageId(src))));
+                }
                 return;
             }
 
             if (node.Name == "blockquote" && parent.Name.LocalName != "cite")
             {
                 Flush();
+                RememberAnchors(node);
                 var cite = CreateXElement("cite");
-                AppendFlow(cite, node.ChildNodes);
+                AppendFlow(cite, node.ChildNodes, pendingAnchors: pendingAnchors, localAnchors: localAnchors);
                 parent.Add(cite);
                 return;
             }
@@ -339,7 +386,8 @@ public class Fb2Builder : BuilderBase
             if (node.Name is "h1" or "h2" or "h3" or "h4" or "h5" or "h6")
             {
                 Flush();
-                AppendFlow(parent, node.ChildNodes, "subtitle");
+                RememberAnchors(node);
+                AppendFlow(parent, node.ChildNodes, "subtitle", pendingAnchors, localAnchors);
                 return;
             }
 
@@ -347,6 +395,7 @@ public class Fb2Builder : BuilderBase
                 or "blockquote" or "table" or "tr" or "td" or "th")
             {
                 Flush();
+                RememberAnchors(node);
                 foreach (var child in node.ChildNodes)
                     Visit(child);
                 Flush(emptyLine: node.Name == "p" && !node.HasChildNodes);
@@ -354,6 +403,7 @@ public class Fb2Builder : BuilderBase
             }
 
             XElement format = null;
+            RememberAnchors(node);
             if (InlineTags.TryGetValue(node.Name, out var tag))
                 format = CreateXElement(tag);
             else if (node.Name == "a" && !formats.Any(f => f.Name.LocalName == "a"))
@@ -380,6 +430,28 @@ public class Fb2Builder : BuilderBase
         foreach (var node in nodes)
             Visit(node);
         Flush();
+        if (pendingAnchors.Count > 0)
+        {
+            // Конечный пустой якорь тоже нужен ссылкам; id допустим на p/subtitle, но не на span/a.
+            var target = CreateXElement(paragraphTag);
+            ApplyAnchors(target);
+            parent.Add(target);
+        }
+    }
+
+    private void ResolveAnchorLinks(XElement root, IReadOnlyDictionary<string, string> localAnchors)
+    {
+        foreach (var link in root.Descendants(_ns + "a"))
+        {
+            var href = link.Attribute(_xlink + "href");
+            if (href?.Value.StartsWith('#') != true) continue;
+            var anchor = Uri.UnescapeDataString(href.Value[1..]);
+            // Одинаковые HTML id в разных главах независимы. Межглавная ссылка
+            // разрешается только тогда, когда во всей книге есть единственная цель.
+            if (localAnchors.TryGetValue(anchor, out var target)
+                || !_ambiguousAnchors.Contains(anchor) && _anchorTargets.TryGetValue(anchor, out target))
+                href.Value = "#" + target;
+        }
     }
 
     private XElement GetDateElement(DateTime date)
@@ -402,6 +474,10 @@ public class Fb2Builder : BuilderBase
         _documentInfo.RemoveNodes();
         _body.RemoveNodes();
         _images.Clear();
+        _anchorTargets.Clear();
+        _ambiguousAnchors.Clear();
+        _anchorScopes.Clear();
+        _anchorNumber = 0;
 
         // Модель книги пока не содержит жанр, но FB2 требует хотя бы один.
         _titleInfo.Add(new XElement(_ns + "genre", "unrecognised"));
@@ -413,6 +489,7 @@ public class Fb2Builder : BuilderBase
         WithLang(book.Lang);
         WithSeria(book.Seria);
         WithChapters(book.Chapters);
+        foreach (var scope in _anchorScopes) ResolveAnchorLinks(scope.Root, scope.Targets);
         if (!_body.Elements(_ns + "section").Any())
             _body.Add(new XElement(_ns + "section", CreateXElement("empty-line")));
 

@@ -243,7 +243,7 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         return doc;
     }
 
-    protected async Task<IEnumerable<Chapter>> FillChaptersFromEpub(TempFile shortFile)
+    protected async Task<IEnumerable<Chapter>> FillChaptersFromEpub(TempFile shortFile, bool splitNumberedHeadings = false)
     {
         var result = new List<Chapter>();
         if (Config.Options.NoChapters)
@@ -280,34 +280,66 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         }
         else
         {
-            Config.Logger.LogInformation($"Загружаю главу {epubBook.Title.CoverQuotes()}");
-
-            var sb = new StringBuilder();
-            foreach (var textFile in epubBook.SpecialResources.HtmlInReadingOrder)
+            // Отсутствие распознанного оглавления не отменяет границы файлов в spine.
+            // Сохраняем их по порядку чтения, не угадывая разделы внутри одного HTML.
+            var textFiles = epubBook.SpecialResources.HtmlInReadingOrder.ToList();
+            var skippedAnchors = new List<HtmlNode>();
+            for (var index = 0; index < textFiles.Count; index++)
             {
+                var textFile = textFiles[index];
                 var textFileDoc = EpubImportLinks.Parse(textFile.TextContent);
                 var body = textFileDoc.DocumentNode.QuerySelector("body");
-                if (body != null)
+                var sourceContent = body ?? textFileDoc.DocumentNode;
+                var heading = sourceContent.Descendants().FirstOrDefault(node =>
+                    node.Name is "h1" or "h2" or "h3" or "h4" or "h5" or "h6"
+                    && !string.IsNullOrWhiteSpace(WebUtility.HtmlDecode(node.InnerText)));
+                var title = WebUtility.HtmlDecode(heading?.InnerText
+                    ?? textFileDoc.QuerySelector("head title")?.InnerText)?.Trim();
+                if (string.IsNullOrWhiteSpace(title))
+                    title = textFiles.Count == 1 && !string.IsNullOrWhiteSpace(epubBook.Title)
+                        ? epubBook.Title : $"Раздел {index + 1}";
+
+                var content = EpubImportLinks.Parse(sourceContent.InnerHtml);
+                var images = (await GetImages(content, epubBook)).ToList();
+                // Пустой служебный файл или обложка после выключения картинок не являются главой.
+                // Изобразительные разделы сохраняем, если их содержимое осталось доступно.
+                if (string.IsNullOrWhiteSpace(WebUtility.HtmlDecode(content.DocumentNode.InnerText))
+                    && content.QuerySelector("img, svg, math, video, audio, object") == null)
                 {
-                    textFileDoc = EpubImportLinks.Parse(body.InnerHtml);
+                    // Ссылки на пропущенную пустую страницу должны вести в ближайший раздел.
+                    foreach (var node in content.DocumentNode.Descendants())
+                    {
+                        var attributes = node.Attributes.Where(attribute => attribute.Name == "id"
+                            || node.Name == "a" && attribute.Name == "name").ToArray();
+                        if (attributes.Length == 0) continue;
+                        var anchor = content.CreateElement(node.Name == "a" ? "a" : "span");
+                        foreach (var attribute in attributes) anchor.SetAttributeValue(attribute.Name, attribute.Value);
+                        skippedAnchors.Add(anchor);
+                    }
+                    continue;
                 }
 
-                sb.Append(textFileDoc.DocumentNode.InnerHtml);
+                foreach (var anchor in skippedAnchors.AsEnumerable().Reverse()) content.DocumentNode.PrependChild(anchor);
+                skippedAnchors.Clear();
+
+                Config.Logger.LogInformation($"Загружаю главу {title.CoverQuotes()}");
+                ChapterContentCleaner.RemoveLeadingTitle(content.DocumentNode, title);
+                EpubImportLinks.RemoveClonedAnchors(content, importedLinks);
+                result.Add(new Chapter
+                {
+                    Title = title, Images = images, Content = content.DocumentNode.InnerHtml
+                });
             }
-
-            var chapter = new Chapter
+            if (skippedAnchors.Count > 0 && result.Count > 0)
             {
-                Title = epubBook.Title
-            };
-
-            var content = EpubImportLinks.Parse(sb.ToString());
-            chapter.Images = await GetImages(content, epubBook);
-            ChapterContentCleaner.RemoveLeadingTitle(content.DocumentNode, chapter.Title);
-            chapter.Content = content.DocumentNode.InnerHtml;
-            result.Add(chapter);
+                var content = EpubImportLinks.Parse(string.Empty);
+                foreach (var anchor in skippedAnchors) content.DocumentNode.AppendChild(anchor);
+                EpubImportLinks.RemoveClonedAnchors(content, importedLinks);
+                result[^1].Content += content.DocumentNode.InnerHtml;
+            }
         }
 
-        return result;
+        return splitNumberedHeadings ? EpubChapterSplitter.Split(result, epubBook.Title) : result;
     }
 
     private async Task<IEnumerable<TempFile>> GetImages(HtmlDocument doc, EpubBook book)
@@ -317,27 +349,27 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         {
             if (Config.Options.NoImage)
             {
-                img.Remove();
+                RemoveImageKeepingAnchor(img);
                 continue;
             }
 
             var path = img.Attributes["src"]?.Value;
             if (string.IsNullOrWhiteSpace(path))
             {
-                img.Remove();
+                RemoveImageKeepingAnchor(img);
                 continue;
             }
 
             var t = book.Resources.Images.FirstOrDefault(i => i.AbsolutePath.EndsWith(path.Trim('.')));
             if (t == null)
             {
-                img.Remove();
+                RemoveImageKeepingAnchor(img);
                 continue;
             }
 
             if (t.Content == null || t.Content.Length == 0)
             {
-                img.Remove();
+                RemoveImageKeepingAnchor(img);
                 continue;
             }
 
@@ -347,6 +379,17 @@ public abstract class GetterBase(BookGetterConfig config) : IDisposable
         }
 
         return images;
+    }
+
+    private static void RemoveImageKeepingAnchor(HtmlNode image)
+    {
+        if (image.Attributes["id"] is { } id)
+        {
+            var anchor = image.OwnerDocument.CreateElement("span");
+            anchor.SetAttributeValue("id", id.Value);
+            image.ParentNode.ReplaceChild(anchor, image);
+        }
+        else image.Remove();
     }
 
     protected IEnumerable<T> SliceToc<T>(ICollection<T> toc, Func<T, string> selector)

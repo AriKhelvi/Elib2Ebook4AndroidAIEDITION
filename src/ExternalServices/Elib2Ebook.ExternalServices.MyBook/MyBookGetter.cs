@@ -155,7 +155,7 @@ public class MyBookGetter(BookGetterConfig config) : GetterBase(config)
                 book.AdditionalFiles.Add(AdditionalTypeEnum.Books, origBook);
             }
 
-            book.Chapters = await FillChaptersFromEpub(origBook);
+            book.Chapters = await FillChaptersFromEpub(origBook, splitNumberedHeadings: true);
         }
 
         if (Config.Options.HasAdditionalType(AdditionalTypeEnum.Audio))

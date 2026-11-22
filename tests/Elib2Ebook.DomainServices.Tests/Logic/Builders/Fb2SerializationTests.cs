@@ -116,6 +116,74 @@ public sealed class Fb2SerializationTests : IDisposable
     }
 
     [Fact]
+    public async Task HtmlAnchorsBecomeUniqueFb2TargetsWithoutSplittingInlineText()
+    {
+        using var book = CreateBook("<span id='file'></span><h2 id='1 заголовок'>Подзаголовок</h2>"
+            + "<p id='paragraph'>До <a name='old-name' id='inline'></a><strong>после</strong> "
+            + "<a href='#note'>Сноска</a> <a href='#1%20%D0%B7%D0%B0%D0%B3%D0%BE%D0%BB%D0%BE%D0%B2%D0%BE%D0%BA'>Заголовок</a></p>"
+            + "<p id='note'>Текст сноски. <a href='#old-name'>Назад</a> <a href='#inline'>Тоже назад</a> <a href='#file'>Начало</a></p>"
+            + "<span id='end'></span><span id='end'></span>");
+        var doc = await Build(book);
+        var ids = doc.Descendants().Attributes("id").Select(attribute => attribute.Value).ToArray();
+        Assert.NotEmpty(ids);
+        Assert.Equal(ids.Length, ids.Distinct().Count());
+        Assert.All(ids, id => Assert.Equal(id, XmlConvert.VerifyNCName(id)));
+        foreach (var link in doc.Descendants(Ns + "a")) Assert.Contains(link.Attribute(Xlink + "href").Value[1..], ids);
+        var paragraph = doc.Descendants(Ns + "p").Single(node => node.Value.StartsWith("До после", StringComparison.Ordinal));
+        var backLinks = doc.Descendants(Ns + "a").Where(node => node.Value is "Назад" or "Тоже назад").ToArray();
+        Assert.All(backLinks, link => Assert.Equal("#" + paragraph.Attribute("id").Value, link.Attribute(Xlink + "href").Value));
+        Assert.Equal("после", paragraph.Element(Ns + "strong").Value);
+        Assert.Single(doc.Descendants(Ns + "subtitle"));
+        Assert.All(doc.Descendants().Where(node => node.Attribute("id") != null), node => Assert.Contains(node.Name.LocalName, new[] { "p", "subtitle" }));
+    }
+
+    [Fact]
+    public async Task LocalAnchorsTakePriorityAcrossChaptersAndAnnotationWhileUniqueCrossChapterLinksResolve()
+    {
+        using var book = CreateBook("<p id='note1'>Сноска первой главы</p><p id='note1'>Дубль исходного якоря</p>"
+            + "<p id='ambiguous'>Общая метка первой главы</p>"
+            + "<p><a href='#note1'>Первая локальная</a> <a href='#epub-cross'>Межглавная</a></p>");
+        book.Annotation = "<p id='note1'>Сноска аннотации</p><p><a href='#note1'>Локальная аннотации</a> "
+            + "<a href='#epub-cross'>Из аннотации</a> <a href='#ambiguous'>Неоднозначная</a></p>";
+        book.Chapters = book.Chapters.Append(new Chapter
+        {
+            Title = "Вторая глава",
+            Content = "<blockquote><h2 id='note1'>Сноска второй главы</h2></blockquote>"
+                + "<p id='ambiguous'>Общая метка второй главы</p><p id='epub-cross'>Единственная межглавная цель</p>"
+                + "<p><a href='#note1'>Вторая локальная</a></p>"
+        }).ToArray();
+
+        var doc = await Build(book);
+        var targets = doc.Descendants().Where(node => node.Attribute("id") != null).ToArray();
+        var ids = targets.Select(node => node.Attribute("id").Value).ToArray();
+        Assert.Equal(6, ids.Length);
+        Assert.Equal(ids.Length, ids.Distinct().Count());
+        Assert.All(ids, id => Assert.Equal(id, XmlConvert.VerifyNCName(id)));
+        string Link(string text) => doc.Descendants(Ns + "a").Single(node => node.Value == text).Attribute(Xlink + "href").Value;
+        string Target(string text) => "#" + targets.Single(node => node.Value == text).Attribute("id").Value;
+        Assert.Equal(Target("Сноска аннотации"), Link("Локальная аннотации"));
+        Assert.Equal(Target("Сноска первой главы"), Link("Первая локальная"));
+        Assert.Equal(Target("Сноска второй главы"), Link("Вторая локальная"));
+        Assert.Equal(Target("Единственная межглавная цель"), Link("Межглавная"));
+        Assert.Equal(Target("Единственная межглавная цель"), Link("Из аннотации"));
+        Assert.Equal("#ambiguous", Link("Неоднозначная"));
+        Assert.Null(doc.Descendants(Ns + "p").Single(node => node.Value == "Дубль исходного якоря").Attribute("id"));
+    }
+
+    [Fact]
+    public async Task ReusingBuilderRecreatesAnchorTargets()
+    {
+        var builder = CreateBuilder();
+        using var first = CreateBook("<p id='same'>Первая версия</p><p><a href='#same'>Ссылка</a></p>");
+        await Build(first, builder);
+        using var second = CreateBook("<p id='same'>Вторая версия</p><p><a href='#same'>Ссылка</a></p>");
+        var current = await Build(second, builder);
+        var target = Assert.Single(current.Descendants(), node => node.Attribute("id") != null);
+        Assert.Equal("Вторая версия", target.Value);
+        Assert.Equal("#" + target.Attribute("id").Value, Assert.Single(current.Descendants(Ns + "a")).Attribute(Xlink + "href").Value);
+    }
+
+    [Fact]
     public async Task ReusingBuilderDoesNotCarryPreviousDocumentContent()
     {
         var builder = CreateBuilder();
