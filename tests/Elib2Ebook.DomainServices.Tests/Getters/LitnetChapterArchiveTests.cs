@@ -61,8 +61,27 @@ public class LitnetChapterArchiveTests
     public async Task MissingEntryFailsInsteadOfReturningTheAvailableSubset()
     {
         using var stream = new MemoryStream(LitnetArchiveTestSupport.Archive([("11.gz", LitnetArchiveTestSupport.Encrypt(Chapter))]));
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => LitnetChapterArchive.ReadAsync(stream, [11, 22], LitnetArchiveTestSupport.AppKey, default));
+        var error = await Assert.ThrowsAsync<LitnetIncompleteChapterArchiveException>(() => LitnetChapterArchive.ReadAsync(stream, [11, 22], LitnetArchiveTestSupport.AppKey, default));
         Assert.Contains("не вернул 1 из 2", error.Message);
+        Assert.Equal(2, error.RequestedCount);
+        Assert.Equal(1, error.ReceivedCount);
+        Assert.Equal(new long[] { 22 }, error.MissingChapterIds);
+    }
+
+    [Fact]
+    public async Task MissingIdsFollowRequestedOrderWithoutReadingAvailableChapterText()
+    {
+        // Неполнота должна определяться по составу ZIP до разбора даже повреждённых текстов.
+        using var stream = new MemoryStream(LitnetArchiveTestSupport.Archive([("11.gz", Encoding.UTF8.GetBytes("private contents"))]));
+
+        var error = await Assert.ThrowsAsync<LitnetIncompleteChapterArchiveException>(() =>
+            LitnetChapterArchive.ReadAsync(stream, [33, 11, 22], LitnetArchiveTestSupport.AppKey, default));
+
+        Assert.Equal(3, error.RequestedCount);
+        Assert.Equal(1, error.ReceivedCount);
+        Assert.Equal(new long[] { 33, 22 }, error.MissingChapterIds);
+        Assert.DoesNotContain("private contents", error.ToString());
+        Assert.DoesNotContain(LitnetArchiveTestSupport.AppKey, error.ToString());
     }
 
     [Fact]

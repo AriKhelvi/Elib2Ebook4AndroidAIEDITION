@@ -179,7 +179,8 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         return GetApiData<LitnetContentsResponse[]>(url);
     }
 
-    private async Task<Dictionary<long, LitnetChapterResponse>> GetChapterBatch(string token, LitnetContentsResponse[] batch)
+    private async Task<Dictionary<long, LitnetChapterResponse>> GetChapterBatch(string token, LitnetContentsResponse[] batch,
+        IReadOnlyDictionary<long, int> chapterPositions)
     {
         var chapters = string.Join("&", batch.Select(t => $"chapter_ids[]={t.Id}"));
         if (IsLitnet)
@@ -198,6 +199,25 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
                 await using var stream = await response.Content.ReadAsStreamAsync(budget.Token);
                 var texts = await LitnetChapterArchive.ReadAsync(stream, batch.Select(x => x.Id).ToArray(), SECRET, budget.Token);
                 return texts.ToDictionary(x => x.Key, x => new LitnetChapterResponse { Id = x.Key, Text = x.Value });
+            }
+            catch (LitnetIncompleteChapterArchiveException error)
+            {
+                var batchById = batch.ToDictionary(chapter => chapter.Id);
+                var missingChapters = error.MissingChapterIds.Select(id => batchById[id]).ToArray();
+                // Сводка нужна и без подробного журнала. Она не содержит глав, реквизитов или URL API.
+                Config.Logger.LogInformation("Litnet: неполный архив глав; запрошено {Requested}, получено {Received}, отсутствует {Missing}. Доступ отсутствующих глав: access=true — {Granted}, access=false — {Denied}, access=null (поле отсутствует или не задано) — {Unknown}.",
+                    error.RequestedCount, error.ReceivedCount, missingChapters.Length,
+                    missingChapters.Count(chapter => chapter.Access == true), missingChapters.Count(chapter => chapter.Access == false),
+                    missingChapters.Count(chapter => chapter.Access == null));
+                if (Config.Logger.IsEnabled(LogLevel.Debug))
+                {
+                    const int maxDetails = 50;
+                    var details = missingChapters.Take(maxDetails).Select(chapter =>
+                        $"позиция {chapterPositions[chapter.Id]}, ID {chapter.Id}, access={AccessLabel(chapter.Access)}");
+                    Config.Logger.LogDebug("Litnet: отсутствующие главы (показано {Shown} из {Total}): {Chapters}",
+                        Math.Min(missingChapters.Length, maxDetails), missingChapters.Length, string.Join("; ", details));
+                }
+                throw;
             }
             catch (OperationCanceledException) when (!Config.CancellationToken.IsCancellationRequested && budget.IsCancellationRequested)
             {
@@ -498,7 +518,13 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         if (contents.Any(content => content == null || content.Id <= 0))
             throw new InvalidOperationException("Litnet вернул некорректное оглавление. Неполная книга не будет сохранена.");
 
-        var selected = SliceToc(contents.DistinctBy(content => content.Id).ToList(), content => content.Title).ToList();
+        var uniqueContents = contents.DistinctBy(content => content.Id).ToList();
+        var chapterPositions = uniqueContents.Select((chapter, index) => (chapter.Id, Position: index + 1))
+            .ToDictionary(chapter => chapter.Id, chapter => chapter.Position);
+        var selected = SliceToc(uniqueContents, content => content.Title).ToList();
+        Config.Logger.LogDebug("Litnet: оглавление — {Total} уникальных глав; выбрано {Selected}. Доступ выбранных глав: access=true — {Granted}, access=false — {Denied}, access=null (поле отсутствует или не задано) — {Unknown}.",
+            uniqueContents.Count, selected.Count, selected.Count(content => content.Access == true),
+            selected.Count(content => content.Access == false), selected.Count(content => content.Access == null));
         var inaccessible = selected.Count(content => content.Access == false);
         if (inaccessible > 0)
         {
@@ -513,7 +539,7 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
         {
             Config.CancellationToken.ThrowIfCancellationRequested();
             Config.Logger.LogInformation("Получаю текст глав Litnet {Start}–{End} из {Total}", result.Count + 1, result.Count + batch.Length, selected.Count);
-            var map = await GetChapterBatch(token, batch);
+            var map = await GetChapterBatch(token, batch, chapterPositions);
             foreach (var content in batch)
             {
                 Config.CancellationToken.ThrowIfCancellationRequested();
@@ -546,6 +572,13 @@ public abstract class LitnetGetterBase(BookGetterConfig config) : GetterBase(con
 
         return result;
     }
+
+    private static string AccessLabel(bool? access) => access switch
+    {
+        true => "true",
+        false => "false",
+        null => "null (поле отсутствует или не задано)"
+    };
 
     private void ClearBookCache()
     {

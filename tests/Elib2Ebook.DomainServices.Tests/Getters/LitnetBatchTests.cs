@@ -144,6 +144,148 @@ public class LitnetBatchTests
         Assert.Equal(40, book.Chapters.Count());
     }
 
+    [Theory]
+    [InlineData(true, false, LogLevel.Information)]
+    [InlineData(null, false, LogLevel.Information)]
+    [InlineData(null, true, LogLevel.Information)]
+    [InlineData(true, false, LogLevel.Debug)]
+    [InlineData(null, true, LogLevel.Debug)]
+    public async Task Incomplete25ChapterArchiveKeepsFailureAndReportsSafeAccessSummary(
+        bool? access, bool omitAccessField, LogLevel minimumLevel)
+    {
+        const string token = "private-litnet-token";
+        const string login = "private-litnet-login@example.test";
+        const string password = "private-litnet-password";
+        var providerCalls = 0;
+        var options = new Options
+        {
+            Login = login,
+            Password = password,
+            LitnetSessionProvider = (_, _) =>
+            {
+                providerCalls++;
+                return Task.FromResult(new BrowserAuthSession(token, "test-device"));
+            }
+        };
+        var log = new ProgressLogger { MinimumLevel = minimumLevel };
+        var handler = new FakeHandler
+        {
+            ChapterCount = 25, Access = _ => access, OmitAccessField = omitAccessField, ReturnedChapterLimit = 7
+        };
+        using var getter = new LitnetGetter(new BookGetterConfig(options, new HttpClient(handler),
+            new CookieContainer(), TempFolderFactory.Create(null), log));
+        await getter.Authorize();
+
+        var error = await Assert.ThrowsAsync<LitnetIncompleteChapterArchiveException>(() => getter.Get(BookUri));
+
+        Assert.Equal(25, error.RequestedCount);
+        Assert.Equal(7, error.ReceivedCount);
+        Assert.Equal(Enumerable.Range(8, 18).Select(id => (long)id), error.MissingChapterIds);
+        Assert.Contains("Неполная книга не будет сохранена", error.Message);
+        Assert.Equal(Enumerable.Range(1, 25).Select(id => (long)id), Assert.Single(handler.Batches));
+        Assert.Equal(3, handler.Versions.Count); // Карточка, оглавление и один архив; повторов нет.
+        Assert.Equal(1, providerCalls);
+        Assert.Equal(0, handler.SeriesRequests);
+        Assert.DoesNotContain(log.Lines, line => line.StartsWith("Загружаю главу"));
+        var summary = Assert.Single(log.Lines, line => line.StartsWith("Litnet: неполный архив глав"));
+        Assert.Contains("запрошено 25, получено 7, отсутствует 18", summary);
+        Assert.Contains($"access=true — {(access == true ? 18 : 0)}", summary);
+        Assert.Contains("access=false — 0", summary);
+        Assert.Contains($"access=null (поле отсутствует или не задано) — {(access == null ? 18 : 0)}", summary);
+        if (minimumLevel == LogLevel.Debug)
+        {
+            var details = Assert.Single(log.DebugLines, line => line.StartsWith("Litnet: отсутствующие главы"));
+            Assert.Contains("показано 18 из 18", details);
+            Assert.Contains($"позиция 8, ID 8, access={(access == true ? "true" : "null (поле отсутствует или не задано)")}", details);
+        }
+        else
+        {
+            Assert.Empty(log.DebugLines);
+            Assert.DoesNotContain(log.Lines, line => line.Contains("ID 8"));
+        }
+        var diagnostics = string.Join("\n", log.Lines) + error;
+        foreach (var privateValue in new[] { token, login, password, LitnetArchiveTestSupport.AppKey, "Текст главы" })
+            Assert.DoesNotContain(privateValue, diagnostics);
+    }
+
+    [Fact]
+    public async Task ExcerptOf25ChapterBookRequestsOnlySevenOpenChaptersAndReportsClosedRemainder()
+    {
+        var log = new ProgressLogger { MinimumLevel = LogLevel.Information };
+        var handler = new FakeHandler { ChapterCount = 25, Access = id => id <= 7 };
+        using var getter = new LitnetGetter(new BookGetterConfig(new Options(), new HttpClient(handler),
+            new CookieContainer(), TempFolderFactory.Create(null), log));
+
+        using var book = await getter.Get(BookUri);
+
+        Assert.Equal(7, book.Chapters.Count());
+        Assert.Equal(Enumerable.Range(1, 7).Select(id => (long)id), Assert.Single(handler.Batches));
+        Assert.Contains(log.Warnings, line => line.Contains("доступно 7 глав, закрыто 18") && line.Contains("фрагмент"));
+        Assert.DoesNotContain(log.Lines, line => line.Contains("неполный архив"));
+    }
+
+    [Theory]
+    [InlineData(LogLevel.Information)]
+    [InlineData(LogLevel.Debug)]
+    public async Task Complete25ChapterBookHasOneBatchAndAccessSummaryOnlyInDetailedLog(LogLevel minimumLevel)
+    {
+        var log = new ProgressLogger { MinimumLevel = minimumLevel };
+        var handler = new FakeHandler { ChapterCount = 25, Access = _ => true };
+        using var getter = new LitnetGetter(new BookGetterConfig(new Options(), new HttpClient(handler),
+            new CookieContainer(), TempFolderFactory.Create(null), log));
+
+        using var book = await getter.Get(BookUri);
+
+        Assert.Equal(25, book.Chapters.Count());
+        Assert.Equal(25, Assert.Single(handler.Batches).Length);
+        Assert.Empty(log.Warnings);
+        Assert.DoesNotContain(log.Lines, line => line.Contains("неполный архив"));
+        if (minimumLevel == LogLevel.Debug)
+            Assert.Contains(log.DebugLines, line => line.Contains("access=true — 25") && line.Contains("access=null (поле отсутствует или не задано) — 0"));
+        else
+            Assert.DoesNotContain(log.Lines, line => line.Contains("access="));
+    }
+
+    [Fact]
+    public async Task MissingChapterDetailsKeepTocPositionsAfterRangeAndAccessFiltering()
+    {
+        var log = new ProgressLogger();
+        var handler = new FakeHandler { ChapterCount = 25, Access = id => id <= 8 || id == 12, ReturnedChapterLimit = 1 };
+        using var getter = new LitnetGetter(new BookGetterConfig(new Options { Start = 7, End = 12 },
+            new HttpClient(handler), new CookieContainer(), TempFolderFactory.Create(null), log));
+
+        var error = await Assert.ThrowsAsync<LitnetIncompleteChapterArchiveException>(() => getter.Get(BookUri));
+
+        Assert.Equal(new long[] { 8, 12 }, error.MissingChapterIds);
+        var details = Assert.Single(log.DebugLines, line => line.StartsWith("Litnet: отсутствующие главы"));
+        Assert.Contains("позиция 8, ID 8", details);
+        Assert.Contains("позиция 12, ID 12", details);
+        Assert.DoesNotContain("позиция 2,", details);
+        Assert.DoesNotContain("позиция 3,", details);
+        Assert.Single(handler.Batches);
+    }
+
+    [Fact]
+    public async Task MissingChapterDetailsAreBoundedAndDoNotStartNextBatch()
+    {
+        var log = new ProgressLogger();
+        var handler = new FakeHandler { ChapterCount = 205, Access = _ => true, ReturnedChapterLimit = 0 };
+        using var getter = new LitnetGetter(new BookGetterConfig(new Options { Start = 99 }, new HttpClient(handler),
+            new CookieContainer(), TempFolderFactory.Create(null), log));
+
+        var error = await Assert.ThrowsAsync<LitnetIncompleteChapterArchiveException>(() => getter.Get(BookUri));
+
+        Assert.Equal(100, error.MissingChapterIds.Count);
+        var details = Assert.Single(log.DebugLines, line => line.StartsWith("Litnet: отсутствующие главы"));
+        Assert.Contains("показано 50 из 100", details);
+        Assert.Equal(50, details.Split("ID ").Length - 1);
+        Assert.Contains("позиция 99, ID 99", details);
+        Assert.Contains("позиция 148, ID 148", details);
+        Assert.DoesNotContain("ID 149", details);
+        Assert.Single(handler.Batches);
+        Assert.Equal(0, handler.SeriesRequests);
+    }
+
     [Fact]
     public async Task RateLimitedTextRequestIsStillFailureRatherThanAnExcerpt()
     {
@@ -205,7 +347,7 @@ public class LitnetBatchTests
         var handler = new FakeHandler { OmitLastChapter = true };
         using var getter = CreateGetter(new Options(), handler);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => getter.Get(BookUri));
+        var error = await Assert.ThrowsAsync<LitnetIncompleteChapterArchiveException>(() => getter.Get(BookUri));
         Assert.Contains("не вернул 1 из 100", error.Message);
         Assert.Single(handler.Batches);
     }
@@ -308,14 +450,18 @@ public class LitnetBatchTests
     {
         public List<string> Lines { get; } = [];
         public List<string> Warnings { get; } = [];
+        public List<string> DebugLines { get; } = [];
+        public LogLevel MinimumLevel { get; init; } = LogLevel.Trace;
         public Action<string> OnLine { get; init; }
         public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel level) => true;
+        public bool IsEnabled(LogLevel level) => level >= MinimumLevel;
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception exception, Func<TState, Exception, string> formatter)
         {
+            if (!IsEnabled(level)) return;
             var line = formatter(state, exception);
             Lines.Add(line);
             if (level >= LogLevel.Warning) Warnings.Add(line);
+            if (level == LogLevel.Debug) DebugLines.Add(line);
             OnLine?.Invoke(line);
         }
     }
@@ -334,10 +480,12 @@ public class LitnetBatchTests
         public int CoverRequests { get; private set; }
         public bool IncludeCover { get; init; }
         public Func<int, bool?> Access { get; init; } = _ => null;
+        public bool OmitAccessField { get; init; }
         public HttpStatusCode BatchStatus { get; init; } = HttpStatusCode.OK;
         public HttpStatusCode CoverStatus { get; init; } = HttpStatusCode.OK;
         public int? RateLimitBatchNumber { get; init; }
         public bool OmitLastChapter { get; init; }
+        public int? ReturnedChapterLimit { get; init; }
         public int ChapterCount { get; init; } = 205;
         public bool AdultOnly { get; init; }
         public long? BrokenChapter { get; init; }
@@ -358,7 +506,9 @@ public class LitnetBatchTests
                     break;
                 case "/v1/book/contents":
                     ContentsRequests++;
-                    result = Enumerable.Range(1, ChapterCount).Select(i => new { id = i, title = $"Глава {i}", access = Access(i) });
+                    result = OmitAccessField
+                        ? Enumerable.Range(1, ChapterCount).Select(i => (object)new { id = i, title = $"Глава {i}" })
+                        : Enumerable.Range(1, ChapterCount).Select(i => new { id = i, title = $"Глава {i}", access = Access(i) });
                     break;
                 case "/v1/book/text/get-chapters":
                     var ids = HttpUtility.ParseQueryString(uri.Query).GetValues("chapter_ids[]")!.Select(long.Parse).ToArray();
@@ -368,7 +518,7 @@ public class LitnetBatchTests
                         return Task.FromResult(TestHttpResponse.Create(status, request, new StringContent("{}")));
                     BeforeBatch?.Invoke(Batches.Count);
                     // Сервер может вернуть главы в другом порядке и обрезать большой запрос.
-                    var entries = ids.Take(OmitLastChapter ? ids.Length - 1 : 100).Reverse().Select(id =>
+                    var entries = ids.Take(ReturnedChapterLimit ?? (OmitLastChapter ? ids.Length - 1 : 100)).Reverse().Select(id =>
                         ($"{id}.gz", id == BrokenChapter ? BrokenEntry : LitnetArchiveTestSupport.Encrypt("[\"<p>Текст главы</p>\"]")));
                     var archive = new ByteArrayContent(LitnetArchiveTestSupport.Archive(entries));
                     archive.Headers.ContentType = new("application/zip");

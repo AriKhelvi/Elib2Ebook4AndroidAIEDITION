@@ -44,9 +44,9 @@ internal static class LitnetChapterArchive
                 if (entry.Length > MaxEncryptedEntryBytes)
                     throw Failure($"Архив главы {id} превышает допустимый размер.");
             }
-            var missing = expected.Count - entries.Count;
-            if (missing != 0)
-                throw Failure($"Litnet не вернул {missing} из {expected.Count} запрошенных глав.");
+            var missing = requested.Where(id => !entries.ContainsKey(id)).ToArray();
+            if (missing.Length != 0)
+                throw new LitnetIncompleteChapterArchiveException(expected.Count, missing);
 
             var result = new Dictionary<long, string>();
             long decodedTotal = 0;
